@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+
+# Machine-local consumer configuration and runtime data
+.pi/orchestrator.local.yaml
+.orchestrator/

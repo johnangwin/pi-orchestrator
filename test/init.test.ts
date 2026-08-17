@@ -1,0 +1,39 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { initializeProject } from "../src/init.js";
+import { loadLocalConfig } from "../src/local.js";
+import { loadProject } from "../src/project.js";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+
+describe("consumer Project initialization", () => {
+  it("creates a valid minimal Project without overwriting existing instructions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-orchestrator-init-"));
+    roots.push(root);
+    await initializeProject(root, "sample-project");
+    const agentsPath = path.join(root, "AGENTS.md");
+    await writeFile(agentsPath, "# Existing instructions\n", "utf8");
+    await initializeProject(root, "sample-project");
+
+    const project = await loadProject(root);
+    expect(project.config.project.id).toBe("sample-project");
+    expect(project.roles.get("implementer")?.definition.access).toBe("write");
+    expect(await readFile(agentsPath, "utf8")).toBe(
+      "# Existing instructions\n",
+    );
+    await expect(
+      loadLocalConfig(
+        path.join(root, ".pi", "orchestrator.local.yaml.example"),
+      ),
+    ).resolves.toMatchObject({
+      openshell: { required_version: "0.0.106" },
+    });
+  });
+});

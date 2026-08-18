@@ -194,6 +194,10 @@ export interface DeleteSandboxOptions {
   readonly missingOk?: boolean;
 }
 
+export interface SetSandboxPolicyOptions {
+  readonly timeoutMs?: number;
+}
+
 export interface ServiceForwardOptions {
   readonly sandboxName: string;
   readonly targetPort: number;
@@ -236,7 +240,11 @@ function parseJson(source: string, operation: string): unknown {
 
 function commandFailure(args: readonly string[], result: ProcessResult) {
   const diagnostic = result.stderr.trim() || result.stdout.trim();
-  const suffix = diagnostic ? `: ${diagnostic.slice(0, 2_000)}` : "";
+  const excerpt =
+    diagnostic.length <= 2_000
+      ? diagnostic
+      : `${diagnostic.slice(0, 500)}\n...\n${diagnostic.slice(-1_500)}`;
+  const suffix = excerpt ? `: ${excerpt}` : "";
   return new OrchestratorError(
     "openshell_failed",
     `OpenShell command failed with exit ${result.exitCode}: ${args.join(" ")}${suffix}`,
@@ -499,6 +507,30 @@ export class OpenShellClient {
       if (!exists) return;
     }
     throw commandFailure(args, result);
+  }
+
+  async setSandboxPolicy(
+    name: string,
+    policyPath: string,
+    options: SetSandboxPolicyOptions = {},
+  ): Promise<OpenShellSandbox> {
+    const sandboxName = OpenShellSandboxNameSchema.parse(name);
+    const timeoutMs = options.timeoutMs ?? 60_000;
+    await this.execute(
+      [
+        "policy",
+        "set",
+        sandboxName,
+        "--policy",
+        policyPath,
+        "--wait",
+        "--timeout",
+        String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
+        ...this.globalArgs(),
+      ],
+      { timeoutMs: timeoutMs + 5_000 },
+    );
+    return this.getSandbox(sandboxName);
   }
 
   async execSandbox(

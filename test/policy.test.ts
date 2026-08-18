@@ -19,6 +19,21 @@ describe("Sandbox policies", () => {
     expect(dockerfile).not.toContain(":latest");
   });
 
+  it("pins the Pi base image and runtime version", async () => {
+    const dockerfile = await readFile(
+      path.resolve("sandbox", "pi", "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(
+      /^FROM docker\.io\/library\/node:22\.19\.0-bookworm-slim@sha256:[a-f0-9]{64}$/m,
+    );
+    expect(dockerfile).toContain("ARG PI_VERSION=0.84.2");
+    expect(dockerfile).toContain(
+      'npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}"',
+    );
+    expect(dockerfile).not.toContain(":latest");
+  });
+
   for (const profile of ["read", "write", "check"] as const) {
     it(`validates the committed ${profile} profile`, async () => {
       const loaded = await loadSandboxPolicy(

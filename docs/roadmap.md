@@ -14,17 +14,19 @@
 ## Milestone 2: OpenShell substrate
 
 - pinned versions and capability checks (complete)
-- source snapshot upload and Artifact download (typed transfer adapter complete; snapshot workflow pending)
+- deterministic Git source snapshots and read-only Session initialization (complete)
+- Artifact download (typed transfer adapter complete; Artifact validation pending)
 - read, write, and Check profiles (complete)
 - security canaries (complete for base profiles; rerun after every relevant upgrade)
-- Pi image and client extension
-- Link transport spike (complete; protocol implementation pending)
+- pinned Pi image and minimal client extension (complete for read-only Sessions)
+- Link handshake, framing, authentication, deduplication, stale-epoch rejection, and reconnection (complete)
+- inference gateway composition and model execution
 
 ## Milestone 3: Visible Sessions
 
-- Seats, Sessions, and epochs
+- durable Seats, Sessions, and epochs (schemas and live identity binding complete)
 - cmux workspace and pane adapter
-- Message delivery and acknowledgements
+- durable Mailbox delivery and acknowledgements (wire protocol complete)
 - reconnection and replacement
 
 ## Milestone 4: One-Task vertical slice

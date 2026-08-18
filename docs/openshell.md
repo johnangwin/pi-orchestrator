@@ -77,6 +77,8 @@ The 0.0.106 spike verified:
 - unapproved outbound HTTP is denied;
 - `forward service` exposes a sandbox-loopback service only on an explicitly selected host-loopback listener.
 
+The pinned Pi image uses Node 22.19.0 and `@earendil-works/pi-coding-agent` 0.84.2. It runs as UID/GID 10001, disables Pi telemetry and startup network operations, loads only the Orchestrator extension explicitly, and enables only Pi's read-oriented built-in tools for the initial Session slice. The daemon reconstructs an allowlisted child environment instead of passing the Sandbox environment through to Pi.
+
 ## Policy profiles
 
 The base policies under `sandbox/policies/` share these rules:
@@ -90,6 +92,8 @@ The base policies under `sandbox/policies/` share these rules:
 The `read` profile makes `/workspace/project` read-only. The `write` and `check` profiles make it writable. Inference routes will be composed later for model-driven profiles; the Check profile will never receive inference access.
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
+
+Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. The host instead assembles a temporary derived-image context from the exact Git snapshot and starts the Sandbox under its final policy. See [ADR 0004](decisions/0004-session-snapshot.md).
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 
@@ -109,4 +113,10 @@ OpenShell gRPC service forward
 Pi client extension
 ```
 
-The forward proves transport availability only. Reconnection, bounded frames, duplicate IDs, stale epochs, and Link authorization remain protocol-level requirements.
+The Link protocol uses authenticated, identity-bound, 64 KiB JSONL frames. Unit coverage verifies bounded framing, duplicate Message suppression, authentication, and stale-epoch rejection. The live Session test verifies a real Pi extension handshake and host reconnection through OpenShell forwarding:
+
+```sh
+PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
+```
+
+Durable Mailbox integration and unsolicited client event handling remain part of the visible-Session milestone.

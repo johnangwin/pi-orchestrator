@@ -179,6 +179,11 @@ describe("OpenShell Sandbox lifecycle", () => {
             stdout: "deleted",
             stderr: "",
           },
+          "policy set pio-cny-read-001 --policy /read.yaml --wait --timeout 2 --workspace default":
+            {
+              stdout: "updated",
+              stderr: "",
+            },
         },
         calls,
       ),
@@ -206,9 +211,14 @@ describe("OpenShell Sandbox lifecycle", () => {
       "/sandbox/output/report",
       "/host/report",
     );
+    await expect(
+      client.setSandboxPolicy("pio-cny-read-001", "/read.yaml", {
+        timeoutMs: 1_001,
+      }),
+    ).resolves.toMatchObject({ phase: "Ready" });
     await client.deleteSandbox("pio-cny-read-001");
 
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(8);
   });
 
   it("rejects Sandbox names that OpenShell cannot represent", async () => {

@@ -29,9 +29,14 @@ npm install
 npm run typecheck
 npm test
 npm run build
+
+# Opt-in integration test against the configured local OpenShell gateway
+PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
 ```
 
 The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
+
+The first live Session path is also implemented. It creates an exact committed Git snapshot, builds a per-Session image from the pinned Pi 0.84.2 runtime, starts directly under the `read` policy, loads the sandbox client extension, and establishes an authenticated, epoch-bound Link that survives host reconnection.
 
 ## OpenShell
 

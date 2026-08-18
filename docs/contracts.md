@@ -97,7 +97,21 @@ Brief compilation is deterministic. Required constraints are never silently trun
 
 ## Link transport
 
-The host core depends only on the `LinkTransport` interface. The selected OpenShell implementation uses a host-loopback TCP service forward to a sandbox-loopback Pi client endpoint. The underlying OpenShell 0.0.106 transport has passed execution, file-transfer, network-denial, and loopback-forwarding probes. The Link protocol is not complete until it passes reconnection, isolation, bounded-frame, duplicate-ID, and stale-epoch tests.
+The host core depends only on the `LinkTransport` interface. The selected OpenShell implementation uses a host-loopback TCP service forward to a sandbox-loopback Pi client endpoint. The underlying OpenShell 0.0.106 transport has passed execution, file-transfer, network-denial, and loopback-forwarding probes.
+
+Link records are strict LF-delimited JSON capped at 64 KiB. Every record carries the Run, Seat, Session, and epoch. A 256-bit per-Session token authenticates the initial handshake; it does not authorize workflow state changes. The client rejects stale identities and deduplicates stable Message IDs across host reconnections.
+
+The initial protocol implements `hello`, `ready`, `ping`, `pong`, `deliver`, `ack`, `event`, and `error`. The host serializes exchanges until a later dispatcher provides correlation-safe concurrency.
+
+## Source snapshots
+
+A source snapshot is produced from an exact Git commit and literal relative paths. `git archive` excludes untracked files and `.git`; unsupported tree entries fail closed. Its manifest records the selected paths, tracked entries, archive byte count, archive SHA-256 digest, and a domain-separated source digest. The launcher revalidates the manifest and copied archive immediately before image construction.
+
+Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
+
+## Session identity
+
+A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.
 
 ## OpenShell lifecycle
 
@@ -112,6 +126,8 @@ Deletion with `missingOk` verifies absence through `sandbox list`; it does not s
 Committed `read`, `write`, and `check` policies use hard Landlock enforcement and an empty base network map. All profiles make base and input material read-only. `read` also makes the Project copy read-only; `write` and `check` permit writes only to the Project copy, Session/output space, home, and temporary paths.
 
 The current Docker baseline obtains UID/GID 10001 from the pinned image's OCI `USER`. Policy-level process overrides are rejected for OpenShell 0.0.106 because the live probe observed supplementary root-group membership when both override fields were set. A version upgrade must rerun the identity canary before changing this rule.
+
+OpenShell 0.0.106 policy updates may expand access but cannot be used to revoke a `read_write` path. Session initialization therefore MUST NOT depend on tightening a live Sandbox policy.
 
 Inference endpoints are not part of a base profile. They will be compiled as bounded additions for a selected model gateway. The Check profile must remain empty.
 

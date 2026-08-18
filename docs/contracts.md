@@ -117,6 +117,18 @@ A source snapshot is produced from an exact Git commit and literal relative path
 
 Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
 
+## Run worktrees
+
+A Run starts only from a fresh approval whose Plan ID, revision, Plan digest, and base commit match the current Project. The default Run ID is `<plan-id>-r<revision>`. Its branch is the committed `git.branch_prefix` plus the Run ID, and its host worktree path is `<worktrees.root>/<project-id>/<run-id>` after machine-local home expansion and canonical path resolution. A relative configured root resolves from the consumer Project root; a relative command-line override resolves from the caller's working directory.
+
+The consumer Project must currently be the Git top-level. The worktree root and resulting Run path must be isolated from that trusted checkout. Containment is checked against a symlink-aware prospective path before directory creation, then checked again after creation. Invalid configuration cannot create files in the trusted checkout.
+
+Run creation records the exact Project, Plan, base commit, branch, and worktree path in `state.json` before invoking `git worktree add`. The Project Run index is updated after the Run file, so interruption before index publication is recoverable by retry. A registered index entry without its Run state fails closed.
+
+The Git adapter uses NUL-delimited porcelain output and argument arrays. It disables Project hooks during worktree creation and verifies the repository common directory, canonical path, full branch ref, exact `HEAD`, and clean tracked and untracked status. A retry may adopt an already registered exact worktree or a reserved branch left at the exact base commit. A branch at another commit, a branch checked out elsewhere, an unregistered path, a missing registered path, another repository, detached `HEAD`, or any dirty content blocks.
+
+The Orchestrator never resets, cleans, stashes, removes, or rehomes unexpected worktree content. A linked host worktree contains host Git metadata and is never mounted into a model-driven Sandbox; later implementation snapshots are exported without `.git`.
+
 ## Artifacts
 
 Small Artifact descriptors travel through the Link; payload bytes do not. A descriptor binds an Artifact ID, kind, Run, optional Task, Seat, Session, epoch, canonical Sandbox path, normalized media type, versioned content schema, byte count, SHA-256 digest, and creation time.

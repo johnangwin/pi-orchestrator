@@ -87,8 +87,13 @@ export const RunStateSchema = z
     plan_revision: z.number().int().positive(),
     plan_digest: z.string(),
     base_commit: z.string().min(1),
-    branch: z.string().min(1),
-    worktree: z.string().min(1),
+    branch: z
+      .string()
+      .min(1)
+      .refine((value) => !value.includes("\0"), {
+        message: "must not contain NUL",
+      }),
+    worktree: z.string().refine(path.isAbsolute, "must be absolute"),
     status: RunStatusSchema,
     tasks: z.record(IdentifierSchema, TaskRecordSchema),
     seats: z.record(IdentifierSchema, SeatRecordSchema).default({}),
@@ -264,6 +269,11 @@ export const RunStateSchema = z
   });
 export type RunState = z.output<typeof RunStateSchema>;
 export type RunStateInput = z.input<typeof RunStateSchema>;
+
+export interface CreateRunResult {
+  readonly run: RunState;
+  readonly created: boolean;
+}
 
 const RunSummarySchema = z
   .object({
@@ -510,6 +520,88 @@ export class ProjectStore {
         parsed,
       ),
     );
+  }
+
+  async createRun(state: RunStateInput): Promise<CreateRunResult> {
+    const requested = RunStateSchema.parse(state);
+    return this.serializeMutation(async () => {
+      const project = await this.readProjectFile();
+      if (requested.project_id !== project.id) {
+        throw new OrchestratorError(
+          "run_project_conflict",
+          `Run '${requested.id}' belongs to Project '${requested.project_id}', not '${project.id}'`,
+        );
+      }
+
+      const statePath = path.resolve(
+        this.runDirectory(requested.id),
+        "state.json",
+      );
+      const summary = project.runs[requested.id];
+      let run: RunState;
+      let created = false;
+      try {
+        run = await this.readRunFile(requested.id);
+        const matches =
+          run.project_id === requested.project_id &&
+          run.plan_id === requested.plan_id &&
+          run.plan_revision === requested.plan_revision &&
+          run.plan_digest === requested.plan_digest &&
+          run.base_commit === requested.base_commit &&
+          run.branch === requested.branch &&
+          run.worktree === requested.worktree;
+        if (!matches) {
+          throw new OrchestratorError(
+            "run_conflict",
+            `Run ID '${requested.id}' already identifies another durable Run`,
+          );
+        }
+      } catch (error) {
+        if (
+          !(error instanceof OrchestratorError) ||
+          error.code !== "state_not_found"
+        ) {
+          throw error;
+        }
+        if (summary) {
+          throw new OrchestratorError(
+            "run_state_missing",
+            `Project Run '${requested.id}' is registered but its state file is missing`,
+          );
+        }
+        run = requested;
+        await writeJsonAtomic(statePath, run);
+        created = true;
+      }
+
+      if (
+        summary &&
+        (summary.plan_id !== run.plan_id ||
+          path.resolve(summary.state_path) !== statePath)
+      ) {
+        throw new OrchestratorError(
+          "run_summary_conflict",
+          `Project Run '${run.id}' has a conflicting summary`,
+        );
+      }
+      if (!summary || summary.status !== run.status) {
+        const next = ProjectRecordSchema.parse({
+          ...project,
+          runs: {
+            ...project.runs,
+            [run.id]: {
+              id: run.id,
+              plan_id: run.plan_id,
+              state_path: statePath,
+              status: run.status,
+            },
+          },
+          updated_at: new Date().toISOString(),
+        });
+        await writeJsonAtomic(this.projectFile, next);
+      }
+      return { run, created };
+    });
   }
 
   async updateRun(

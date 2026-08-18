@@ -56,6 +56,8 @@ Host Mailbox routing now resolves Seat-addressed Messages to the authoritative c
 
 Visible Session lifecycle is now recoverable across host restarts. Run state durably binds cmux creation operations, Pane intents, and UUID handles to the exact Session epoch. The reconciler compares Seat, Session, OpenShell Sandbox, Link, and cmux state; it can rebuild a Link from immutable Sandbox input, reattach a missing Pane with a new operation ID, or perform ordered Session replacement. Replacement verifies Sandbox provenance before side effects, closes the old epoch to new delivery, removes external resources, supersedes its pending Messages, and advances the epoch last.
 
+An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:
@@ -91,12 +93,15 @@ orchestrator init . --project-id stepout
 # After defining registered Checks and a Plan
 orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
+orchestrator start strategy-boundary
 orchestrator status
 orchestrator doctor
 orchestrator canary
 ```
 
 Runtime state defaults to `~/.local/share/pi-orchestrator` and may be redirected with `ORCHESTRATOR_HOME` or the command-level `--home` option.
+
+`orchestrator start` uses `worktrees.root` from `.pi/orchestrator.local.yaml`, falling back to `<orchestrator-home>/worktrees` when that file is absent. The default Run ID is `<plan-id>-r<revision>`; pass `--run <id>` when a different stable identity is required.
 
 See [Core Contracts](docs/contracts.md) for the structured formats and digest rules introduced by the standalone implementation.
 See [cmux Integration](docs/cmux.md) for the control-socket and recovery contract.

@@ -38,6 +38,10 @@ describe("host CLI", () => {
       path.join(os.tmpdir(), "pi-orchestrator-cli-state-"),
     );
     roots.push(home);
+    const worktreeRoot = await mkdtemp(
+      path.join(os.tmpdir(), "pi-orchestrator-cli-worktrees-"),
+    );
+    roots.push(worktreeRoot);
 
     const validation = JSON.parse(
       await orchestrator([
@@ -65,6 +69,33 @@ describe("host CLI", () => {
       ]),
     ).resolves.toMatch(/^Approved fixture-plan r1/);
 
+    const started = JSON.parse(
+      await orchestrator([
+        "start",
+        "fixture-plan",
+        "--project",
+        project,
+        "--home",
+        home,
+        "--worktree-root",
+        worktreeRoot,
+        "--run",
+        "fixture-run",
+        "--json",
+      ]),
+    ) as {
+      id: string;
+      branch: string;
+      worktree: string;
+      created: boolean;
+    };
+    expect(started).toMatchObject({
+      id: "fixture-run",
+      branch: "orchestrator/fixture-run",
+      created: true,
+    });
+    expect(started.worktree).toContain("/fixture/fixture-run");
+
     const status = JSON.parse(
       await orchestrator([
         "status",
@@ -74,9 +105,14 @@ describe("host CLI", () => {
         home,
         "--json",
       ]),
-    ) as { project: string; approvals: Array<{ fresh: boolean }> };
+    ) as {
+      project: string;
+      approvals: Array<{ fresh: boolean }>;
+      runs: Array<{ id: string; status: string }>;
+    };
     expect(status.project).toBe("fixture");
     expect(status.approvals).toHaveLength(1);
     expect(status.approvals[0]?.fresh).toBe(true);
+    expect(status.runs).toMatchObject([{ id: "fixture-run", status: "ready" }]);
   });
 });

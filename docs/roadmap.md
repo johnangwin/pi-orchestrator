@@ -31,7 +31,7 @@
 
 ## Milestone 4: One-Task vertical slice
 
-- isolated Run worktree
+- isolated Run worktree (complete)
 - implementation snapshot and patch import
 - scope and protected-path validation
 - fresh deterministic Check

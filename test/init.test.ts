@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { initializeProject } from "../src/init.js";
-import { loadLocalConfig } from "../src/local.js";
+import { loadLocalConfig, resolveMachinePath } from "../src/local.js";
 import { loadProject } from "../src/project.js";
 
 const roots: string[] = [];
@@ -38,6 +38,21 @@ describe("consumer Project initialization", () => {
         required_version: "0.64.22",
         workspace_prefix: "orchestrator",
       },
+      worktrees: {
+        root: "~/.local/share/pi-orchestrator/worktrees",
+      },
     });
+  });
+
+  it("resolves machine-local worktree roots without shell expansion", () => {
+    expect(resolveMachinePath("~/runs", "/home/fixture", "/project")).toBe(
+      "/home/fixture/runs",
+    );
+    expect(resolveMachinePath("./runs", "/home/fixture", "/project")).toBe(
+      "/project/runs",
+    );
+    expect(() =>
+      resolveMachinePath("~another/runs", "/home/fixture", "/project"),
+    ).toThrow("unsupported home expansion");
   });
 });

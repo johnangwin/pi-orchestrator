@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import { ModelAliasSchema } from "./config.js";
@@ -28,6 +30,17 @@ export const CmuxSettingsSchema = z
   })
   .passthrough();
 export type CmuxSettings = z.infer<typeof CmuxSettingsSchema>;
+
+export const WorktreeSettingsSchema = z
+  .object({
+    root: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => !value.includes("\0"), "must not contain NUL"),
+  })
+  .strict();
+export type WorktreeSettings = z.infer<typeof WorktreeSettingsSchema>;
 
 export const PiModelApiSchema = z.enum([
   "anthropic-messages",
@@ -80,6 +93,9 @@ export const LocalConfigSchema = z
       command: "cmux",
       workspace_prefix: "orchestrator",
     }),
+    worktrees: WorktreeSettingsSchema.default({
+      root: "~/.local/share/pi-orchestrator/worktrees",
+    }),
   })
   .passthrough();
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
@@ -111,4 +127,26 @@ export function parseLocalConfig(
 
 export async function loadLocalConfig(filePath: string): Promise<LocalConfig> {
   return parseLocalConfig(await readFile(filePath, "utf8"), filePath);
+}
+
+export function resolveMachinePath(
+  value: string,
+  home = os.homedir(),
+  cwd = process.cwd(),
+): string {
+  if (value.includes("\0")) {
+    throw new OrchestratorError(
+      "invalid_local_path",
+      "Machine-local paths must not contain NUL",
+    );
+  }
+  if (value === "~") return path.resolve(home);
+  if (value.startsWith("~/")) return path.resolve(home, value.slice(2));
+  if (value.startsWith("~")) {
+    throw new OrchestratorError(
+      "invalid_local_path",
+      `Machine-local path '${value}' uses an unsupported home expansion`,
+    );
+  }
+  return path.resolve(cwd, value);
 }

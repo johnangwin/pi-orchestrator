@@ -10,10 +10,15 @@ import { runCanary } from "./canary.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { initializeProject } from "./init.js";
-import { loadLocalConfig, type LocalConfig } from "./local.js";
+import {
+  loadLocalConfig,
+  resolveMachinePath,
+  type LocalConfig,
+} from "./local.js";
 import { OpenShellClient } from "./openshell.js";
 import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
+import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
 
 interface CommonOptions {
@@ -43,6 +48,13 @@ interface CanaryCliOptions extends OpenShellOptions {
   readonly json?: boolean;
   readonly policies?: string;
   readonly profile?: string[];
+}
+
+interface StartOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+  readonly run?: string;
+  readonly worktreeRoot?: string;
 }
 
 async function optionalLocalConfig(
@@ -276,6 +288,66 @@ program
       await store.close();
     }
     console.log(`Approved ${plan.id} r${plan.revision} (${plan.digest})`);
+  });
+
+program
+  .command("start")
+  .description("create an approved Run and isolated host worktree")
+  .argument("<plan>", "Plan ID or directory")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--run <id>", "stable Run identifier")
+  .option("--worktree-root <path>", "host Run worktree root")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: StartOptions) => {
+    const { project, plan } = await validatedPlan(value, options);
+    const home = path.resolve(options.home ?? defaultOrchestratorHome());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await optionalLocalConfig(
+      configPath,
+      options.config !== undefined,
+    );
+    const worktreeRoot = options.worktreeRoot
+      ? resolveMachinePath(options.worktreeRoot)
+      : local
+        ? resolveMachinePath(local.worktrees.root, os.homedir(), project.root)
+        : path.join(home, "worktrees");
+    const store = await ProjectStore.open({
+      home,
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const result = await startRun({
+        store,
+        project,
+        plan,
+        worktreeRoot,
+        ...(options.run ? { runId: options.run } : {}),
+      });
+      const output = {
+        id: result.run.id,
+        plan: result.run.plan_id,
+        revision: result.run.plan_revision,
+        status: result.run.status,
+        base_commit: result.run.base_commit,
+        branch: result.run.branch,
+        worktree: result.run.worktree,
+        created: result.created,
+        recovered: result.worktree.recovered,
+      };
+      console.log(
+        options.json
+          ? JSON.stringify(output, null, 2)
+          : `${result.created ? "Started" : "Recovered"} Run ${result.run.id} at ${result.run.worktree}`,
+      );
+    } finally {
+      await store.close();
+    }
   });
 
 program

@@ -21,6 +21,7 @@ Requirements:
 
 - Node.js 22.19 or newer
 - OpenShell 0.0.106 for the current integration baseline
+- cmux 0.64.22 for the current visible-Session baseline
 - Docker Desktop or another OpenShell-supported compute driver
 - Rust for native sandbox helpers added in later milestones
 
@@ -38,6 +39,9 @@ PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
 
 # Real Sandbox file export and host-side Artifact import
 PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
+
+# Read-only cmux version and capability probe; run from a cmux terminal
+PI_ORCHESTRATOR_LIVE_CMUX=1 npm test -- test/cmux.live.test.ts
 ```
 
 The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. Downloaded Artifacts are bound to exact Session and Sandbox provenance, independently verified, schema-checked, and atomically stored as non-executable files. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
@@ -45,6 +49,8 @@ The host-side state and validation core is complete. The OpenShell adapter verif
 The first live Session path is also implemented. It creates an exact committed Git snapshot, builds a per-Session image from the pinned Pi 0.84.2 runtime, starts directly under the `read` policy, loads the sandbox client extension, and establishes an authenticated, epoch-bound Link that survives host reconnection. Logical model aliases resolve to exact OpenShell gateways and models; Pi calls only `inference.local`, and bounded completion events return through the Link.
 
 Run state now includes a durable Seat and Session registry. It serializes lifecycle mutations, retains contiguous Session history, atomically allocates monotonic replacement epochs, rejects stale identities, and preserves immutable OpenShell Sandbox provenance across host restarts.
+
+The cmux host adapter now verifies an exact CLI and capability set, creates retriable Run Workspaces and Seat Panes from durable operation identities, launches trusted command arrays without a host shell, and reports UI drift through read-only reconciliation. Missing panes remain operational failures, never evidence that workflow work completed.
 
 ## OpenShell
 
@@ -89,3 +95,4 @@ orchestrator canary
 Runtime state defaults to `~/.local/share/pi-orchestrator` and may be redirected with `ORCHESTRATOR_HOME` or the command-level `--home` option.
 
 See [Core Contracts](docs/contracts.md) for the structured formats and digest rules introduced by the standalone implementation.
+See [cmux Integration](docs/cmux.md) for the control-socket and recovery contract.

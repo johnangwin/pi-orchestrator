@@ -2,6 +2,7 @@ export * from "./approval.js";
 export * from "./artifact.js";
 export * from "./brief.js";
 export * from "./canary.js";
+export * from "./cmux.js";
 export * from "./config.js";
 export * from "./digest.js";
 export * from "./error.js";

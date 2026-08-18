@@ -249,6 +249,8 @@ models:
 
 cmux:
   command: /Applications/cmux.app/Contents/Resources/bin/cmux
+  required_version: "0.64.22"
+  workspace_prefix: orchestrator
 
 worktrees:
   root: ~/.local/share/pi-orchestrator/worktrees

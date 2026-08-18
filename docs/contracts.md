@@ -141,6 +141,16 @@ Every programmatic `sandbox exec` closes the CLI child process's stdin immediate
 
 Deletion with `missingOk` verifies absence through `sandbox list`; it does not suppress a failure while a Sandbox with the requested name still exists.
 
+## cmux projection
+
+cmux is a trusted host cockpit, not an authoritative state store. The adapter is pinned to cmux 0.64.22, verifies its required socket capabilities, requests JSON output with UUID identifiers, and invokes the CLI without a host shell. The cmux socket password remains inherited host-process state and is never persisted or forwarded to a Sandbox.
+
+A Run Workspace binding contains its stable creation operation UUID, Workspace UUID, and expected title. A Seat Pane binding contains its stable creation operation UUID, Workspace UUID, Pane UUID, Surface UUID, and expected title. Titles are labels and bounded recovery evidence; UUID bindings remain authoritative.
+
+Workspace creation uses cmux's native operation UUID. Before unbound Pane creation, the caller must persist a Pane intent containing the operation UUID and the complete prior Pane UUID set. A retry may adopt exactly one new single-Surface Pane; zero candidates permits creation and multiple candidates fail closed. Once a binding exists, a missing target is drift and cannot trigger implicit replacement.
+
+Projection reconciliation only observes cmux state. It may report missing objects or title mismatches, but it cannot complete a Task, terminate a Session, or mutate Run state. Pane deletion refuses to close a Pane that has acquired any Surface beyond its bound one.
+
 ## Sandbox profiles
 
 Committed `read`, `write`, and `check` policies use hard Landlock enforcement and an empty base network map. All profiles make base and input material read-only. `read` also makes the Project copy read-only; `write` and `check` permit writes only to the Project copy, Session/output space, home, and temporary paths.

@@ -20,6 +20,15 @@ const OpenShellSettingsSchema = z
   })
   .passthrough();
 
+export const CmuxSettingsSchema = z
+  .object({
+    command: z.string().min(1).default("cmux"),
+    required_version: VersionSchema.optional(),
+    workspace_prefix: z.string().trim().min(1).max(80).default("orchestrator"),
+  })
+  .passthrough();
+export type CmuxSettings = z.infer<typeof CmuxSettingsSchema>;
+
 export const PiModelApiSchema = z.enum([
   "anthropic-messages",
   "openai-completions",
@@ -67,6 +76,10 @@ export const LocalConfigSchema = z
     version: z.literal(1),
     openshell: OpenShellSettingsSchema,
     models: LocalModelRoutesSchema,
+    cmux: CmuxSettingsSchema.default({
+      command: "cmux",
+      workspace_prefix: "orchestrator",
+    }),
   })
   .passthrough();
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;

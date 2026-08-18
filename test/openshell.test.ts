@@ -410,6 +410,10 @@ openshell:
         gateways: {},
       },
       models: {},
+      cmux: {
+        command: "cmux",
+        workspace_prefix: "orchestrator",
+      },
     });
   });
 

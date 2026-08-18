@@ -34,6 +34,10 @@ describe("consumer Project initialization", () => {
       ),
     ).resolves.toMatchObject({
       openshell: { required_version: "0.0.106" },
+      cmux: {
+        required_version: "0.64.22",
+        workspace_prefix: "orchestrator",
+      },
     });
   });
 });

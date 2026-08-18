@@ -13,23 +13,60 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import type { CompiledBrief } from "./brief.js";
+import { digestParts } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { HostLink, TcpLinkTransport } from "./link.js";
 import { VersionSchema } from "./local.js";
 import type { Message } from "./message.js";
+import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import type {
   OpenShellClient,
   OpenShellForward,
+  OpenShellInferenceRoute,
   OpenShellPreflight,
   OpenShellSandbox,
 } from "./openshell.js";
 import { loadSandboxPolicy } from "./policy.js";
-import { SessionIdentitySchema, type SessionIdentity } from "./session.js";
+import {
+  ModelTurnFailureSchema,
+  ModelTurnResultSchema,
+  SessionIdentitySchema,
+  type ModelTurnResult,
+  type SessionIdentity,
+} from "./session.js";
 import { verifySourceSnapshot, type SourceSnapshot } from "./snapshot.js";
 
 export const PI_RUNTIME_VERSION = "0.84.2";
-export const PI_CLIENT_VERSION = "0.1.0";
+export const PI_CLIENT_VERSION = "0.2.0";
 export const PI_LINK_PORT = 41_727;
+
+export const PiSessionModelSchema = z
+  .object({
+    alias: z.enum(["plan", "code", "quant", "review", "fast"]),
+    pi_model: z.string().min(1).max(256),
+    api: z.enum([
+      "anthropic-messages",
+      "openai-completions",
+      "openai-responses",
+    ]),
+    context_window: z.number().int().positive(),
+    max_tokens: z.number().int().positive(),
+    reasoning: z.boolean(),
+  })
+  .strict()
+  .refine((model) => model.max_tokens <= model.context_window, {
+    message: "max_tokens must not exceed context_window",
+    path: ["max_tokens"],
+  });
+export type PiSessionModel = z.infer<typeof PiSessionModelSchema>;
+
+const PiSessionBriefSchema = z
+  .object({
+    path: z.literal("/workspace/input/brief.md"),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
 
 export const PiClientConfigSchema = z
   .object({
@@ -44,8 +81,16 @@ export const PiClientConfigSchema = z
       .strict(),
     client_version: VersionSchema,
     pi_version: VersionSchema,
+    model: PiSessionModelSchema.optional(),
+    brief: PiSessionBriefSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (config) => (config.model === undefined) === (config.brief === undefined),
+    {
+      message: "model and brief must either both be present or both be absent",
+    },
+  );
 export type PiClientConfig = z.infer<typeof PiClientConfigSchema>;
 
 export type ReadSessionOpenShell = Pick<
@@ -56,7 +101,8 @@ export type ReadSessionOpenShell = Pick<
   | "preflight"
   | "startServiceForward"
   | "waitForSandbox"
->;
+> &
+  Partial<Pick<OpenShellClient, "getInferenceRoute">>;
 
 export interface StartReadSessionOptions {
   readonly client: ReadSessionOpenShell;
@@ -69,6 +115,9 @@ export interface StartReadSessionOptions {
   readonly clientVersion?: string;
   readonly linkPort?: number;
   readonly startupTimeoutMs?: number;
+  readonly turnTimeoutMs?: number;
+  readonly model?: ResolvedModelRoute;
+  readonly brief?: Pick<CompiledBrief, "content" | "digest">;
 }
 
 export interface ReadSessionInfo {
@@ -79,6 +128,9 @@ export interface ReadSessionInfo {
   readonly openshell: OpenShellPreflight;
   readonly piVersion: string;
   readonly clientVersion: string;
+  readonly model?: ResolvedModelRoute;
+  readonly inference?: OpenShellInferenceRoute;
+  readonly briefDigest?: string;
 }
 
 function bundledPath(...segments: string[]): string {
@@ -95,6 +147,7 @@ async function createSessionImageContext(options: {
   readonly image: string;
   readonly snapshot: SourceSnapshot;
   readonly config: PiClientConfig;
+  readonly brief?: Pick<CompiledBrief, "content" | "digest">;
 }): Promise<string> {
   const image = path.resolve(options.image);
   const imageState = await stat(image).catch((error: unknown) => {
@@ -135,9 +188,21 @@ async function createSessionImageContext(options: {
       `${JSON.stringify(options.config, null, 2)}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
+    if (options.brief) {
+      await writeFile(path.join(directory, "brief.md"), options.brief.content, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
 
     const dockerfilePath = path.join(directory, "Dockerfile");
     const dockerfile = await readFile(dockerfilePath, "utf8");
+    const inputFiles = options.brief
+      ? "snapshot.json session.json brief.md"
+      : "snapshot.json session.json";
+    const immutableInputs = options.brief
+      ? "/workspace/input/snapshot.json /workspace/input/session.json /workspace/input/brief.md"
+      : "/workspace/input/snapshot.json /workspace/input/session.json";
     await writeFile(
       dockerfilePath,
       `${dockerfile.trimEnd()}
@@ -145,8 +210,8 @@ async function createSessionImageContext(options: {
 # Session inputs come only from the trusted Git snapshot context.
 USER root
 ADD --chown=10001:10001 source.tar /workspace/project/
-COPY --chown=0:0 snapshot.json session.json /workspace/input/
-RUN chmod 0444 /workspace/input/snapshot.json /workspace/input/session.json
+COPY --chown=0:0 ${inputFiles} /workspace/input/
+RUN chmod 0444 ${immutableInputs}
 USER 10001:10001
 WORKDIR /workspace/project
 `,
@@ -228,6 +293,7 @@ async function connectWithRetry(options: {
 export class ReadSession {
   readonly info: ReadSessionInfo;
   private stopped = false;
+  private running = false;
 
   constructor(
     private readonly client: ReadSessionOpenShell,
@@ -236,6 +302,7 @@ export class ReadSession {
     info: ReadSessionInfo,
     private readonly token: string,
     private readonly startupTimeoutMs: number,
+    private readonly turnTimeoutMs: number,
   ) {
     this.info = info;
   }
@@ -246,6 +313,69 @@ export class ReadSession {
 
   deliver(message: Message): Promise<"queued" | "duplicate"> {
     return this.link.deliver(message);
+  }
+
+  async run(
+    message: Message,
+    timeoutMs = this.turnTimeoutMs,
+  ): Promise<ModelTurnResult> {
+    if (!this.info.model) {
+      throw new OrchestratorError(
+        "session_has_no_model",
+        "This read-only Session was not configured for inference",
+      );
+    }
+    if (this.running) {
+      throw new OrchestratorError(
+        "session_busy",
+        "A model turn is already active in this Session",
+      );
+    }
+    this.running = true;
+    try {
+      await this.link.deliver(message);
+      const frame = await this.link.waitForEvent((candidate) => {
+        if (
+          !["turn-completed", "turn-failed"].includes(candidate.payload.event)
+        )
+          return false;
+        const ids = candidate.payload.data.message_ids;
+        return Array.isArray(ids) && ids.includes(message.id);
+      }, timeoutMs);
+      if (frame.payload.event === "turn-failed") {
+        const failure = ModelTurnFailureSchema.parse(frame.payload.data);
+        this.assertTurnBinding(message.id, failure);
+        throw new OrchestratorError(
+          "model_turn_failed",
+          `Pi model turn for Message '${message.id}' failed: ${failure.error}`,
+        );
+      }
+      const result = ModelTurnResultSchema.parse(frame.payload.data);
+      this.assertTurnBinding(message.id, result);
+      return result;
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private assertTurnBinding(
+    messageId: string,
+    turn: Pick<
+      ModelTurnResult,
+      "message_ids" | "model_alias" | "requested_model"
+    >,
+  ): void {
+    const model = this.info.model!;
+    if (
+      !turn.message_ids.includes(messageId) ||
+      turn.model_alias !== model.alias ||
+      turn.requested_model !== model.pi_model
+    ) {
+      throw new OrchestratorError(
+        "model_turn_binding_mismatch",
+        `Pi model turn does not match Message '${messageId}' and route '${model.alias}/${model.pi_model}'`,
+      );
+    }
   }
 
   async reconnect(): Promise<void> {
@@ -314,8 +444,35 @@ export async function startReadSession(
     .max(65_535)
     .parse(options.linkPort ?? PI_LINK_PORT);
   const startupTimeoutMs = options.startupTimeoutMs ?? 30_000;
+  const turnTimeoutMs = options.turnTimeoutMs ?? 5 * 60_000;
+  const model = options.model
+    ? ResolvedModelRouteSchema.parse(options.model)
+    : undefined;
+  if ((model === undefined) !== (options.brief === undefined)) {
+    throw new OrchestratorError(
+      "invalid_session_input",
+      "A model-routed Session requires both a model route and a compiled Brief",
+    );
+  }
+  if (
+    options.brief &&
+    digestParts("pi-orchestrator/brief/v1", [
+      ["brief.md", options.brief.content],
+    ]) !== options.brief.digest
+  ) {
+    throw new OrchestratorError(
+      "invalid_brief_digest",
+      "Compiled Brief content does not match its digest",
+    );
+  }
   const image = options.imageContext ?? bundledPiImageContext();
   const policyDirectory = options.policyDirectory ?? bundledPath("policies");
+  if (model && !options.client.getInferenceRoute) {
+    throw new OrchestratorError(
+      "openshell_inference_unavailable",
+      "The OpenShell adapter cannot inspect the configured inference route",
+    );
+  }
   const [readPolicy, preflight] = await Promise.all([
     loadSandboxPolicy("read", path.join(policyDirectory, "read.yaml")),
     options.client.preflight(),
@@ -326,6 +483,23 @@ export async function startReadSession(
       "A Pi Session requires an exact OpenShell version pin",
     );
   }
+  const inference = model
+    ? await options.client.getInferenceRoute!()
+    : undefined;
+  if (model) {
+    if (preflight.status.gateway !== model.gateway) {
+      throw new OrchestratorError(
+        "model_gateway_mismatch",
+        `Model alias '${model.alias}' resolved to gateway '${model.gateway}', but the Session client reached '${preflight.status.gateway}'`,
+      );
+    }
+    if (inference?.model !== model.pi_model) {
+      throw new OrchestratorError(
+        "model_route_mismatch",
+        `OpenShell gateway '${model.gateway}' routes '${inference?.model ?? "nothing"}', not '${model.pi_model}'`,
+      );
+    }
+  }
 
   const token = randomBytes(32).toString("hex");
   const config = PiClientConfigSchema.parse({
@@ -335,12 +509,29 @@ export async function startReadSession(
     listen: { host: "127.0.0.1", port: linkPort },
     client_version: clientVersion,
     pi_version: piVersion,
+    ...(model
+      ? {
+          model: {
+            alias: model.alias,
+            pi_model: model.pi_model,
+            api: model.api,
+            context_window: model.context_window,
+            max_tokens: model.max_tokens,
+            reasoning: model.reasoning,
+          },
+          brief: {
+            path: "/workspace/input/brief.md" as const,
+            digest: options.brief!.digest,
+          },
+        }
+      : {}),
   });
   const sandboxName = options.sandboxName ?? generatedSandboxName();
   const imageContext = await createSessionImageContext({
     image,
     snapshot: options.snapshot,
     config,
+    ...(options.brief ? { brief: options.brief } : {}),
   });
 
   let sandbox: OpenShellSandbox | undefined;
@@ -364,7 +555,7 @@ export async function startReadSession(
         [
           "/bin/sh",
           "-c",
-          'test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe',
+          `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${options.brief ? " && test -r /workspace/input/brief.md" : ""} && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe`,
         ],
         { timeoutMs: 10_000 },
       ),
@@ -391,6 +582,12 @@ export async function startReadSession(
       clientVersion,
       timeoutMs: startupTimeoutMs,
     });
+    if (model && !link.peer.capabilities.includes("events")) {
+      throw new OrchestratorError(
+        "link_capability_mismatch",
+        "A model-routed Session requires Link event delivery",
+      );
+    }
     return new ReadSession(
       options.client,
       forward,
@@ -403,9 +600,13 @@ export async function startReadSession(
         openshell: preflight,
         piVersion,
         clientVersion,
+        ...(model ? { model } : {}),
+        ...(inference ? { inference } : {}),
+        ...(options.brief ? { briefDigest: options.brief.digest } : {}),
       },
       token,
       startupTimeoutMs,
+      turnTimeoutMs,
     );
   } catch (error) {
     const cleanupFailures: string[] = [];

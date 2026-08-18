@@ -119,7 +119,7 @@ describe("Pi client Link", () => {
         identity,
         token,
         listen: { host: "127.0.0.1", port },
-        client_version: "0.1.0",
+        client_version: "0.2.0",
         pi_version: "0.84.2",
       },
       deliver(value) {
@@ -133,7 +133,7 @@ describe("Pi client Link", () => {
         transport: new TcpLinkTransport({ port }),
         identity,
         token,
-        expectedClientVersion: "0.1.0",
+        expectedClientVersion: "0.2.0",
         expectedPiVersion: "0.84.2",
       });
       await expect(link.ping()).resolves.toMatch(/^[a-f0-9]{32}$/);
@@ -146,11 +146,54 @@ describe("Pi client Link", () => {
         transport: new TcpLinkTransport({ port }),
         identity,
         token,
-        expectedClientVersion: "0.1.0",
+        expectedClientVersion: "0.2.0",
         expectedPiVersion: "0.84.2",
       });
       await expect(link.deliver(message())).resolves.toBe("duplicate");
       expect(delivered).toEqual(["msg-one"]);
+    } finally {
+      await link?.close();
+      await server.close();
+    }
+  });
+
+  it("queues structured Session events until the authenticated host reads them", async () => {
+    const port = await availablePort();
+    const server = await startLinkServer({
+      config: {
+        version: 1,
+        identity,
+        token,
+        listen: { host: "127.0.0.1", port },
+        client_version: "0.2.0",
+        pi_version: "0.84.2",
+      },
+      deliver() {},
+    });
+    server.emit("session-started", { model_alias: "fast" });
+
+    let link: HostLink | undefined;
+    try {
+      link = await HostLink.connect({
+        transport: new TcpLinkTransport({ port }),
+        identity,
+        token,
+        expectedClientVersion: "0.2.0",
+        expectedPiVersion: "0.84.2",
+      });
+      expect(link.peer.capabilities).toContain("events");
+      await expect(
+        link.waitForEvent(
+          (frame) => frame.payload.event === "session-started",
+          1_000,
+        ),
+      ).resolves.toMatchObject({
+        type: "event",
+        payload: {
+          event: "session-started",
+          data: { model_alias: "fast" },
+        },
+      });
     } finally {
       await link?.close();
       await server.close();
@@ -166,7 +209,7 @@ describe("Pi client Link", () => {
         identity,
         token,
         listen: { host: "127.0.0.1", port },
-        client_version: "0.1.0",
+        client_version: "0.2.0",
         pi_version: "0.84.2",
       },
       async deliver(value) {
@@ -227,7 +270,7 @@ describe("Pi client Link", () => {
         identity,
         token,
         listen: { host: "127.0.0.1", port },
-        client_version: "0.1.0",
+        client_version: "0.2.0",
         pi_version: "0.84.2",
       },
       deliver() {},
@@ -238,7 +281,7 @@ describe("Pi client Link", () => {
           transport: new TcpLinkTransport({ port }),
           identity,
           token: "b".repeat(64),
-          expectedClientVersion: "0.1.0",
+          expectedClientVersion: "0.2.0",
           expectedPiVersion: "0.84.2",
         }),
       ).rejects.toMatchObject({ code: "link_peer_unauthorized" });
@@ -248,7 +291,7 @@ describe("Pi client Link", () => {
           transport: new TcpLinkTransport({ port }),
           identity: { ...identity, epoch: 2 },
           token,
-          expectedClientVersion: "0.1.0",
+          expectedClientVersion: "0.2.0",
           expectedPiVersion: "0.84.2",
         }),
       ).rejects.toMatchObject({ code: "stale_session_epoch" });
@@ -277,7 +320,7 @@ describe("Pi client Link", () => {
           type: "ready",
           payload: {
             reply_to: hello.id,
-            client_version: "0.1.0",
+            client_version: "0.2.0",
             pi_version: "0.84.2",
             capabilities: ["deliver", "ping"],
           },
@@ -293,7 +336,7 @@ describe("Pi client Link", () => {
       transport,
       identity,
       token,
-      expectedClientVersion: "0.1.0",
+      expectedClientVersion: "0.2.0",
       expectedPiVersion: "0.84.2",
       timeoutMs: 10,
     });

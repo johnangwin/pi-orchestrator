@@ -172,6 +172,13 @@ export interface OpenShellPreflight {
   readonly status: OpenShellStatus;
 }
 
+export interface OpenShellInferenceRoute {
+  readonly provider: string;
+  readonly model: string;
+  readonly timeoutSeconds?: number;
+  readonly version?: number;
+}
+
 export interface CreateSandboxOptions {
   readonly name: string;
   readonly from: string;
@@ -262,6 +269,49 @@ function port(value: number, allowZero: boolean): number {
 
 function stripAnsi(value: string): string {
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function inferenceField(source: string, name: string): string | undefined {
+  return new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "mi").exec(source)?.[1];
+}
+
+export function parseOpenShellInferenceRoute(
+  source: string,
+): OpenShellInferenceRoute {
+  const output = stripAnsi(source).replaceAll("\r", "");
+  const primary = output.split(/^\s*System inference:\s*$/im)[0] ?? output;
+  if (/\bNot configured\b/i.test(primary)) {
+    throw new OrchestratorError(
+      "openshell_inference_unconfigured",
+      "OpenShell inference is not configured for this gateway and workspace",
+    );
+  }
+  const provider = inferenceField(primary, "Provider");
+  const model = inferenceField(primary, "Model");
+  if (!provider || !model) {
+    throw new OrchestratorError(
+      "invalid_openshell_output",
+      "OpenShell inference output did not contain a provider and model",
+    );
+  }
+  const timeout = inferenceField(primary, "Timeout");
+  const version = inferenceField(primary, "Version");
+  const timeoutMatch = timeout
+    ? /^(\d+)s(?:\s+\(default\))?$/.exec(timeout)
+    : undefined;
+  const versionMatch = version ? /^(\d+)$/.exec(version) : undefined;
+  if ((timeout && !timeoutMatch) || (version && !versionMatch)) {
+    throw new OrchestratorError(
+      "invalid_openshell_output",
+      "OpenShell inference output contained an invalid timeout or version",
+    );
+  }
+  return {
+    provider,
+    model,
+    ...(timeoutMatch ? { timeoutSeconds: Number(timeoutMatch[1]) } : {}),
+    ...(versionMatch ? { version: Number(versionMatch[1]) } : {}),
+  };
 }
 
 export class OpenShellClient {
@@ -388,6 +438,15 @@ export class OpenShellClient {
           : installedVersion === this.requiredVersion,
       status,
     };
+  }
+
+  async getInferenceRoute(): Promise<OpenShellInferenceRoute> {
+    const { stdout } = await this.execute([
+      "inference",
+      "get",
+      ...this.globalArgs(),
+    ]);
+    return parseOpenShellInferenceRoute(stdout);
   }
 
   async listSandboxes(): Promise<OpenShellSandbox[]> {

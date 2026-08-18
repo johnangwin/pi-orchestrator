@@ -10,6 +10,7 @@ filesystem_policy:
     - /etc/group
     - /etc/host.conf
     - /etc/hosts
+    - /etc/openshell-tls
     - /etc/ld.so.cache
     - /etc/ld.so.conf
     - /etc/ld.so.conf.d

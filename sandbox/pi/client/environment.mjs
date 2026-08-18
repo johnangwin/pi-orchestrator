@@ -24,7 +24,40 @@ export async function readRuntimeIdentity(filePath) {
   return runtimeIdentity(JSON.parse(await readFile(filePath, "utf8")));
 }
 
-export function sessionEnvironment(identity) {
+function inferenceEnvironment(source) {
+  const httpProxy = source.HTTP_PROXY;
+  const httpsProxy = source.HTTPS_PROXY;
+  const certificate = source.NODE_EXTRA_CA_CERTS;
+  let parsed;
+  try {
+    parsed = new URL(httpProxy);
+  } catch {
+    throw new Error("Invalid OpenShell inference proxy");
+  }
+  if (
+    httpProxy !== httpsProxy ||
+    parsed.protocol !== "http:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.hostname === "" ||
+    parsed.port === "" ||
+    source.NODE_USE_ENV_PROXY !== "1" ||
+    certificate !== "/etc/openshell-tls/openshell-ca.pem"
+  ) {
+    throw new Error("Invalid OpenShell inference proxy");
+  }
+  return {
+    HTTP_PROXY: httpProxy,
+    HTTPS_PROXY: httpsProxy,
+    NODE_EXTRA_CA_CERTS: certificate,
+    NODE_USE_ENV_PROXY: "1",
+  };
+}
+
+export function sessionEnvironment(identity, inference = false) {
   const runtime = runtimeIdentity({
     client_version: identity.ORCHESTRATOR_CLIENT_VERSION,
     pi_version: identity.ORCHESTRATOR_PI_VERSION,
@@ -38,6 +71,7 @@ export function sessionEnvironment(identity) {
     PI_TELEMETRY: "0",
     TERM: "dumb",
     ...runtime,
+    ...(inference ? inferenceEnvironment(identity) : {}),
   };
   return environment;
 }

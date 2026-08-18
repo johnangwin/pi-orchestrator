@@ -20,13 +20,13 @@
 - security canaries (complete for base profiles; rerun after every relevant upgrade)
 - pinned Pi image and minimal client extension (complete for read-only Sessions)
 - Link handshake, framing, authentication, deduplication, stale-epoch rejection, and reconnection (complete)
-- inference gateway composition and model execution
+- inference gateway composition and model execution (complete for read-only Sessions)
 
 ## Milestone 3: Visible Sessions
 
 - durable Seats, Sessions, and epochs (schemas and live identity binding complete)
 - cmux workspace and pane adapter
-- durable Mailbox delivery and acknowledgements (wire protocol complete)
+- durable Mailbox delivery and acknowledgements (wire protocol and client events complete)
 - reconnection and replacement
 
 ## Milestone 4: One-Task vertical slice

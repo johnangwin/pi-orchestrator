@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parseLocalConfig } from "../src/local.js";
 import {
   OpenShellClient,
+  parseOpenShellInferenceRoute,
   type ProcessHandle,
   type ProcessResult,
   type ProcessRunner,
@@ -105,6 +106,60 @@ describe("OpenShell preflight", () => {
 
     await expect(client.preflight()).rejects.toMatchObject({
       code: "openshell_version_mismatch",
+    });
+  });
+});
+
+describe("OpenShell inference route", () => {
+  it("parses the configured user-facing route and ignores the system route", () => {
+    expect(
+      parseOpenShellInferenceRoute(`\u001b[1mInference:\u001b[0m
+
+  Provider: local-code
+  Model: qwen/test-code
+  Timeout: 300s
+  Version: 4
+
+System inference:
+
+  Provider: system
+  Model: system-model
+`),
+    ).toEqual({
+      provider: "local-code",
+      model: "qwen/test-code",
+      timeoutSeconds: 300,
+      version: 4,
+    });
+  });
+
+  it("fails closed when inference is not configured", () => {
+    expect(() =>
+      parseOpenShellInferenceRoute(`Inference:
+
+  Not configured
+
+System inference:
+
+  Not configured
+`),
+    ).toThrow("not configured");
+  });
+
+  it("reads the route through the selected gateway and workspace", async () => {
+    const client = new OpenShellClient({
+      gateway: "openshell-code",
+      workspace: "project",
+      runner: runner({
+        "inference get --gateway openshell-code --workspace project": {
+          stdout: `Inference:\n  Provider: local\n  Model: code-model\n`,
+          stderr: "",
+        },
+      }),
+    });
+    await expect(client.getInferenceRoute()).resolves.toEqual({
+      provider: "local",
+      model: "code-model",
     });
   });
 });
@@ -353,6 +408,35 @@ openshell:
         required_version: "0.0.106",
         workspace: "default",
         gateways: {},
+      },
+      models: {},
+    });
+  });
+
+  it("validates explicit model execution metadata", () => {
+    expect(
+      parseLocalConfig(`version: 1
+openshell:
+  gateways:
+    code: openshell-code
+models:
+  code:
+    gateway: code
+    pi_model: qwen/test-code
+    api: openai-completions
+    locality: local
+    context_window: 131072
+    max_tokens: 8192
+    reasoning: false
+`),
+    ).toMatchObject({
+      models: {
+        code: {
+          gateway: "code",
+          pi_model: "qwen/test-code",
+          api: "openai-completions",
+          locality: "local",
+        },
       },
     });
   });

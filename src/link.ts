@@ -294,8 +294,10 @@ export interface HostLinkOptions {
 export interface LinkPeer {
   readonly clientVersion: string;
   readonly piVersion: string;
-  readonly capabilities: readonly ("deliver" | "ping")[];
+  readonly capabilities: readonly ("deliver" | "events" | "ping")[];
 }
+
+export type LinkEventFrame = Extract<LinkFrame, { type: "event" }>;
 
 export class HostLink {
   readonly identity: SessionIdentity;
@@ -304,6 +306,7 @@ export class HostLink {
   private readonly abort = new AbortController();
   private busy = false;
   private closed = false;
+  private readonly events: LinkEventFrame[] = [];
 
   private constructor(
     private readonly options: HostLinkOptions,
@@ -421,6 +424,32 @@ export class HostLink {
     return response.payload.status;
   }
 
+  async waitForEvent(
+    predicate: (frame: LinkEventFrame) => boolean,
+    timeoutMs = 60_000,
+  ): Promise<LinkEventFrame> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+      throw new OrchestratorError(
+        "invalid_link_timeout",
+        "Link event timeout must be a positive integer",
+      );
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const index = this.events.findIndex(predicate);
+      if (index >= 0) return this.events.splice(index, 1)[0]!;
+      if (Date.now() >= deadline) {
+        throw new OrchestratorError(
+          "link_timeout",
+          `Link event was not received within ${timeoutMs}ms`,
+        );
+      }
+      await this.ping();
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await sleep(Math.min(250, remaining));
+    }
+  }
+
   private async exchange(
     request: Extract<LinkFrame, { type: "ping" | "deliver" }>,
   ): Promise<LinkFrame> {
@@ -448,6 +477,8 @@ export class HostLink {
           );
         }
         if (response.type === "event") {
+          this.events.push(response);
+          if (this.events.length > 1_024) this.events.shift();
           this.options.onEvent?.(response);
           continue;
         }

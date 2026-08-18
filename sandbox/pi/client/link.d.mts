@@ -15,6 +15,23 @@ export interface ClientConfig {
   };
   readonly client_version: string;
   readonly pi_version: string;
+  readonly model?:
+    | {
+        readonly alias: "plan" | "code" | "quant" | "review" | "fast";
+        readonly pi_model: string;
+        readonly api:
+          "anthropic-messages" | "openai-completions" | "openai-responses";
+        readonly context_window: number;
+        readonly max_tokens: number;
+        readonly reasoning: boolean;
+      }
+    | undefined;
+  readonly brief?:
+    | {
+        readonly path: "/workspace/input/brief.md";
+        readonly digest: string;
+      }
+    | undefined;
 }
 
 export interface ClientMessage {
@@ -45,5 +62,16 @@ export function startLinkServer(options: {
 }): Promise<{
   readonly host: string;
   readonly port: number;
+  emit(
+    event:
+      | "session-started"
+      | "session-blocked"
+      | "handoff-requested"
+      | "context-pressure"
+      | "report-submitted"
+      | "turn-completed"
+      | "turn-failed",
+    data: Readonly<Record<string, unknown>>,
+  ): void;
   close(): Promise<void>;
 }>;

@@ -199,6 +199,53 @@ openshell:
     code: openshell-code
     quant: openshell-quant
     review: openshell-review
+    fast: openshell-fast
+
+models:
+  plan:
+    gateway: plan
+    pi_model: planning
+    api: openai-responses
+    locality: remote
+    context_window: 200000
+    max_tokens: 16384
+    reasoning: true
+
+  code:
+    gateway: code
+    pi_model: qwen-local-code
+    api: openai-completions
+    locality: local
+    context_window: 131072
+    max_tokens: 16384
+    reasoning: false
+
+  quant:
+    gateway: quant
+    pi_model: quant-reasoner
+    api: openai-responses
+    locality: prefer-local
+    context_window: 131072
+    max_tokens: 16384
+    reasoning: true
+
+  review:
+    gateway: review
+    pi_model: reviewer
+    api: openai-responses
+    locality: prefer-local
+    context_window: 131072
+    max_tokens: 16384
+    reasoning: true
+
+  fast:
+    gateway: fast
+    pi_model: local-small
+    api: openai-completions
+    locality: local
+    context_window: 32768
+    max_tokens: 4096
+    reasoning: false
 
 cmux:
   command: /Applications/cmux.app/Contents/Resources/bin/cmux

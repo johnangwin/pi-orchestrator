@@ -2,6 +2,8 @@ import { readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { digestParts } from "../src/digest.js";
+import { MessageSchema } from "../src/message.js";
 import type {
   OpenShellForward,
   OpenShellPreflight,
@@ -158,6 +160,243 @@ describe("read Session bootstrap", () => {
         calls.indexOf("exec:/usr/local/bin/orchestrator-start-pi"),
       );
     } finally {
+      await snapshot.dispose();
+    }
+  });
+
+  it("binds a compiled Brief and verified model route to a completed Pi turn", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const snapshot = await createSourceSnapshot({
+      projectRoot: root,
+      commit,
+      paths: ["src"],
+    });
+    const port = await availablePort();
+    const briefContent = "# Session Brief\n\nReturn a bounded result.\n";
+    const brief = {
+      content: briefContent,
+      digest: digestParts("pi-orchestrator/brief/v1", [
+        ["brief.md", briefContent],
+      ]),
+    };
+    const model = {
+      alias: "fast" as const,
+      gateway_alias: "code",
+      gateway: "openshell",
+      pi_model: "fixture-model",
+      api: "openai-completions" as const,
+      locality: "local" as const,
+      context_window: 32768,
+      max_tokens: 4096,
+      reasoning: false,
+    };
+    let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
+    let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
+
+    const client: ReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      getInferenceRoute: () =>
+        Promise.resolve({ provider: "fixture", model: "fixture-model" }),
+      async createSandbox(options) {
+        config = PiClientConfigSchema.parse(
+          JSON.parse(
+            await readFile(path.join(options.from, "session.json"), "utf8"),
+          ) as unknown,
+        );
+        expect(
+          await readFile(path.join(options.from, "brief.md"), "utf8"),
+        ).toBe(briefContent);
+        return sandbox(1);
+      },
+      waitForSandbox: () => Promise.resolve(sandbox(1)),
+      execSandbox: () =>
+        Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+      async startServiceForward(): Promise<OpenShellForward> {
+        if (!config) throw new Error("Session config was not staged");
+        server = await startLinkServer({
+          config,
+          deliver(message) {
+            queueMicrotask(() =>
+              server!.emit("turn-completed", {
+                message_ids: [message.id],
+                model_alias: "fast",
+                requested_model: "fixture-model",
+                response_model: "fixture-model",
+                stop_reason: "stop",
+                text: "bounded result",
+                truncated: false,
+                usage: { input: 12, output: 3 },
+              }),
+            );
+          },
+        });
+        return {
+          sandboxName: "pio-read-test",
+          localHost: "127.0.0.1",
+          localPort: port,
+          targetHost: "127.0.0.1",
+          targetPort: port,
+          closed: Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+          stop: async () => server?.close(),
+        };
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    let session: Awaited<ReturnType<typeof startReadSession>> | undefined;
+    try {
+      session = await startReadSession({
+        client,
+        identity: {
+          run: "run-one",
+          seat: "scout",
+          session: "session-model",
+          epoch: 1,
+        },
+        snapshot,
+        model,
+        brief,
+        linkPort: port,
+        sandboxName: "pio-read-test",
+      });
+      expect(session.info.model).toEqual(model);
+      expect(session.info.briefDigest).toBe(brief.digest);
+      const message = MessageSchema.parse({
+        version: 1,
+        id: "model-turn",
+        run: "run-one",
+        from: { host: true },
+        to: { seat: "scout", session: "session-model", epoch: 1 },
+        type: "instruction",
+        priority: "normal",
+        reply_to: null,
+        body: { instruction: "Return the result." },
+        references: [],
+        created_at: new Date().toISOString(),
+      });
+      await expect(session.run(message, 1_000)).resolves.toMatchObject({
+        message_ids: ["model-turn"],
+        model_alias: "fast",
+        text: "bounded result",
+      });
+    } finally {
+      await session?.stop();
+      await snapshot.dispose();
+    }
+  });
+
+  it("rejects a turn event that does not match the verified model route", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const snapshot = await createSourceSnapshot({
+      projectRoot: root,
+      commit,
+      paths: ["src"],
+    });
+    const port = await availablePort();
+    const briefContent = "# Session Brief\n\nReturn a bounded result.\n";
+    const brief = {
+      content: briefContent,
+      digest: digestParts("pi-orchestrator/brief/v1", [
+        ["brief.md", briefContent],
+      ]),
+    };
+    const model = {
+      alias: "fast" as const,
+      gateway_alias: "code",
+      gateway: "openshell",
+      pi_model: "fixture-model",
+      api: "openai-completions" as const,
+      locality: "local" as const,
+      context_window: 32768,
+      max_tokens: 4096,
+      reasoning: false,
+    };
+    let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
+    let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
+    const client: ReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      getInferenceRoute: () =>
+        Promise.resolve({ provider: "fixture", model: "fixture-model" }),
+      async createSandbox(options) {
+        config = PiClientConfigSchema.parse(
+          JSON.parse(
+            await readFile(path.join(options.from, "session.json"), "utf8"),
+          ) as unknown,
+        );
+        return sandbox(1);
+      },
+      waitForSandbox: () => Promise.resolve(sandbox(1)),
+      execSandbox: () =>
+        Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+      async startServiceForward(): Promise<OpenShellForward> {
+        if (!config) throw new Error("Session config was not staged");
+        server = await startLinkServer({
+          config,
+          deliver(message) {
+            queueMicrotask(() =>
+              server!.emit("turn-completed", {
+                message_ids: [message.id],
+                model_alias: "code",
+                requested_model: "other-model",
+                stop_reason: "stop",
+                text: "untrusted result",
+                truncated: false,
+                usage: {},
+              }),
+            );
+          },
+        });
+        return {
+          sandboxName: "pio-read-test",
+          localHost: "127.0.0.1",
+          localPort: port,
+          targetHost: "127.0.0.1",
+          targetPort: port,
+          closed: Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+          stop: async () => server?.close(),
+        };
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    let session: Awaited<ReturnType<typeof startReadSession>> | undefined;
+    try {
+      session = await startReadSession({
+        client,
+        identity: {
+          run: "run-one",
+          seat: "scout",
+          session: "session-model",
+          epoch: 1,
+        },
+        snapshot,
+        model,
+        brief,
+        linkPort: port,
+        sandboxName: "pio-read-test",
+      });
+      const message = MessageSchema.parse({
+        version: 1,
+        id: "model-turn",
+        run: "run-one",
+        from: { host: true },
+        to: { seat: "scout", session: "session-model", epoch: 1 },
+        type: "instruction",
+        priority: "normal",
+        reply_to: null,
+        body: { instruction: "Return the result." },
+        references: [],
+        created_at: new Date().toISOString(),
+      });
+      await expect(session.run(message, 1_000)).rejects.toMatchObject({
+        code: "model_turn_binding_mismatch",
+      });
+    } finally {
+      await session?.stop();
       await snapshot.dispose();
     }
   });

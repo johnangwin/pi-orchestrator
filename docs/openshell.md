@@ -77,7 +77,7 @@ The 0.0.106 spike verified:
 - unapproved outbound HTTP is denied;
 - `forward service` exposes a sandbox-loopback service only on an explicitly selected host-loopback listener.
 
-The pinned Pi image uses Node 22.19.0 and `@earendil-works/pi-coding-agent` 0.84.2. It runs as UID/GID 10001, disables Pi telemetry and startup network operations, loads only the Orchestrator extension explicitly, and enables only Pi's read-oriented built-in tools for the initial Session slice. The daemon reconstructs an allowlisted child environment instead of passing the Sandbox environment through to Pi.
+The pinned Pi image uses Node 22.19.0 and `@earendil-works/pi-coding-agent` 0.84.2. It runs as UID/GID 10001, disables Pi telemetry and startup network operations, loads only the Orchestrator extension explicitly, and enables only Pi's read-oriented built-in tools for the initial Session slice. The daemon reconstructs an allowlisted child environment instead of passing the Sandbox environment through to Pi. For model-routed Sessions, that allowlist admits only OpenShell's validated HTTP proxy, fixed CA path, and Node proxy switch; provider credentials remain absent.
 
 ## Policy profiles
 
@@ -88,8 +88,21 @@ The base policies under `sandbox/policies/` share these rules:
 - `/sandbox`, `/home/sandbox`, `/tmp`, and terminal device paths are writable;
 - OpenShell token and client-key contents remain unreadable to the child process;
 - the network policy map is empty.
+- model-driven profiles may read OpenShell's public CA material under `/etc/openshell-tls`.
 
-The `read` profile makes `/workspace/project` read-only. The `write` and `check` profiles make it writable. Inference routes will be composed later for model-driven profiles; the Check profile will never receive inference access.
+The `read` profile makes `/workspace/project` read-only. The `write` and `check` profiles make it writable. `inference.local` is handled by OpenShell before ordinary network-policy evaluation, so model traffic does not require an outbound endpoint entry. A network policy therefore cannot make an inference-routed gateway safe for authoritative Checks. The Check runner must use a dedicated gateway and workspace with no inference route, verify that absence before launch, and never launch Pi.
+
+## Model routing
+
+Machine-local configuration maps each stable logical alias to a gateway alias, exact model, Pi API shape, locality, and context limits. A configured OpenShell gateway exposes one active user-facing inference route, so aliases that must use different models concurrently must resolve to different gateways. The host verifies the route's model before creating a Sandbox and fails closed on an absent or mismatched route.
+
+Pi registers a Session-local provider that targets only `inference.local`. OpenShell rewrites the requested model and injects its provider credential at the gateway. The compiled Brief is copied into `/workspace/input/brief.md`, made read-only before launch, and appended to Pi's system prompt.
+
+The live test creates and deletes a disposable OpenShell workspace, provider, and inference route backed by a local fake OpenAI-compatible server. It proves real proxy/CA handling, model rewriting, Pi execution, completion events, and cleanup without using an external model:
+
+```sh
+PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
+```
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
@@ -119,4 +132,4 @@ The Link protocol uses authenticated, identity-bound, 64 KiB JSONL frames. Unit 
 PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
 ```
 
-Durable Mailbox integration and unsolicited client event handling remain part of the visible-Session milestone.
+Durable Mailbox integration remains part of the visible-Session milestone. The Link now carries bounded unsolicited Session and model-turn events, but those events are not authoritative state.

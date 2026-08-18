@@ -33,6 +33,32 @@ export const SeatRecordSchema = z
   .strict();
 export type SeatRecord = z.infer<typeof SeatRecordSchema>;
 
+export const ModelTurnResultSchema = z
+  .object({
+    message_ids: z.array(IdentifierSchema).min(1),
+    model_alias: ModelAliasSchema,
+    requested_model: z.string().min(1),
+    response_model: z.string().min(1).optional(),
+    stop_reason: z.string().min(1),
+    text: z.string(),
+    truncated: z.boolean(),
+    usage: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+export type ModelTurnResult = z.infer<typeof ModelTurnResultSchema>;
+
+export const ModelTurnFailureSchema = z
+  .object({
+    message_ids: z.array(IdentifierSchema).min(1),
+    model_alias: ModelAliasSchema,
+    requested_model: z.string().min(1),
+    response_model: z.string().min(1).optional(),
+    stop_reason: z.string().min(1),
+    error: z.string().min(1),
+  })
+  .strict();
+export type ModelTurnFailure = z.infer<typeof ModelTurnFailureSchema>;
+
 export function sameSessionIdentity(
   left: SessionIdentity,
   right: SessionIdentity,

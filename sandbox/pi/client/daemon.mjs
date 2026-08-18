@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import { readRuntimeIdentity, sessionEnvironment } from "./environment.mjs";
+import { readClientConfig } from "./link.mjs";
+import { modelArguments } from "./model.mjs";
 
 const runtime = await readRuntimeIdentity(
   "/usr/local/lib/pi-orchestrator/runtime.json",
 );
+const config = await readClientConfig("/workspace/input/session.json");
 
 const child = spawn(
   "pi",
@@ -22,10 +25,14 @@ const child = spawn(
     "--tools",
     "read,grep,find,ls",
     "--offline",
+    ...modelArguments(config),
   ],
   {
     cwd: "/workspace/project",
-    env: sessionEnvironment(runtime),
+    env: sessionEnvironment(
+      { ...process.env, ...runtime },
+      config.model !== undefined,
+    ),
     stdio: ["pipe", "inherit", "inherit"],
   },
 );

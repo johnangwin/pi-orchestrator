@@ -6,6 +6,22 @@ export const MAX_LINK_FRAME_BYTES = 64 * 1024;
 const frameIdPattern = /^[a-z][a-z0-9-]{0,127}$/;
 const identifierPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const tokenPattern = /^[a-f0-9]{64}$/;
+const digestPattern = /^sha256:[a-f0-9]{64}$/;
+const modelAliases = new Set(["plan", "code", "quant", "review", "fast"]);
+const modelApis = new Set([
+  "anthropic-messages",
+  "openai-completions",
+  "openai-responses",
+]);
+const clientEvents = new Set([
+  "session-started",
+  "session-blocked",
+  "handoff-requested",
+  "context-pressure",
+  "report-submitted",
+  "turn-completed",
+  "turn-failed",
+]);
 
 function plainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -96,16 +112,52 @@ function validFrame(frame) {
   );
 }
 
+function validModel(value) {
+  return (
+    exactKeys(value, [
+      "alias",
+      "pi_model",
+      "api",
+      "context_window",
+      "max_tokens",
+      "reasoning",
+    ]) &&
+    modelAliases.has(value.alias) &&
+    typeof value.pi_model === "string" &&
+    value.pi_model.length > 0 &&
+    value.pi_model.length <= 256 &&
+    modelApis.has(value.api) &&
+    Number.isSafeInteger(value.context_window) &&
+    value.context_window > 0 &&
+    Number.isSafeInteger(value.max_tokens) &&
+    value.max_tokens > 0 &&
+    value.max_tokens <= value.context_window &&
+    typeof value.reasoning === "boolean"
+  );
+}
+
+function validBrief(value) {
+  return (
+    exactKeys(value, ["path", "digest"]) &&
+    value.path === "/workspace/input/brief.md" &&
+    digestPattern.test(value.digest)
+  );
+}
+
 function parseConfig(value) {
   if (
-    !exactKeys(value, [
-      "version",
-      "identity",
-      "token",
-      "listen",
-      "client_version",
-      "pi_version",
-    ]) ||
+    !exactKeys(
+      value,
+      [
+        "version",
+        "identity",
+        "token",
+        "listen",
+        "client_version",
+        "pi_version",
+      ],
+      ["model", "brief"],
+    ) ||
     value.version !== 1 ||
     !validIdentity(value.identity) ||
     !tokenPattern.test(value.token) ||
@@ -117,7 +169,10 @@ function parseConfig(value) {
     typeof value.client_version !== "string" ||
     value.client_version.length === 0 ||
     typeof value.pi_version !== "string" ||
-    value.pi_version.length === 0
+    value.pi_version.length === 0 ||
+    (value.model === undefined) !== (value.brief === undefined) ||
+    (value.model !== undefined && !validModel(value.model)) ||
+    (value.brief !== undefined && !validBrief(value.brief))
   ) {
     throw new Error("Invalid Orchestrator client configuration");
   }
@@ -169,8 +224,29 @@ export async function startLinkServer({ config: rawConfig, deliver }) {
   const seenFrames = new Map();
   const seenMessages = new Map();
   const sockets = new Set();
+  const pendingEvents = [];
   let activeSocket;
   let operations = Promise.resolve();
+
+  const eventFrame = (event, data) => {
+    if (!clientEvents.has(event) || !plainObject(data)) {
+      throw new Error("Invalid Orchestrator client event");
+    }
+    return response(config, `event-${randomUUID()}`, "event", {
+      event,
+      data,
+    });
+  };
+
+  const emit = (event, data) => {
+    const frame = eventFrame(event, data);
+    if (activeSocket && !activeSocket.destroyed) {
+      writeFrame(activeSocket, frame);
+      return;
+    }
+    pendingEvents.push(frame);
+    if (pendingEvents.length > 1_024) pendingEvents.shift();
+  };
 
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -228,9 +304,10 @@ export async function startLinkServer({ config: rawConfig, deliver }) {
             reply_to: frame.id,
             client_version: config.client_version,
             pi_version: config.pi_version,
-            capabilities: ["deliver", "ping"],
+            capabilities: ["deliver", "events", "ping"],
           }),
         );
+        for (const event of pendingEvents.splice(0)) writeFrame(socket, event);
         return;
       }
 
@@ -368,6 +445,7 @@ export async function startLinkServer({ config: rawConfig, deliver }) {
   return {
     host: config.listen.host,
     port: config.listen.port,
+    emit,
     async close() {
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => {

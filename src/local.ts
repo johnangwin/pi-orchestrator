@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import { z } from "zod";
+import { ModelAliasSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
 
 export const VersionSchema = z
@@ -19,10 +20,53 @@ const OpenShellSettingsSchema = z
   })
   .passthrough();
 
+export const PiModelApiSchema = z.enum([
+  "anthropic-messages",
+  "openai-completions",
+  "openai-responses",
+]);
+export type PiModelApi = z.infer<typeof PiModelApiSchema>;
+
+export const ModelLocalitySchema = z.enum(["local", "prefer-local", "remote"]);
+export type ModelLocality = z.infer<typeof ModelLocalitySchema>;
+
+export const LocalModelRouteSchema = z
+  .object({
+    gateway: z.string().min(1),
+    pi_model: z.string().min(1).max(256),
+    api: PiModelApiSchema,
+    locality: ModelLocalitySchema,
+    context_window: z.number().int().positive(),
+    max_tokens: z.number().int().positive(),
+    reasoning: z.boolean().default(false),
+  })
+  .strict()
+  .refine((route) => route.max_tokens <= route.context_window, {
+    message: "max_tokens must not exceed context_window",
+    path: ["max_tokens"],
+  });
+export type LocalModelRoute = z.infer<typeof LocalModelRouteSchema>;
+
+const LocalModelRoutesSchema = z
+  .record(z.string(), LocalModelRouteSchema)
+  .default({})
+  .superRefine((routes, context) => {
+    for (const alias of Object.keys(routes)) {
+      if (!ModelAliasSchema.safeParse(alias).success) {
+        context.addIssue({
+          code: "custom",
+          path: [alias],
+          message: "must be a supported logical model alias",
+        });
+      }
+    }
+  });
+
 export const LocalConfigSchema = z
   .object({
     version: z.literal(1),
     openshell: OpenShellSettingsSchema,
+    models: LocalModelRoutesSchema,
   })
   .passthrough();
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;

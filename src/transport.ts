@@ -41,7 +41,7 @@ export const LinkReadyFrameSchema = LinkBaseSchema.extend({
       client_version: z.string().min(1),
       pi_version: z.string().min(1),
       capabilities: z
-        .array(z.enum(["deliver", "ping"]))
+        .array(z.enum(["deliver", "events", "ping"]))
         .min(1)
         .refine(
           (values) => new Set(values).size === values.length,
@@ -92,6 +92,8 @@ export const LinkEventFrameSchema = LinkBaseSchema.extend({
         "handoff-requested",
         "context-pressure",
         "report-submitted",
+        "turn-completed",
+        "turn-failed",
       ]),
       data: z.record(z.string(), z.unknown()),
     })

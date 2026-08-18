@@ -659,12 +659,49 @@ export class ProjectStore {
 
   async writeRun(state: RunStateInput): Promise<void> {
     const parsed = RunStateSchema.parse(state);
-    await this.serializeMutation(() =>
-      writeJsonAtomic(
-        path.join(this.runDirectory(parsed.id), "state.json"),
-        parsed,
-      ),
-    );
+    await this.serializeMutation(async () => {
+      const project = await this.readProjectFile();
+      if (parsed.project_id !== project.id) {
+        throw new OrchestratorError(
+          "run_project_conflict",
+          `Run '${parsed.id}' belongs to Project '${parsed.project_id}', not '${project.id}'`,
+        );
+      }
+      const statePath = path.resolve(
+        this.runDirectory(parsed.id),
+        "state.json",
+      );
+      const summary = project.runs[parsed.id];
+      if (
+        summary &&
+        (summary.plan_id !== parsed.plan_id ||
+          path.resolve(summary.state_path) !== statePath)
+      ) {
+        throw new OrchestratorError(
+          "run_summary_conflict",
+          `Project Run '${parsed.id}' has a conflicting summary`,
+        );
+      }
+      await writeJsonAtomic(statePath, parsed);
+      if (!summary || summary.status !== parsed.status) {
+        await writeJsonAtomic(
+          this.projectFile,
+          ProjectRecordSchema.parse({
+            ...project,
+            runs: {
+              ...project.runs,
+              [parsed.id]: {
+                id: parsed.id,
+                plan_id: parsed.plan_id,
+                state_path: statePath,
+                status: parsed.status,
+              },
+            },
+            updated_at: new Date().toISOString(),
+          }),
+        );
+      }
+    });
   }
 
   async createRun(state: RunStateInput): Promise<CreateRunResult> {
@@ -755,7 +792,23 @@ export class ProjectStore {
   ): Promise<RunState> {
     const parsedRunId = IdentifierSchema.parse(runId);
     return this.serializeMutation(async () => {
+      const project = await this.readProjectFile();
       const current = await this.readRunFile(parsedRunId);
+      const statePath = path.resolve(
+        this.runDirectory(parsedRunId),
+        "state.json",
+      );
+      const summary = project.runs[parsedRunId];
+      if (
+        summary &&
+        (summary.plan_id !== current.plan_id ||
+          path.resolve(summary.state_path) !== statePath)
+      ) {
+        throw new OrchestratorError(
+          "run_summary_conflict",
+          `Project Run '${parsedRunId}' has a conflicting summary`,
+        );
+      }
       const draft = structuredClone(current);
       const changed = change(draft);
       if (changed.id !== parsedRunId) {
@@ -764,15 +817,32 @@ export class ProjectStore {
           `Run update for '${parsedRunId}' returned '${changed.id}'`,
         );
       }
-      if (changed === draft) return current;
-      const next = RunStateSchema.parse({
-        ...changed,
-        updated_at: new Date().toISOString(),
-      });
-      await writeJsonAtomic(
-        path.join(this.runDirectory(parsedRunId), "state.json"),
-        next,
-      );
+      const next =
+        changed === draft
+          ? current
+          : RunStateSchema.parse({
+              ...changed,
+              updated_at: new Date().toISOString(),
+            });
+      if (next !== current) await writeJsonAtomic(statePath, next);
+      if (!summary || summary.status !== next.status) {
+        await writeJsonAtomic(
+          this.projectFile,
+          ProjectRecordSchema.parse({
+            ...project,
+            runs: {
+              ...project.runs,
+              [parsedRunId]: {
+                id: next.id,
+                plan_id: next.plan_id,
+                state_path: statePath,
+                status: next.status,
+              },
+            },
+            updated_at: new Date().toISOString(),
+          }),
+        );
+      }
       return next;
     });
   }

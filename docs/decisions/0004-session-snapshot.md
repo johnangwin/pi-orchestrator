@@ -14,7 +14,7 @@ Mounting or copying from the host checkout would violate the source and Git auth
 
 ## Decision
 
-The host creates a deterministic archive from selected files at an exact Git commit. Untracked files and host Git metadata never enter the archive. The manifest binds the commit, selected paths, tree entries, archive digest, and source digest.
+The host creates a deterministic archive from selected files at an exact Git commit. Snapshot Git commands strip ambient control variables, ignore system and global configuration, disable filesystem monitors, and reject clean filters before archive creation. Untracked files and host Git metadata never enter the archive. The manifest binds the commit, selected paths, tree entries, archive digest, and source digest.
 
 For each Session, the host creates a temporary Docker build context containing only:
 

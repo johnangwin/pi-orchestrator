@@ -1,5 +1,12 @@
 import { execFile } from "node:child_process";
-import { access, appendFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  chmod,
+  mkdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSourceSnapshot, verifySourceSnapshot } from "../src/snapshot.js";
@@ -86,6 +93,58 @@ describe("source snapshots", () => {
     } finally {
       await Promise.all([first.dispose(), second.dispose()]);
     }
+  });
+
+  it("does not inherit ambient Git control variables", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const previous = process.env.GIT_DIR;
+    process.env.GIT_DIR = `${root}/missing-git-directory`;
+    let snapshot: Awaited<ReturnType<typeof createSourceSnapshot>> | undefined;
+    try {
+      snapshot = await createSourceSnapshot({
+        projectRoot: root,
+        commit,
+        paths: ["src"],
+      });
+      expect(snapshot.manifest.commit).toBe(commit);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previous;
+      await snapshot?.dispose();
+    }
+  });
+
+  it("rejects clean filters before Git can execute them on the host", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const marker = `${root}/filter-ran`;
+    const filter = `${root}/clean-filter.sh`;
+    await writeFile(filter, `#!/bin/sh\ntouch '${marker}'\ncat\n`, "utf8");
+    await chmod(filter, 0o755);
+    await mkdir(`${root}/.git/info`, { recursive: true });
+    await writeFile(
+      `${root}/.git/info/attributes`,
+      "src/fixture.ts filter=fixture-unsafe\n",
+      "utf8",
+    );
+    await execFileAsync(
+      "git",
+      ["config", "filter.fixture-unsafe.clean", filter],
+      { cwd: root },
+    );
+    await execFileAsync(
+      "git",
+      ["config", "filter.fixture-unsafe.required", "true"],
+      { cwd: root },
+    );
+
+    await expect(
+      createSourceSnapshot({ projectRoot: root, commit, paths: ["src"] }),
+    ).rejects.toMatchObject({ code: "snapshot_filter_unsupported" });
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects an archive changed after manifest creation", async () => {

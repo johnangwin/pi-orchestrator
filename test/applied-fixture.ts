@@ -101,6 +101,7 @@ function copyingClient(payloadPath: string): ArtifactOpenShell {
 
 export interface AppliedFixture {
   readonly root: string;
+  readonly home: string;
   readonly project: Project;
   readonly plan: Awaited<ReturnType<typeof loadPlan>>;
   readonly task: PlanTask;
@@ -253,6 +254,7 @@ export async function passFixtureChecks(
 export async function createAppliedFixture(
   options: {
     readonly task?: PlanTask;
+    readonly tasks?: readonly PlanTask[];
     readonly mutate?: (project: string) => Promise<void>;
     readonly checks?: Readonly<
       Record<
@@ -276,8 +278,12 @@ export async function createAppliedFixture(
       config.checks = options.checks;
       await writeFile(configPath, stringify(config), "utf8");
     }
-    const task = options.task ?? fixtureTask();
-    await createPlan(root, { tasks: [task] });
+    const task = options.task ?? options.tasks?.[0] ?? fixtureTask();
+    const tasks = options.tasks ?? [task];
+    if (!tasks.some((candidate) => candidate.id === task.id)) {
+      throw new Error(`Fixture Task '${task.id}' is absent from its Plan`);
+    }
+    await createPlan(root, { tasks });
     const commit = await commitFixture(root);
     const project = await loadProject(root);
     const plan = await loadPlan(
@@ -377,6 +383,7 @@ export async function createAppliedFixture(
       });
       return {
         root,
+        home,
         project,
         plan,
         task,

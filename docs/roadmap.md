@@ -36,7 +36,7 @@
 - scope, protected-path validation, and durable host patch application (complete)
 - fresh deterministic Check (complete)
 - fresh Review (complete)
-- human commit
+- human commit (complete)
 
 ## Milestone 5: Stepout proving run
 

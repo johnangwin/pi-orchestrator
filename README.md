@@ -73,6 +73,8 @@ Authoritative Checks now rebuild the complete patched Project, verify it indepen
 
 Authoritative Reviews now run each required Lens in a fresh read-only Pi Session and OpenShell Sandbox over the exact complete source evaluated by Checks. Lens-specific Briefs contain the current diff and passing Check evidence but no Implementer transcript or prior Reviewer finding. The host accepts only structured verdicts, revalidates every source, Plan, Check, Role, policy, model, Session, and Sandbox binding after inference, and atomically stores an immutable Review Report before updating the Gate. Interrupted Gate publication reuses exact durable evidence; invalid output and failed attempts require a replacement Session epoch.
 
+Human Task commits now close the one-Task vertical slice. The CLI displays the exact Plan, branch, Patch, diff, Check, Review, subject, and author evidence before confirmation, persists that authorization before Git mutation, and creates the commit with hooks and signing disabled. An interrupted operation recovers only the exact approved commit; success accepts the Task, advances dependent Tasks to the new commit, and synchronizes Run completion into Project status.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:
@@ -109,6 +111,7 @@ orchestrator init . --project-id stepout
 orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
 orchestrator start strategy-boundary
+orchestrator commit strategy-id
 orchestrator status
 orchestrator doctor
 orchestrator canary

@@ -72,14 +72,28 @@ export interface SourceSnapshotOptions {
   readonly temporaryRoot?: string;
 }
 
+function snapshotGitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!name.startsWith("GIT_") && value !== undefined)
+      environment[name] = value;
+  }
+  environment.GIT_CONFIG_GLOBAL = "/dev/null";
+  environment.GIT_CONFIG_NOSYSTEM = "1";
+  environment.GIT_TERMINAL_PROMPT = "0";
+  environment.LANG = "C.UTF-8";
+  return environment;
+}
+
 async function gitBuffer(
   root: string,
   args: readonly string[],
   maxBytes = 16 * 1024 * 1024,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", [...args], {
+    const child = spawn("git", ["-c", "core.fsmonitor=false", ...args], {
       cwd: root,
+      env: snapshotGitEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
@@ -208,6 +222,79 @@ function parseTree(source: Buffer): SnapshotEntry[] {
   return entries.sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function parseFilterAttributes(
+  source: Buffer,
+  expectedPaths: readonly string[],
+): void {
+  let decoded: string;
+  try {
+    decoded = new TextDecoder("utf-8", { fatal: true }).decode(source);
+  } catch (error) {
+    throw new OrchestratorError(
+      "invalid_git_output",
+      "Git attribute paths must be valid UTF-8",
+      { cause: error },
+    );
+  }
+  if (!decoded.endsWith("\0")) {
+    throw new OrchestratorError(
+      "invalid_git_output",
+      "git check-attr did not terminate its records",
+    );
+  }
+  const values = decoded.slice(0, -1).split("\0");
+  if (values.length !== expectedPaths.length * 3) {
+    throw new OrchestratorError(
+      "invalid_git_output",
+      "git check-attr returned an unexpected record count",
+    );
+  }
+  const seen = new Set<string>();
+  for (let index = 0; index < values.length; index += 3) {
+    const entryPath = SnapshotPathSchema.parse(values[index]);
+    const value = values[index + 2];
+    if (
+      values[index + 1] !== "filter" ||
+      !expectedPaths.includes(entryPath) ||
+      seen.has(entryPath) ||
+      value === undefined
+    ) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        "git check-attr returned an invalid filter record",
+      );
+    }
+    seen.add(entryPath);
+    if (value !== "unspecified" && value !== "unset") {
+      throw new OrchestratorError(
+        "snapshot_filter_unsupported",
+        `Snapshot path '${entryPath}' has Git clean filter '${value}'; host snapshots do not execute filters`,
+      );
+    }
+  }
+}
+
+async function requireNoSnapshotFilters(
+  root: string,
+  commit: string,
+  paths: readonly string[],
+): Promise<void> {
+  for (let offset = 0; offset < paths.length; offset += 128) {
+    const selected = paths.slice(offset, offset + 128);
+    parseFilterAttributes(
+      await gitBuffer(root, [
+        "check-attr",
+        `--source=${commit}`,
+        "-z",
+        "filter",
+        "--",
+        ...selected,
+      ]),
+      selected,
+    );
+  }
+}
+
 async function fileDigest(filePath: string): Promise<Digest> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(filePath)) hash.update(chunk);
@@ -321,6 +408,11 @@ export async function createSourceSnapshot(
       "The selected paths contain no tracked files at the requested commit",
     );
   }
+  await requireNoSnapshotFilters(
+    root,
+    resolvedCommit,
+    entries.map((entry) => entry.path),
+  );
 
   const temporaryRoot = path.resolve(options.temporaryRoot ?? os.tmpdir());
   await mkdir(temporaryRoot, { recursive: true });

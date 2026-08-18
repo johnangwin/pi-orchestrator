@@ -5,6 +5,7 @@ export * from "./brief.js";
 export * from "./canary.js";
 export * from "./check.js";
 export * from "./cmux.js";
+export * from "./commit.js";
 export * from "./config.js";
 export * from "./digest.js";
 export * from "./error.js";

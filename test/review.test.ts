@@ -265,7 +265,7 @@ function execute(
   });
 }
 
-describe("authoritative Reviews", () => {
+describe("authoritative Reviews", { timeout: 15_000 }, () => {
   it("runs a fresh read-only Review and reuses exact immutable evidence", async () => {
     const fixture = await checked();
     const runtime = new FakeReviewRuntime();

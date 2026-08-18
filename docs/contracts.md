@@ -113,7 +113,7 @@ The initial protocol implements `hello`, `ready`, `ping`, `pong`, `deliver`, `ac
 
 ## Source snapshots
 
-A source snapshot is produced from an exact Git commit and literal relative paths. `git archive` excludes untracked files and `.git`; unsupported tree entries fail closed. Its manifest records the selected paths, tracked entries, archive byte count, archive SHA-256 digest, and a domain-separated source digest. The launcher revalidates the manifest and copied archive immediately before image construction.
+A source snapshot is produced from an exact Git commit and literal relative paths. Snapshot Git commands strip ambient `GIT_*` variables, disable system and global configuration and filesystem monitors, and reject any clean filter affecting a selected path before `git archive` can execute it. The archive excludes untracked files and `.git`; unsupported tree entries fail closed. Its manifest records the selected paths, tracked entries, archive byte count, archive SHA-256 digest, and a domain-separated source digest. The launcher revalidates the manifest and copied archive immediately before image construction.
 
 Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
 
@@ -196,6 +196,18 @@ After inference, the host rechecks approval, Project and Plan bytes, Run worktre
 The Lens Gate stores the Review record digest as `pass` or `fail`. A passing Lens leaves the Task `reviewing` for remaining Lenses and human commit. `rework` moves the Task to `rework`; `blocked` moves it to `blocked`. One Review round covers all Lenses over one diff. Invalid output and infrastructure retry replace the Session epoch without incrementing that round.
 
 An exact completed Gate may reuse only a current immutable result. If result publication succeeded but Gate publication was interrupted, retry resolves the pending intent, validates its result against current evidence, removes any still-active bound Review Sandbox, records the Session stopped, and completes the Gate without another model call. Missing or modified source, Check, intent, Report, record, Role, policy, model, or Plan evidence fails closed.
+
+## Human Task commits
+
+`orchestrator commit <task>` resolves the Task to one durable Run, reloads the current Project, Plan, machine-local model routes, Reviewer Role, and Sandbox policy, and reconstructs the immutable applied Patch. It accepts only a `reviewing` Task whose trusted-checkout HEAD still equals the approved base commit and whose Plan approval, scope, protected paths, Check Gates and records, Review Gates and records, Review Sessions, model routes, runtime versions, source, diff, branch, and worktree all remain exact. Multiple matching Runs require an explicit `--run`.
+
+The displayed proposal binds the Plan revision and digest, Run branch, Task input commit, resulting source and host diff digests, Patch Artifact, sorted changes, every required passing Check and Review record, one-line subject, and Git author identity. Interactive execution requires an affirmative TTY response; automation requires explicit `--yes`. Confirmation creates an immutable intent and pending `commit` Gate before Git mutation. A changed proposal cannot consume an earlier authorization.
+
+The trusted Git adapter strips ambient `GIT_*` variables and disables system and global configuration, filesystem monitors, hooks, signing, prompts, rename inference, and shell evaluation. It rejects any clean filter affecting the source before archive, status, or staging can execute it. After verifying the canonical repository and linked worktree, exact branch and parent, applied Patch, and diff digest, it stages only the approved changed paths and hashes every staged blob and mode against the Patch. It creates the object with `commit-tree`, then advances the Run branch with compare-and-swap `update-ref` against the exact parent. The resulting commit must have one exact parent, the approved tree, subject, and author/committer identity, no residual worktree changes, and exactly the approved path/content/mode result.
+
+An immutable Commit record binds the human intent to the observed commit, parent, tree, identity, timestamp, and its own digest. If intent publication succeeds before the pending Gate update, retry finds that exact proposal authorization and repairs the Gate without asking again. If Git succeeds before record or passing-Gate publication, retry may recover only that exact commit from the intent. A matching commit without prior durable authorization is rejected. Unexpected Git state is never reset, cleaned, stashed, amended, or adopted.
+
+A passing `commit` Gate marks the Task `accepted`. The new commit becomes the `input_commit` for the next ready writer and for newly unblocked dependent Tasks. The Run becomes `complete` only when every Task is terminal; otherwise it remains `active`. Run state is written before its Project summary is synchronized, and a no-op retry repairs a stale summary left by interruption.
 
 ## Session identity
 

@@ -7,6 +7,14 @@ import process from "node:process";
 import { Command } from "commander";
 import { approvalFreshness, createApproval } from "./approval.js";
 import { runCanary } from "./canary.js";
+import {
+  commitTask,
+  inspectTaskCommit,
+  readGitIdentity,
+  type CommitProposal,
+} from "./commit.js";
+import { IdentifierSchema } from "./config.js";
+import type { Digest } from "./digest.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { initializeProject } from "./init.js";
@@ -55,6 +63,14 @@ interface StartOptions extends CommonOptions {
   readonly home?: string;
   readonly run?: string;
   readonly worktreeRoot?: string;
+}
+
+interface CommitOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+  readonly run?: string;
+  readonly subject?: string;
+  readonly yes?: boolean;
 }
 
 async function optionalLocalConfig(
@@ -129,6 +145,59 @@ async function validatedPlan(value: string, options: CommonOptions) {
     catalogFromConfig(project.config),
   );
   return { project, plan };
+}
+
+async function resolveTaskRun(
+  store: ProjectStore,
+  taskId: string,
+  requestedRun?: string,
+) {
+  if (requestedRun) {
+    const run = await store.readRun(IdentifierSchema.parse(requestedRun));
+    if (!run.tasks[taskId]) {
+      throw new OrchestratorError(
+        "task_not_found",
+        `Run '${run.id}' does not contain Task '${taskId}'`,
+      );
+    }
+    return run;
+  }
+
+  const project = await store.read();
+  const matches = [];
+  for (const runId of Object.keys(project.runs).sort()) {
+    const run = await store.readRun(runId);
+    if (run.tasks[taskId]) matches.push(run);
+  }
+  if (matches.length === 0) {
+    throw new OrchestratorError(
+      "run_not_found",
+      `No durable Run contains Task '${taskId}'`,
+    );
+  }
+  if (matches.length > 1) {
+    throw new OrchestratorError(
+      "run_ambiguous",
+      `Task '${taskId}' exists in multiple Runs; select one with --run`,
+    );
+  }
+  return matches[0]!;
+}
+
+function formatCommitProposal(proposal: CommitProposal): string {
+  return [
+    `Task: ${proposal.task} (${proposal.title})`,
+    `Plan: ${proposal.plan.id} r${proposal.plan.revision} (${proposal.plan.digest})`,
+    `Branch: ${proposal.branch}`,
+    `Input commit: ${proposal.input_commit}`,
+    `Source digest: ${proposal.task_source_digest}`,
+    `Diff digest: ${proposal.diff_digest}`,
+    `Changes: ${proposal.changes.map((change) => `${change.status} ${change.path}`).join(", ")}`,
+    `Checks: ${proposal.checks.map((check) => `${check.check}=PASS`).join(", ")}`,
+    `Reviews: ${proposal.reviews.map((review) => `${review.lens}=PASS`).join(", ")}`,
+    `Subject: ${proposal.subject}`,
+    `Author: ${proposal.author.name} <${proposal.author.email}>`,
+  ].join("\n");
 }
 
 const program = new Command()
@@ -345,6 +414,116 @@ program
           ? JSON.stringify(output, null, 2)
           : `${result.created ? "Started" : "Recovered"} Run ${result.run.id} at ${result.run.worktree}`,
       );
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("commit")
+  .description("create a human-authorized commit for an exactly verified Task")
+  .argument("<task>", "Task identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--run <id>", "Run identifier when the Task is ambiguous")
+  .option("--subject <subject>", "one-line commit subject")
+  .option("--yes", "confirm the displayed commit non-interactively")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: CommitOptions) => {
+    const taskId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const home = path.resolve(options.home ?? defaultOrchestratorHome());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const author = await readGitIdentity(project.root);
+    const store = await ProjectStore.open({
+      home,
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const run = await resolveTaskRun(store, taskId, options.run);
+      const plan = await loadPlan(
+        resolvePlanDirectory(project.root, run.plan_id),
+        catalogFromConfig(project.config),
+      );
+      const commitOptions = {
+        store,
+        project,
+        plan,
+        local,
+        runId: run.id,
+        taskId,
+        author,
+        ...(options.subject ? { subject: options.subject } : {}),
+      };
+      const inspection = await inspectTaskCommit(commitOptions);
+      const authorization =
+        inspection.state === "ready"
+          ? {
+              proposalDigest: inspection.proposal.proposal_digest as Digest,
+              approvedBy: os.userInfo().username,
+            }
+          : undefined;
+      if (authorization) {
+        if (options.json && !options.yes) {
+          throw new OrchestratorError(
+            "confirmation_required",
+            "JSON Commit output requires explicit --yes confirmation",
+          );
+        }
+        if (!options.json)
+          console.log(formatCommitProposal(inspection.proposal));
+        await confirmation(
+          `Commit Task '${taskId}' with this exact evidence?`,
+          options.yes,
+        );
+      }
+      const result = await commitTask({
+        ...commitOptions,
+        ...(authorization ? { authorization } : {}),
+      });
+      const output = {
+        run: result.run.id,
+        run_status: result.run.status,
+        task: result.task.id,
+        task_status: result.task.status,
+        commit: result.record.git.commit,
+        subject: result.proposal.subject,
+        author: result.proposal.author,
+        plan: result.proposal.plan,
+        branch: result.proposal.branch,
+        input_commit: result.proposal.input_commit,
+        source_digest: result.proposal.task_source_digest,
+        diff_digest: result.proposal.diff_digest,
+        changes: result.proposal.changes,
+        checks: result.proposal.checks.map((check) => ({
+          ...check,
+          verdict: "pass" as const,
+        })),
+        reviews: result.proposal.reviews.map((review) => ({
+          ...review,
+          verdict: "pass" as const,
+        })),
+        proposal_digest: result.proposal.proposal_digest,
+        record_digest: result.record.record_digest,
+        created: result.created,
+        recovered: result.recovered,
+        reused: result.reused,
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else if (result.reused) {
+        console.log(`Task ${taskId} is already committed as ${output.commit}`);
+      } else {
+        console.log(
+          `${result.recovered ? "Recovered" : "Committed"} Task ${taskId} as ${output.commit}`,
+        );
+      }
     } finally {
       await store.close();
     }

@@ -834,6 +834,14 @@ export class CheckStore {
     }
   }
 
+  async getIntent(
+    task: string,
+    check: string,
+    job: string,
+  ): Promise<CheckIntent | undefined> {
+    return this.readIntentIfPresent(task, check, job);
+  }
+
   async prepare(requested: CheckIntent): Promise<CheckIntent> {
     const parsed = CheckIntentSchema.parse(requested);
     const existing = await this.readIntentIfPresent(

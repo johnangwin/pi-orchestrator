@@ -14,6 +14,7 @@ import {
   readGitIdentity,
   type CommitProposal,
 } from "./commit.js";
+import { runPlanningConsultations } from "./consultation.js";
 import { IdentifierSchema } from "./config.js";
 import type { Digest } from "./digest.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
@@ -90,6 +91,11 @@ interface PlanOptions extends CommonOptions {
 
 interface AnswerOptions extends CommonOptions {
   readonly answers?: string;
+  readonly home?: string;
+}
+
+interface ConsultOptions extends CommonOptions {
+  readonly config?: string;
   readonly home?: string;
 }
 
@@ -575,6 +581,96 @@ program
   });
 
 program
+  .command("consult")
+  .description("run independent Architecture and Quant planning consultations")
+  .argument("<planning>", "planning identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--json", "emit JSON")
+  .action(async (planningId: string, options: ConsultOptions) => {
+    const project = await loadProject(options.project ?? process.cwd());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const clients = Object.fromEntries(
+      (["architecture", "quant"] as const).map((consultationRole) => {
+        const roleName =
+          consultationRole === "architecture" ? "architect" : "quant";
+        const role = project.roles.get(roleName);
+        if (!role) {
+          throw new OrchestratorError(
+            "consultation_role_not_found",
+            `Planning consultation requires the '${roleName}' Role`,
+          );
+        }
+        const model = resolveRoleModelRoute(
+          project.config,
+          local,
+          role.definition.name,
+          role.definition.inference,
+        );
+        return [
+          consultationRole,
+          new OpenShellClient({
+            command: local.openshell.command,
+            gateway: model.gateway,
+            workspace: local.openshell.workspace,
+            ...(local.openshell.required_version
+              ? { requiredVersion: local.openshell.required_version }
+              : {}),
+          }),
+        ];
+      }),
+    ) as {
+      architecture: OpenShellClient;
+      quant: OpenShellClient;
+    };
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const result = await runPlanningConsultations({
+        store,
+        project,
+        local,
+        clients,
+        planningId,
+      });
+      const output = {
+        id: result.state.id,
+        status: result.state.status,
+        consultations: result.consultations.map((consultation) => ({
+          role: consultation.role,
+          attempt: consultation.request.attempt,
+          request_digest: consultation.request.request_digest,
+          record_digest: consultation.record.record_digest,
+          report_digest: consultation.record.report.content_digest,
+          report: consultation.record.report.content,
+          output: consultation.record.output,
+          reused: consultation.reused,
+        })),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(`Planning ${result.state.id}: ${result.state.status}`);
+        for (const consultation of result.consultations) {
+          console.log(
+            `  ${consultation.role}: ${consultation.reused ? "reused" : "recorded"} attempt ${consultation.request.attempt} (${consultation.record.report.content_digest})`,
+          );
+        }
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+program
   .command("validate")
   .description("validate a Plan without approving it")
   .argument("<plan>", "Plan ID or directory")
@@ -851,6 +947,7 @@ program
           source_digest: item.source_digest,
           attempts: item.attempts,
           decisions: Object.keys(item.decisions).length,
+          consultations: item.consultations,
         })),
         approvals,
         runs: Object.values(record.runs),
@@ -863,6 +960,14 @@ program
         console.log(`Planning: ${planning.length}`);
         for (const item of planning) {
           console.log(`  ${item.id}: ${item.status} (${item.goal})`);
+          for (const role of ["architecture", "quant"] as const) {
+            const consultation = item.consultations[role];
+            if (consultation.attempts > 0) {
+              console.log(
+                `    ${role}: ${consultation.report_digest ? "complete" : "pending"} (attempt ${consultation.attempts})`,
+              );
+            }
+          }
         }
         console.log(`Approvals: ${approvals.length}`);
         for (const approval of approvals) {

@@ -18,6 +18,15 @@ description: Preserve project boundaries and distinguish current design from int
 
 Identify the smallest coherent boundary that satisfies the approved Task. Do not add speculative factories, managers, repositories, or generic hierarchies.
 `,
+  quant: `---
+name: quant
+description: Verify quantitative definitions, units, assumptions, causality, and boundary behavior.
+---
+
+# Quant
+
+Define every material quantity and unit. Check dimensional consistency, assumptions, causal ordering, reproducibility, transaction effects, sensitivity, and boundary cases. Independently reproduce important calculations where practical. When quantitative semantics are not material, identify the repository evidence and verification that support that conclusion.
+`,
   development: `---
 name: development
 description: Implement one bounded Task while preserving its non-goals and source scope.
@@ -66,6 +75,45 @@ inference: remote
 # Lead
 
 Coordinate through Plans, Decisions, Reports, and targeted consultations. Do not treat Session memory as authoritative state.
+`,
+  architect: `---
+name: architect
+description: Design repository-grounded boundaries and distinguish current architecture from intended direction.
+model: plan
+skills:
+  - architecture
+access: read
+lifetime: design
+sandbox: read
+needs:
+  - decisions
+  - scope
+inference: remote
+---
+
+# Architect
+
+Produce conservative and cleaner target alternatives from exact repository evidence. Recommend the smallest coherent direction that preserves accepted Decisions and state what must not be implemented prematurely.
+`,
+  quant: `---
+name: quant
+description: Analyze material quantitative semantics and required verification.
+model: quant
+skills:
+  - architecture
+  - quant
+access: read
+lifetime: design
+sandbox: read
+needs:
+  - decisions
+  - scope
+inference: prefer-local
+---
+
+# Quant
+
+Evaluate definitions, units, assumptions, calculations, causality, reproducibility, and boundary behavior. If quantitative semantics are not material, support that conclusion with repository evidence and a verification recommendation.
 `,
   implementer: `---
 name: implementer
@@ -142,12 +190,16 @@ project:
 
 roles:
   - lead
+  - architect
+  - quant
   - implementer
   - reviewer
   - scout
 
 models:
   lead: plan
+  architect: plan
+  quant: quant
   implementer: code
   reviewer:
     default: review

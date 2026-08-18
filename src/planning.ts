@@ -124,8 +124,74 @@ export const PlanningStatusSchema = z.enum([
   "drafting",
   "awaiting-answers",
   "answered",
+  "consulting",
+  "consulted",
 ]);
 export type PlanningStatus = z.infer<typeof PlanningStatusSchema>;
+
+export const PlanningConsultationRoleSchema = z.enum(["architecture", "quant"]);
+export type PlanningConsultationRole = z.infer<
+  typeof PlanningConsultationRoleSchema
+>;
+export const planningConsultationRoles = PlanningConsultationRoleSchema.options;
+
+const PlanningConsultationProgressSchema = z
+  .object({
+    attempts: z.number().int().nonnegative(),
+    current_request_digest: DigestSchema.nullable(),
+    record_digest: DigestSchema.nullable(),
+    report_digest: DigestSchema.nullable(),
+  })
+  .strict()
+  .superRefine((progress, context) => {
+    if (
+      (progress.attempts === 0) !==
+      (progress.current_request_digest === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["current_request_digest"],
+        message: "must exist exactly after a consultation attempt starts",
+      });
+    }
+    if (
+      (progress.record_digest === null) !==
+      (progress.report_digest === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["report_digest"],
+        message: "must exist exactly with the consultation record digest",
+      });
+    }
+    if (progress.record_digest !== null && progress.attempts === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["record_digest"],
+        message: "cannot exist before a consultation attempt",
+      });
+    }
+  });
+
+export type PlanningConsultationProgress = z.infer<
+  typeof PlanningConsultationProgressSchema
+>;
+
+function emptyConsultationProgress(): PlanningConsultationProgress {
+  return {
+    attempts: 0,
+    current_request_digest: null,
+    record_digest: null,
+    report_digest: null,
+  };
+}
+
+const PlanningConsultationsSchema = z
+  .object({
+    architecture: PlanningConsultationProgressSchema,
+    quant: PlanningConsultationProgressSchema,
+  })
+  .strict();
 
 export const PlanningStateSchema = z
   .object({
@@ -142,6 +208,10 @@ export const PlanningStateSchema = z
     current_request_digest: DigestSchema.nullable(),
     questionnaire_digest: DigestSchema.nullable(),
     decisions: z.record(PlanningQuestionIdSchema, DigestSchema),
+    consultations: PlanningConsultationsSchema.default({
+      architecture: emptyConsultationProgress(),
+      quant: emptyConsultationProgress(),
+    }),
     created_at: z.string().datetime({ offset: true }),
     updated_at: z.string().datetime({ offset: true }),
   })
@@ -170,13 +240,44 @@ export const PlanningStateSchema = z
       });
     }
     if (
-      state.status !== "answered" &&
+      !["answered", "consulting", "consulted"].includes(state.status) &&
       Object.keys(state.decisions).length > 0
     ) {
       context.addIssue({
         code: "custom",
         path: ["decisions"],
         message: "cannot be published before all answers are accepted",
+      });
+    }
+    const progress = planningConsultationRoles.map(
+      (role) => state.consultations[role],
+    );
+    const started = progress.some((item) => item.attempts > 0);
+    const completed = progress.filter(
+      (item) => item.record_digest !== null,
+    ).length;
+    if (
+      ["drafting", "awaiting-answers", "answered"].includes(state.status) &&
+      started
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["consultations"],
+        message: "cannot start before accepted answers enter consultation",
+      });
+    }
+    if (state.status === "consulting" && (!started || completed === 2)) {
+      context.addIssue({
+        code: "custom",
+        path: ["consultations"],
+        message: "must contain an incomplete consultation attempt",
+      });
+    }
+    if (state.status === "consulted" && completed !== 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["consultations"],
+        message: "must contain both completed consultation Reports",
       });
     }
   });
@@ -717,6 +818,10 @@ export class PlanningStore {
       current_request_digest: null,
       questionnaire_digest: null,
       decisions: {},
+      consultations: {
+        architecture: emptyConsultationProgress(),
+        quant: emptyConsultationProgress(),
+      },
       created_at: timestamp,
       updated_at: timestamp,
     });
@@ -751,6 +856,34 @@ export class PlanningStore {
       );
     }
     return stored;
+  }
+
+  async source(id: string): Promise<SourceSnapshotManifest> {
+    const state = await this.get(id);
+    const filePath = this.sourceFile(state.id);
+    const source = await readOptional(filePath);
+    if (source === undefined) {
+      throw new OrchestratorError(
+        "invalid_planning_store",
+        `Planning request '${state.id}' is missing its source manifest`,
+      );
+    }
+    const manifest = parseStored(
+      SourceSnapshotManifestSchema,
+      source,
+      filePath,
+    );
+    if (
+      manifest.commit !== state.base_commit ||
+      manifest.source_digest !== state.source_digest ||
+      manifest.entries.length !== state.source_entries
+    ) {
+      throw new OrchestratorError(
+        "invalid_planning_store",
+        `Planning request '${state.id}' source manifest does not match its state`,
+      );
+    }
+    return manifest;
   }
 
   async getRequest(id: string, attempt: number): Promise<PlanningRequest> {
@@ -1131,6 +1264,104 @@ export class PlanningStore {
     await writeJsonAtomic(this.stateFile(current.id), next);
     return next;
   }
+
+  async beginConsultation(input: {
+    readonly expected: PlanningState;
+    readonly role: PlanningConsultationRole;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before consultation`,
+      );
+    }
+    const role = PlanningConsultationRoleSchema.parse(input.role);
+    if (!["answered", "consulting"].includes(current.status)) {
+      throw new OrchestratorError(
+        "planning_not_answered",
+        `Planning request '${current.id}' is ${current.status}`,
+      );
+    }
+    const progress = current.consultations[role];
+    if (progress.record_digest !== null) return current;
+    if (input.attempt !== progress.attempts + 1) {
+      throw new OrchestratorError(
+        "consultation_attempt_conflict",
+        `${role} consultation expected attempt ${progress.attempts + 1}`,
+      );
+    }
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: "consulting",
+      consultations: {
+        ...current.consultations,
+        [role]: {
+          attempts: input.attempt,
+          current_request_digest: input.requestDigest,
+          record_digest: null,
+          report_digest: null,
+        },
+      },
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
+
+  async publishConsultation(input: {
+    readonly expected: PlanningState;
+    readonly role: PlanningConsultationRole;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly recordDigest: Digest;
+    readonly reportDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before consultation publication`,
+      );
+    }
+    const role = PlanningConsultationRoleSchema.parse(input.role);
+    const progress = current.consultations[role];
+    if (
+      current.status !== "consulting" ||
+      progress.attempts !== input.attempt ||
+      progress.current_request_digest !== input.requestDigest ||
+      progress.record_digest !== null ||
+      progress.report_digest !== null
+    ) {
+      throw new OrchestratorError(
+        "consultation_attempt_conflict",
+        `${role} consultation does not match its active attempt`,
+      );
+    }
+    const consultations = {
+      ...current.consultations,
+      [role]: {
+        ...progress,
+        record_digest: input.recordDigest,
+        report_digest: input.reportDigest,
+      },
+    };
+    const complete = planningConsultationRoles.every(
+      (name) => consultations[name].record_digest !== null,
+    );
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: complete ? "consulted" : "consulting",
+      consultations,
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
 }
 
 export function planningIdForGoal(goal: string): string {
@@ -1148,7 +1379,9 @@ export function planningIdForGoal(goal: string): string {
   );
 }
 
-async function requireCleanProject(project: Project): Promise<string> {
+export async function requireCleanPlanningProject(
+  project: Project,
+): Promise<string> {
   const status = await gitOutput(project.root, [
     "status",
     "--porcelain=v1",
@@ -1407,7 +1640,7 @@ export async function runPlanningQuestionnaire(
   const planningId = PlanningIdSchema.parse(
     options.planningId ?? planningIdForGoal(goal),
   );
-  const baseCommit = await requireCleanProject(options.project);
+  const baseCommit = await requireCleanPlanningProject(options.project);
   const snapshot = await createSourceSnapshot({
     projectRoot: options.project.root,
     commit: baseCommit,
@@ -1618,7 +1851,7 @@ export async function runPlanningQuestionnaire(
         turn.text,
         new Set(snapshot.manifest.entries.map((entry) => entry.path)),
       );
-      const latestCommit = await requireCleanProject(options.project);
+      const latestCommit = await requireCleanPlanningProject(options.project);
       if (latestCommit !== baseCommit) {
         throw new OrchestratorError(
           "planning_source_stale",
@@ -1728,7 +1961,7 @@ export async function answerPlanningQuestionnaire(
   options: AnswerPlanningOptions,
 ): Promise<AnswerPlanningResult> {
   const planningId = PlanningIdSchema.parse(options.planningId);
-  const baseCommit = await requireCleanProject(options.project);
+  const baseCommit = await requireCleanPlanningProject(options.project);
   const store = new PlanningStore(options.store);
   const state = await store.get(planningId);
   if (

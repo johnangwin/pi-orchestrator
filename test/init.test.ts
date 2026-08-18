@@ -24,7 +24,12 @@ describe("consumer Project initialization", () => {
 
     const project = await loadProject(root);
     expect(project.config.project.id).toBe("sample-project");
+    expect(project.roles.get("architect")?.definition.model).toBe("plan");
+    expect(project.roles.get("quant")?.definition.model).toBe("quant");
     expect(project.roles.get("implementer")?.definition.access).toBe("write");
+    expect(project.skills.get("quant")?.content).toContain(
+      "dimensional consistency",
+    );
     expect(await readFile(agentsPath, "utf8")).toBe(
       "# Existing instructions\n",
     );

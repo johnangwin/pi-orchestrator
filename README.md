@@ -77,6 +77,8 @@ Human Task commits now close the one-Task vertical slice. The CLI displays the e
 
 Repository-aware planning now opens Milestone 5. A clean committed Project is copied into a fresh read-only Lead Session, which must inspect the source and return a bounded structured questionnaire with real source anchors. The host binds that questionnaire to the exact goal, commit, source, Role, model, policy, Brief, Session, and Sandbox evidence. Human option selections or free-form responses are stored as immutable Decisions; no transcript or unapproved implementation Run is created.
 
+Answered planning requests can now launch independent Architecture and Quant consultations. Each fresh read-only Session receives the exact repository, questionnaire, Decisions, Role, Skills, and its own output contract, but no transcript or peer result. Immutable evidence and rendered Reports bind each result to its model route, policy, Brief, Session, Sandbox, source, and attempt; partial failure preserves the completed Role and retries only the failed Role with a fresh Session.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:
@@ -109,9 +111,12 @@ After changing `/opt/homebrew/var/openshell/gateway.toml`, restart the service a
 # In a consumer repository
 orchestrator init . --project-id stepout
 
-# After defining registered Checks and a Plan
+# Gather repository-bound planning evidence
 orchestrator plan "Introduce a strategy identity boundary" --id strategy-boundary-planning
 orchestrator answer strategy-boundary-planning
+orchestrator consult strategy-boundary-planning
+
+# After creating a Plan and defining its registered Checks
 orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
 orchestrator start strategy-boundary

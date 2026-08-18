@@ -318,6 +318,23 @@ describe("planning questionnaire", () => {
         await planningDecisions(context.store, "fixture-planning"),
       ).toEqual(accepted.decisions.map((record) => record.decision));
 
+      const { consultations: _consultations, ...legacyState } = accepted.state;
+      await writeJsonAtomic(
+        path.join(
+          context.store.planningDirectory("fixture-planning"),
+          "state.json",
+        ),
+        legacyState,
+      );
+      await expect(
+        new PlanningStore(context.store).get("fixture-planning"),
+      ).resolves.toMatchObject({
+        consultations: {
+          architecture: { attempts: 0, report_digest: null },
+          quant: { attempts: 0, report_digest: null },
+        },
+      });
+
       await writeJsonAtomic(
         path.join(
           context.store.planningDirectory("fixture-planning"),

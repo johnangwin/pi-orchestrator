@@ -65,6 +65,12 @@ The immutable questionnaire record binds its request, goal, commit, source, Role
 
 `orchestrator answer <planning-id>` requires all question IDs and rejects extras. Each option selection or free-form response is stored as an individual self-digested Decision record bound to the questionnaire and question. Planning becomes `answered` only after every Decision exists and revalidates. An interrupted retry can reuse identical Decision files but cannot replace an accepted answer. A dirty checkout or changed commit makes the planning evidence stale.
 
+`orchestrator consult <planning-id>` requires that answered state and revalidates the same clean commit, full tracked-source manifest, questionnaire, and Decision records. It runs fresh read-only Architect and Quant Sessions through their independently resolved Role routes. Both Briefs contain the exact goal, questionnaire, Decisions, source identity, Role, Skills, and output contract; neither contains a transcript or the other consultation's result.
+
+Architecture must return current constraints, one conservative alternative, one target alternative, a recommendation, risks, real source anchors, and unresolved questions. Quant must return applicability, evidence, definitions and units, assumptions, analyses, risks, required verification, real source anchors, and unresolved questions. `applicability: none` still requires evidence and at least one verification action. Unknown anchors, malformed output, truncation, route drift, policy drift, or source drift fail closed.
+
+Planning state records monotonic attempts plus current request, evidence-record, and Report digests separately for `architecture` and `quant`. The first attempt moves planning to `consulting`; only two validated Reports move it to `consulted`. Requests, Briefs, raw final structured responses, model-turn evidence, Sandbox provenance, and rendered consultation Reports are immutable host files. Exact completed work is reused, an output stored before state publication is adopted, and a failed Role advances to a fresh Session attempt without changing the other Role's Report.
+
 ## Task provenance
 
 Each runtime Task has fields for:

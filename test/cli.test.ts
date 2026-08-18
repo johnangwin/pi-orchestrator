@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,10 +29,11 @@ async function orchestrator(args: readonly string[]): Promise<string> {
 }
 
 describe("host CLI", () => {
-  it("exposes the repository planning and answer commands", async () => {
+  it("exposes the repository planning, answer, and consultation commands", async () => {
     const help = await orchestrator(["--help"]);
     expect(help).toContain("plan [options] <goal>");
     expect(help).toContain("answer [options] <planning>");
+    expect(help).toContain("consult [options] <planning>");
   });
 
   it("validates, approves, and reports a fresh Plan", async () => {
@@ -102,6 +103,51 @@ describe("host CLI", () => {
     });
     expect(started.worktree).toContain("/fixture/fixture-run");
 
+    const digest = `sha256:${"0".repeat(64)}`;
+    const planningDirectory = path.join(
+      home,
+      "projects",
+      "fixture",
+      "planning",
+      "fixture-planning",
+    );
+    await mkdir(planningDirectory, { recursive: true });
+    await writeFile(
+      path.join(planningDirectory, "state.json"),
+      `${JSON.stringify({
+        version: 1,
+        id: "fixture-planning",
+        project_id: "fixture",
+        goal: "Exercise status projection",
+        goal_digest: digest,
+        base_commit: "0".repeat(40),
+        source_digest: digest,
+        source_entries: 1,
+        status: "consulting",
+        attempts: 1,
+        current_request_digest: digest,
+        questionnaire_digest: digest,
+        decisions: { "compatibility-policy": digest },
+        consultations: {
+          architecture: {
+            attempts: 1,
+            current_request_digest: digest,
+            record_digest: digest,
+            report_digest: digest,
+          },
+          quant: {
+            attempts: 1,
+            current_request_digest: digest,
+            record_digest: null,
+            report_digest: null,
+          },
+        },
+        created_at: "2026-08-18T18:00:00.000Z",
+        updated_at: "2026-08-18T18:05:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+
     const status = JSON.parse(
       await orchestrator([
         "status",
@@ -113,12 +159,26 @@ describe("host CLI", () => {
       ]),
     ) as {
       project: string;
-      planning: unknown[];
+      planning: Array<{
+        status: string;
+        consultations: {
+          architecture: { report_digest: string | null };
+          quant: { report_digest: string | null };
+        };
+      }>;
       approvals: Array<{ fresh: boolean }>;
       runs: Array<{ id: string; status: string }>;
     };
     expect(status.project).toBe("fixture");
-    expect(status.planning).toEqual([]);
+    expect(status.planning).toMatchObject([
+      {
+        status: "consulting",
+        consultations: {
+          architecture: { report_digest: digest },
+          quant: { report_digest: null },
+        },
+      },
+    ]);
     expect(status.approvals).toHaveLength(1);
     expect(status.approvals[0]?.fresh).toBe(true);
     expect(status.runs).toMatchObject([{ id: "fixture-run", status: "ready" }]);

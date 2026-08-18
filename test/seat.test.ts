@@ -13,7 +13,9 @@ import type {
 import {
   PiClientConfigSchema,
   resumeReadSession,
+  resumeWriteSession,
   startReadSession,
+  startWriteSession,
   type ReadSessionOpenShell,
   type ResumeReadSessionOpenShell,
 } from "../src/seat.js";
@@ -152,6 +154,7 @@ describe("read Session bootstrap", () => {
       });
       expect(session.info.sourceDigest).toBe(snapshot.manifest.source_digest);
       expect(config).toMatchObject({
+        profile: "read",
         source_digest: snapshot.manifest.source_digest,
         policy_digest: session.info.readPolicyDigest,
       });
@@ -173,6 +176,96 @@ describe("read Session bootstrap", () => {
         calls.indexOf("exec:/usr/local/bin/orchestrator-start-pi"),
       );
     } finally {
+      await snapshot.dispose();
+    }
+  });
+
+  it("stages immutable base and writable project trees for an implementation Session", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const snapshot = await createSourceSnapshot({
+      projectRoot: root,
+      commit,
+      paths: ["src"],
+    });
+    const port = await availablePort();
+    const writeSandbox = { ...sandbox(1), name: "pio-write-test" };
+    let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
+    let dockerfile = "";
+    let boundary = "";
+    let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
+    const client: ReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      async createSandbox(options) {
+        config = PiClientConfigSchema.parse(
+          JSON.parse(
+            await readFile(path.join(options.from, "session.json"), "utf8"),
+          ) as unknown,
+        );
+        dockerfile = await readFile(
+          path.join(options.from, "Dockerfile"),
+          "utf8",
+        );
+        expect(options.policyPath).toBe(
+          path.join(process.cwd(), "sandbox", "policies", "write.yaml"),
+        );
+        return writeSandbox;
+      },
+      waitForSandbox: () => Promise.resolve(writeSandbox),
+      execSandbox(_name, command) {
+        if (command[0] === "/bin/sh") boundary = command[2] ?? "";
+        return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+      },
+      async startServiceForward(): Promise<OpenShellForward> {
+        if (!config) throw new Error("Session config was not staged");
+        server = await startLinkServer({ config, deliver() {} });
+        return {
+          sandboxName: writeSandbox.name,
+          localHost: "127.0.0.1",
+          localPort: port,
+          targetHost: "127.0.0.1",
+          targetPort: port,
+          closed: Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+          stop: async () => server?.close(),
+        };
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    let session: Awaited<ReturnType<typeof startWriteSession>> | undefined;
+    try {
+      session = await startWriteSession({
+        client,
+        identity: {
+          run: "run-one",
+          seat: "implementer",
+          session: "session-write",
+          epoch: 1,
+        },
+        snapshot,
+        linkPort: port,
+        sandboxName: writeSandbox.name,
+      });
+      expect(session.info.profile).toBe("write");
+      expect(config?.profile).toBe("write");
+      expect(session.info.policyDigest).toBe(session.info.readPolicyDigest);
+      expect(dockerfile).toContain(
+        "ADD --chown=0:0 source.tar /workspace/base/",
+      );
+      expect(dockerfile).toContain(
+        "ADD --chown=10001:10001 source.tar /workspace/project/",
+      );
+      expect(dockerfile).toContain(
+        "RUN chown -R 10001:10001 /workspace/project",
+      );
+      expect(dockerfile).toContain("WORKDIR /sandbox");
+      expect(boundary).toContain("! touch /workspace/base/");
+      expect(boundary).toContain("probe_dir=$(find /workspace/project");
+      expect(boundary).toContain("${probe_dir:-/workspace/project}");
+    } finally {
+      if (session) await session.stop();
+      else await server?.close();
       await snapshot.dispose();
     }
   });
@@ -328,6 +421,59 @@ describe("read Session bootstrap", () => {
       }),
     ).rejects.toMatchObject({ code: "sandbox_identity_mismatch" });
     expect(executed).toBe(false);
+    expect(forwarded).toBe(false);
+  });
+
+  it("rejects recovery under a different immutable Session profile", async () => {
+    const identity = {
+      run: "run-one",
+      seat: "scout",
+      session: "session-one",
+      epoch: 1,
+    } as const;
+    const policy = await loadSandboxPolicy(
+      "read",
+      path.join(process.cwd(), "sandbox", "policies", "read.yaml"),
+    );
+    const config = PiClientConfigSchema.parse({
+      version: 1,
+      identity,
+      token: "a".repeat(64),
+      listen: { host: "127.0.0.1", port: 41_727 },
+      client_version: "0.2.0",
+      pi_version: "0.84.2",
+      profile: "read",
+      source_digest: `sha256:${"1".repeat(64)}`,
+      policy_digest: policy.digest,
+    });
+    let forwarded = false;
+    const client: ResumeReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      getSandbox: () => Promise.resolve(sandbox(1)),
+      execSandbox: () =>
+        Promise.resolve({
+          stdout: JSON.stringify(config),
+          stderr: "",
+          exitCode: 0,
+        }),
+      startServiceForward: () => {
+        forwarded = true;
+        throw new Error("must not forward");
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    await expect(
+      resumeWriteSession({
+        client,
+        identity,
+        sandbox: {
+          id: sandbox(1).id,
+          name: sandbox(1).name,
+          workspace: sandbox(1).workspace,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "session_profile_mismatch" });
     expect(forwarded).toBe(false);
   });
 

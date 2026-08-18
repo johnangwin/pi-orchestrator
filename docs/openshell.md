@@ -77,7 +77,7 @@ The 0.0.106 spike verified:
 - unapproved outbound HTTP is denied;
 - `forward service` exposes a sandbox-loopback service only on an explicitly selected host-loopback listener.
 
-The pinned Pi image uses Node 22.19.0 and `@earendil-works/pi-coding-agent` 0.84.2. It runs as UID/GID 10001, disables Pi telemetry and startup network operations, loads only the Orchestrator extension explicitly, and enables only Pi's read-oriented built-in tools for the initial Session slice. The daemon reconstructs an allowlisted child environment instead of passing the Sandbox environment through to Pi. For model-routed Sessions, that allowlist admits only OpenShell's validated HTTP proxy, fixed CA path, and Node proxy switch; provider credentials remain absent.
+The pinned Pi image uses Node 22.19.0 and `@earendil-works/pi-coding-agent` 0.84.2. It runs as UID/GID 10001, disables Pi telemetry and startup network operations, and loads only the Orchestrator extension explicitly. Immutable Session configuration selects the tool set: `read` permits only read-oriented tools, while `write` additionally permits Pi's write, edit, and shell tools inside the write policy. The daemon reconstructs an allowlisted child environment instead of passing the Sandbox environment through to Pi. For model-routed Sessions, that allowlist admits only OpenShell's validated HTTP proxy, fixed CA path, and Node proxy switch; provider credentials remain absent.
 
 ## Policy profiles
 
@@ -112,6 +112,16 @@ The live test exercises the real OpenShell file-transfer path and removes its di
 
 ```sh
 PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
+```
+
+Write Sessions expand the same verified archive into immutable `/workspace/base` and writable `/workspace/project` trees. `/usr/local/bin/orchestrator-export-patch` compares them and emits a canonical Patch Artifact. The host independently reconstructs the source, applies the binary-capable patch in disposable staging, and verifies the claimed result before publication.
+
+The image retains `/sandbox` as its OCI working directory because OpenShell 0.0.106 confines `sandbox download` to that tree. The Pi daemon still launches Pi with `/workspace/project` as its explicit working directory.
+
+The full live path is opt-in:
+
+```sh
+PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
 ```
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.

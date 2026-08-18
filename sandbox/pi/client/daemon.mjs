@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readRuntimeIdentity, sessionEnvironment } from "./environment.mjs";
 import { readClientConfig } from "./link.mjs";
 import { modelArguments } from "./model.mjs";
+import { sessionTools } from "./tools.mjs";
 
 const runtime = await readRuntimeIdentity(
   "/usr/local/lib/pi-orchestrator/runtime.json",
@@ -23,7 +24,7 @@ const child = spawn(
     "--no-themes",
     "--no-context-files",
     "--tools",
-    "read,grep,find,ls",
+    sessionTools(config.profile),
     "--offline",
     ...modelArguments(config),
   ],

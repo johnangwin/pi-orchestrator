@@ -15,6 +15,7 @@ export interface ClientConfig {
   };
   readonly client_version: string;
   readonly pi_version: string;
+  readonly profile?: "read" | "write" | undefined;
   readonly source_digest?: string | undefined;
   readonly policy_digest?: string | undefined;
   readonly model?:

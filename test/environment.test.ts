@@ -3,6 +3,7 @@ import {
   runtimeIdentity,
   sessionEnvironment,
 } from "../sandbox/pi/client/environment.mjs";
+import { sessionTools } from "../sandbox/pi/client/tools.mjs";
 
 describe("Pi child environment", () => {
   it("passes only fixed runtime values and committed version identity", () => {
@@ -71,5 +72,13 @@ describe("Pi child environment", () => {
       ORCHESTRATOR_CLIENT_VERSION: "0.2.0",
       ORCHESTRATOR_PI_VERSION: "0.84.2",
     });
+  });
+
+  it("enables mutating Pi tools only for write-profile Sessions", () => {
+    expect(sessionTools("read")).toBe("read,grep,find,ls");
+    expect(sessionTools("write")).toBe("read,write,edit,bash,grep,find,ls");
+    expect(() => sessionTools("check" as never)).toThrow(
+      "Unsupported Session profile",
+    );
   });
 });

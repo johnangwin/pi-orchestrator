@@ -9,6 +9,8 @@ import { SeatRegistry } from "./registry.js";
 import {
   ReadSession,
   resumeReadSession,
+  resumeWriteSession,
+  type AgentSessionProfile,
   type ResumeReadSessionOpenShell,
 } from "./seat.js";
 import {
@@ -74,6 +76,7 @@ export interface SessionRuntime extends MailboxLink {
 export interface RecoverSessionOptions {
   readonly identity: SessionIdentity;
   readonly runtime?: SessionRuntime;
+  readonly profile?: AgentSessionProfile;
   readonly policyDirectory?: string;
   readonly piVersion?: string;
   readonly clientVersion?: string;
@@ -372,7 +375,9 @@ export class SessionReconciler {
     await this.mailbox.detach(identity);
     await options.runtime?.release();
 
-    const recovered = await resumeReadSession({
+    const resume =
+      options.profile === "write" ? resumeWriteSession : resumeReadSession;
+    const recovered = await resume({
       client: this.openshell,
       identity,
       sandbox: current.sandbox,

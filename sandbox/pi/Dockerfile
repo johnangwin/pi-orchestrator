@@ -15,10 +15,11 @@ RUN apt-get update \
 
 COPY client/ /usr/local/lib/pi-orchestrator/client/
 COPY start.sh /usr/local/bin/orchestrator-start-pi
+COPY export.mjs /usr/local/bin/orchestrator-export-patch
 
 RUN printf '{"client_version":"%s","pi_version":"%s"}\n' "$CLIENT_VERSION" "$PI_VERSION" > /usr/local/lib/pi-orchestrator/runtime.json \
     && chmod -R a-w /usr/local/lib/pi-orchestrator \
-    && chmod 0555 /usr/local/bin/orchestrator-start-pi
+    && chmod 0555 /usr/local/bin/orchestrator-start-pi /usr/local/bin/orchestrator-export-patch
 
 ENV HOME=/home/sandbox \
     PI_CODING_AGENT_DIR=/home/sandbox/.pi/agent \

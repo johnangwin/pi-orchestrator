@@ -15,6 +15,7 @@ export * from "./mailbox.js";
 export * from "./message.js";
 export * from "./model.js";
 export * from "./openshell.js";
+export * from "./patch.js";
 export * from "./plan.js";
 export * from "./policy.js";
 export * from "./projection.js";

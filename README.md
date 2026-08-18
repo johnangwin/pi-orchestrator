@@ -40,6 +40,9 @@ PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
 # Real Sandbox file export and host-side Artifact import
 PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 
+# Writable implementation Session, Patch export, transfer, and host replay
+PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
+
 # Read-only cmux version and capability probe; run from a cmux terminal
 PI_ORCHESTRATOR_LIVE_CMUX=1 npm test -- test/cmux.live.test.ts
 ```
@@ -57,6 +60,8 @@ Host Mailbox routing now resolves Seat-addressed Messages to the authoritative c
 Visible Session lifecycle is now recoverable across host restarts. Run state durably binds cmux creation operations, Pane intents, and UUID handles to the exact Session epoch. The reconciler compares Seat, Session, OpenShell Sandbox, Link, and cmux state; it can rebuild a Link from immutable Sandbox input, reattach a missing Pane with a new operation ID, or perform ordered Session replacement. Replacement verifies Sandbox provenance before side effects, closes the old epoch to new delivery, removes external resources, supersedes its pending Messages, and advances the epoch last.
 
 An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
+
+Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. Imported patches do not touch the Run worktree until the next scope and protected-path gate is implemented.
 
 ## OpenShell
 

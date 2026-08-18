@@ -117,6 +117,10 @@ A source snapshot is produced from an exact Git commit and literal relative path
 
 Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
 
+An implementation Session uses the same mechanism under the final `write` profile. The verified archive is expanded into both a root-owned `/workspace/base` and Sandbox-user-owned `/workspace/project`; neither contains Git metadata. Startup must prove that base and input reject writes and that project accepts them. Immutable Session configuration binds the profile to the Sandbox policy and Pi tool set. A missing profile is interpreted only as `read` for recovery compatibility.
+
+The image OCI working directory remains `/sandbox` because OpenShell file download is workspace-confined. The Pi daemon separately fixes the model process working directory at `/workspace/project`.
+
 ## Run worktrees
 
 A Run starts only from a fresh approval whose Plan ID, revision, Plan digest, and base commit match the current Project. The default Run ID is `<plan-id>-r<revision>`. Its branch is the committed `git.branch_prefix` plus the Run ID, and its host worktree path is `<worktrees.root>/<project-id>/<run-id>` after machine-local home expansion and canonical path resolution. A relative configured root resolves from the consumer Project root; a relative command-line override resolves from the caller's working directory.
@@ -143,6 +147,16 @@ The host selects the content contract and size limit. Before transfer it verifie
 
 The payload and record are changed to mode `0400`, flushed, and published together by atomic directory rename under the Run's `artifacts/` directory. Failed imports remove staging data. Retrying identical content and provenance is idempotent; reusing an Artifact ID with any different content or provenance is rejected. Stored content is revalidated on read and is never executed by the Orchestrator.
 
+## Implementation patches
+
+The pinned Sandbox exporter requires immutable `write`-profile Session configuration, compares `/workspace/base` and `/workspace/project`, and emits one binary-capable JSON Patch Artifact. It rejects `.git`, unsafe or non-UTF-8 paths, special files, changing files, more than 100,000 entries, a patch over 32 MiB, or a complete Artifact over 64 MiB. Git runs without system/global configuration, external diff commands, text conversion, or rename inference.
+
+The Patch bundle binds the source snapshot digest, complete base and result tree digests, a sorted change manifest, raw patch digest, and domain-separated diff digest. Tree entries bind path, regular/executable/symlink mode, byte count, and SHA-256 content digest. Identical export retry is idempotent; an existing canonical path with other content or a non-regular file blocks.
+
+Patch Artifact validation replays the patch against two fresh extractions of the host-verified source archive. The host independently recomputes the base tree, applies with unsafe paths disabled, confirms the base remained unchanged, and recomputes the result tree and change manifest before Artifact publication. Validation failure leaves no published Artifact.
+
+An imported Patch Artifact does not authorize source mutation. Until scope and protected-path validation is implemented, the host Run worktree remains untouched.
+
 ## Session identity
 
 A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.
@@ -153,7 +167,7 @@ Registry mutations are serialized by the single-writer Project store. Starting o
 
 Session status transitions follow an explicit graph. `stopped` and `failed` are terminal and require an end time and reason. An OpenShell Sandbox binding records its UUID, name, and workspace once and cannot be replaced in place. Older version-one Run files without registry fields read as empty registries and acquire the fields on their next atomic mutation.
 
-Lifecycle reconciliation observes the current Seat, Session, exact Sandbox provenance, live Link identity, and cmux projection before recommending `start`, `reconnect`, `reattach`, `replace`, or `blocked`. Observation alone does not change workflow state. A host restart may rebuild a Link for the same Session only after the immutable Sandbox configuration matches the current identity, pinned Pi and client versions, current read-policy digest, and expected model and Brief route.
+Lifecycle reconciliation observes the current Seat, Session, exact Sandbox provenance, live Link identity, and cmux projection before recommending `start`, `reconnect`, `reattach`, `replace`, or `blocked`. Observation alone does not change workflow state. A host restart may rebuild a Link for the same Session only after the immutable Sandbox configuration matches the current identity, pinned Pi and client versions, current profile and policy digest, and expected model and Brief route.
 
 Replacement is an ordered retryable operation. The host validates the replacement input and exact Sandbox provenance before side effects, detaches the Link, marks the old Session terminal, removes its Sandbox and Pane, supersedes pending Messages for that exact epoch, and creates the next Session last. A failure leaves enough durable state to resume the same operation. A Sandbox with the expected name but a different UUID or workspace blocks replacement before any state changes.
 

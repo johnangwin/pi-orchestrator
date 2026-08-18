@@ -84,6 +84,7 @@ export const PiClientConfigSchema = z
       .strict(),
     client_version: VersionSchema,
     pi_version: VersionSchema,
+    profile: z.enum(["read", "write"]).default("read"),
     source_digest: z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/)
@@ -115,6 +116,8 @@ export type ReadSessionOpenShell = Pick<
 > &
   Partial<Pick<OpenShellClient, "getInferenceRoute">>;
 
+export type WriteSessionOpenShell = ReadSessionOpenShell;
+
 export type ResumeReadSessionOpenShell = Pick<
   OpenShellClient,
   | "deleteSandbox"
@@ -124,6 +127,8 @@ export type ResumeReadSessionOpenShell = Pick<
   | "startServiceForward"
 > &
   Partial<Pick<OpenShellClient, "getInferenceRoute">>;
+
+export type ResumeWriteSessionOpenShell = ResumeReadSessionOpenShell;
 
 type ReadSessionCleanupOpenShell = Pick<OpenShellClient, "deleteSandbox">;
 
@@ -143,6 +148,8 @@ export interface StartReadSessionOptions {
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
 }
 
+export type StartWriteSessionOptions = StartReadSessionOptions;
+
 export interface ResumeReadSessionOptions {
   readonly client: ResumeReadSessionOpenShell;
   readonly identity: SessionIdentity;
@@ -156,10 +163,16 @@ export interface ResumeReadSessionOptions {
   readonly briefDigest?: string;
 }
 
+export type ResumeWriteSessionOptions = ResumeReadSessionOptions;
+
+export type AgentSessionProfile = "read" | "write";
+
 export interface ReadSessionInfo {
   readonly sandbox: OpenShellSandbox;
   readonly identity: SessionIdentity;
   readonly sourceDigest: string;
+  readonly profile: AgentSessionProfile;
+  readonly policyDigest: string;
   readonly readPolicyDigest: string;
   readonly openshell: OpenShellPreflight;
   readonly piVersion: string;
@@ -168,6 +181,8 @@ export interface ReadSessionInfo {
   readonly inference?: OpenShellInferenceRoute;
   readonly briefDigest?: string;
 }
+
+export type WriteSessionInfo = ReadSessionInfo;
 
 function bundledPath(...segments: string[]): string {
   return fileURLToPath(
@@ -183,6 +198,7 @@ async function createSessionImageContext(options: {
   readonly image: string;
   readonly snapshot: SourceSnapshot;
   readonly config: PiClientConfig;
+  readonly profile: AgentSessionProfile;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
 }): Promise<string> {
   const image = path.resolve(options.image);
@@ -239,17 +255,24 @@ async function createSessionImageContext(options: {
     const immutableInputs = options.brief
       ? "/workspace/input/snapshot.json /workspace/input/session.json /workspace/input/brief.md"
       : "/workspace/input/snapshot.json /workspace/input/session.json";
+    const sourceLayers =
+      options.profile === "write"
+        ? `ADD --chown=0:0 source.tar /workspace/base/
+RUN chmod -R a-w /workspace/base
+ADD --chown=10001:10001 source.tar /workspace/project/
+RUN chown -R 10001:10001 /workspace/project`
+        : "ADD --chown=10001:10001 source.tar /workspace/project/";
     await writeFile(
       dockerfilePath,
       `${dockerfile.trimEnd()}
 
 # Session inputs come only from the trusted Git snapshot context.
 USER root
-ADD --chown=10001:10001 source.tar /workspace/project/
+${sourceLayers}
 COPY --chown=0:0 ${inputFiles} /workspace/input/
 RUN chmod 0444 ${immutableInputs}
 USER 10001:10001
-WORKDIR /workspace/project
+WORKDIR /sandbox
 `,
       "utf8",
     );
@@ -260,8 +283,19 @@ WORKDIR /workspace/project
   }
 }
 
-function generatedSandboxName(): string {
-  return `pio-r-${randomBytes(4).toString("hex")}`;
+function generatedSandboxName(profile: AgentSessionProfile): string {
+  return `pio-${profile === "read" ? "r" : "w"}-${randomBytes(4).toString("hex")}`;
+}
+
+function boundaryVerification(
+  profile: AgentSessionProfile,
+  hasBrief: boolean,
+): string {
+  const inputs = `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${hasBrief ? " && test -r /workspace/input/brief.md" : ""}`;
+  if (profile === "write") {
+    return `${inputs} && test -n "$(find /workspace/base -mindepth 1 -print -quit)" && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/base/.git && test ! -e /workspace/project/.git && ! touch /workspace/base/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe && probe_dir=$(find /workspace/project -mindepth 1 -type d -print -quit) && touch "\${probe_dir:-/workspace/project}/.orchestrator-write-probe" && rm "\${probe_dir:-/workspace/project}/.orchestrator-write-probe"`;
+  }
+  return `${inputs} && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe`;
 }
 
 async function requireSuccess(
@@ -365,7 +399,7 @@ export class ReadSession {
     if (!this.info.model) {
       throw new OrchestratorError(
         "session_has_no_model",
-        "This read-only Session was not configured for inference",
+        "This Session was not configured for inference",
       );
     }
     if (this.running) {
@@ -492,6 +526,8 @@ export class ReadSession {
   }
 }
 
+export type WriteSession = ReadSession;
+
 async function readSandboxJson(
   client: ResumeReadSessionOpenShell,
   sandboxName: string,
@@ -529,8 +565,9 @@ function expectedPiModel(model: ResolvedModelRoute): PiSessionModel {
   });
 }
 
-export async function resumeReadSession(
+async function resumeSession(
   options: ResumeReadSessionOptions,
+  profile: AgentSessionProfile,
 ): Promise<ReadSession> {
   const identity = SessionIdentitySchema.parse(options.identity);
   const expectedSandbox = SessionSandboxSchema.parse(options.sandbox);
@@ -560,10 +597,10 @@ export async function resumeReadSession(
     );
   }
 
-  const [sandbox, preflight, readPolicy] = await Promise.all([
+  const [sandbox, preflight, policy] = await Promise.all([
     options.client.getSandbox(expectedSandbox.name),
     options.client.preflight(),
-    loadSandboxPolicy("read", path.join(policyDirectory, "read.yaml")),
+    loadSandboxPolicy(profile, path.join(policyDirectory, `${profile}.yaml`)),
   ]);
   if (
     sandbox.id !== expectedSandbox.id ||
@@ -615,10 +652,16 @@ export async function resumeReadSession(
       "Sandbox Session configuration predates durable recovery metadata",
     );
   }
-  if (config.policy_digest !== readPolicy.digest) {
+  if (config.profile !== profile) {
+    throw new OrchestratorError(
+      "session_profile_mismatch",
+      `Immutable Sandbox configuration declares '${config.profile}', not '${profile}'`,
+    );
+  }
+  if (config.policy_digest !== policy.digest) {
     throw new OrchestratorError(
       "session_policy_stale",
-      "Sandbox Session was created under another read policy digest",
+      `Sandbox Session was created under another ${profile} policy digest`,
     );
   }
 
@@ -698,6 +741,8 @@ export async function resumeReadSession(
         sandbox,
         identity,
         sourceDigest: config.source_digest,
+        profile,
+        policyDigest: config.policy_digest,
         readPolicyDigest: config.policy_digest,
         openshell: preflight,
         piVersion,
@@ -717,8 +762,21 @@ export async function resumeReadSession(
   }
 }
 
-export async function startReadSession(
+export function resumeReadSession(
+  options: ResumeReadSessionOptions,
+): Promise<ReadSession> {
+  return resumeSession(options, "read");
+}
+
+export function resumeWriteSession(
+  options: ResumeWriteSessionOptions,
+): Promise<ReadSession> {
+  return resumeSession(options, "write");
+}
+
+async function startSession(
   options: StartReadSessionOptions,
+  profile: AgentSessionProfile,
 ): Promise<ReadSession> {
   const snapshotManifest = await verifySourceSnapshot(options.snapshot);
   const identity = SessionIdentitySchema.parse(options.identity);
@@ -764,8 +822,8 @@ export async function startReadSession(
       "The OpenShell adapter cannot inspect the configured inference route",
     );
   }
-  const [readPolicy, preflight] = await Promise.all([
-    loadSandboxPolicy("read", path.join(policyDirectory, "read.yaml")),
+  const [policy, preflight] = await Promise.all([
+    loadSandboxPolicy(profile, path.join(policyDirectory, `${profile}.yaml`)),
     options.client.preflight(),
   ]);
   if (preflight.requiredVersion === undefined) {
@@ -800,8 +858,9 @@ export async function startReadSession(
     listen: { host: "127.0.0.1", port: linkPort },
     client_version: clientVersion,
     pi_version: piVersion,
+    profile,
     source_digest: snapshotManifest.source_digest,
-    policy_digest: readPolicy.digest,
+    policy_digest: policy.digest,
     ...(model
       ? {
           model: {
@@ -819,11 +878,12 @@ export async function startReadSession(
         }
       : {}),
   });
-  const sandboxName = options.sandboxName ?? generatedSandboxName();
+  const sandboxName = options.sandboxName ?? generatedSandboxName(profile);
   const imageContext = await createSessionImageContext({
     image,
     snapshot: options.snapshot,
     config,
+    profile,
     ...(options.brief ? { brief: options.brief } : {}),
   });
 
@@ -834,7 +894,7 @@ export async function startReadSession(
     sandbox = await options.client.createSandbox({
       name: sandboxName,
       from: imageContext,
-      policyPath: readPolicy.path,
+      policyPath: policy.path,
       command: ["/usr/bin/true"],
     });
     if (sandbox.phase !== "Ready") {
@@ -842,14 +902,10 @@ export async function startReadSession(
     }
 
     await requireSuccess(
-      "read-only boundary verification",
+      `${profile} boundary verification`,
       options.client.execSandbox(
         sandboxName,
-        [
-          "/bin/sh",
-          "-c",
-          `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${options.brief ? " && test -r /workspace/input/brief.md" : ""} && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe`,
-        ],
+        ["/bin/sh", "-c", boundaryVerification(profile, !!options.brief)],
         { timeoutMs: 10_000 },
       ),
     );
@@ -889,7 +945,9 @@ export async function startReadSession(
         sandbox,
         identity,
         sourceDigest: snapshotManifest.source_digest,
-        readPolicyDigest: readPolicy.digest,
+        profile,
+        policyDigest: policy.digest,
+        readPolicyDigest: policy.digest,
         openshell: preflight,
         piVersion,
         clientVersion,
@@ -925,4 +983,16 @@ export async function startReadSession(
   } finally {
     await rm(imageContext, { recursive: true, force: true });
   }
+}
+
+export function startReadSession(
+  options: StartReadSessionOptions,
+): Promise<ReadSession> {
+  return startSession(options, "read");
+}
+
+export function startWriteSession(
+  options: StartWriteSessionOptions,
+): Promise<ReadSession> {
+  return startSession(options, "write");
 }

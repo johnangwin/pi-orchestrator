@@ -15,6 +15,8 @@ export interface ClientConfig {
   };
   readonly client_version: string;
   readonly pi_version: string;
+  readonly source_digest?: string | undefined;
+  readonly policy_digest?: string | undefined;
   readonly model?:
     | {
         readonly alias: "plan" | "code" | "quant" | "review" | "fast";

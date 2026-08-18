@@ -9,13 +9,14 @@ import type {
   ProcessRunOptions,
   ProcessRunner,
 } from "./openshell.js";
+import { SessionIdentitySchema } from "./session.js";
 
-const CmuxIdSchema = z
+export const CmuxIdSchema = z
   .string()
   .uuid()
   .transform((value) => value.toLowerCase());
 
-const CmuxTitleSchema = z.string().trim().min(1).max(256);
+export const CmuxTitleSchema = z.string().trim().min(1).max(256);
 
 const CmuxWorkspaceSchema = z
   .object({
@@ -153,6 +154,151 @@ export const CmuxPaneCreationIntentSchema = z
 export type CmuxPaneCreationIntent = z.output<
   typeof CmuxPaneCreationIntentSchema
 >;
+
+export const CmuxWorkspaceStateSchema = z
+  .object({
+    operation_id: CmuxIdSchema,
+    title: CmuxTitleSchema,
+    binding: CmuxWorkspaceBindingSchema.nullable(),
+  })
+  .strict()
+  .superRefine((workspace, context) => {
+    if (
+      workspace.binding &&
+      (workspace.binding.operation_id !== workspace.operation_id ||
+        workspace.binding.title !== workspace.title)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["binding"],
+        message: "must match the Workspace operation and title",
+      });
+    }
+  });
+export type CmuxWorkspaceState = z.output<typeof CmuxWorkspaceStateSchema>;
+
+export const CmuxPaneStateSchema = z
+  .object({
+    identity: SessionIdentitySchema,
+    operation_id: CmuxIdSchema,
+    title: CmuxTitleSchema,
+    intent: CmuxPaneCreationIntentSchema.nullable(),
+    binding: CmuxPaneBindingSchema.nullable(),
+    replaces: CmuxPaneBindingSchema.nullable(),
+  })
+  .strict()
+  .superRefine((pane, context) => {
+    for (const [field, value] of [
+      ["intent", pane.intent],
+      ["binding", pane.binding],
+    ] as const) {
+      if (
+        value &&
+        (value.operation_id !== pane.operation_id || value.title !== pane.title)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: "must match the Pane operation and title",
+        });
+      }
+    }
+    if (
+      pane.intent &&
+      pane.binding &&
+      pane.intent.workspace_id !== pane.binding.workspace_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["binding", "workspace_id"],
+        message: "must match the Pane creation intent Workspace",
+      });
+    }
+    if (
+      pane.replaces &&
+      pane.binding &&
+      pane.replaces.pane_id === pane.binding.pane_id &&
+      pane.replaces.surface_id === pane.binding.surface_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["replaces"],
+        message: "must identify a different Pane binding",
+      });
+    }
+    if (pane.replaces && pane.replaces.operation_id === pane.operation_id) {
+      context.addIssue({
+        code: "custom",
+        path: ["replaces", "operation_id"],
+        message: "must identify a prior Pane operation",
+      });
+    }
+  });
+export type CmuxPaneState = z.output<typeof CmuxPaneStateSchema>;
+
+export const CmuxRunStateSchema = z
+  .object({
+    workspace: CmuxWorkspaceStateSchema.nullable(),
+    panes: z.record(IdentifierSchema, CmuxPaneStateSchema),
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const workspaceId = state.workspace?.binding?.workspace_id;
+    if (!state.workspace?.binding && Object.keys(state.panes).length) {
+      context.addIssue({
+        code: "custom",
+        path: ["panes"],
+        message: "cannot exist before the Run Workspace is bound",
+      });
+    }
+
+    const paneOwners = new Map<string, string>();
+    const surfaceOwners = new Map<string, string>();
+    for (const [seat, pane] of Object.entries(state.panes)) {
+      if (pane.identity.seat !== seat) {
+        context.addIssue({
+          code: "custom",
+          path: ["panes", seat, "identity", "seat"],
+          message: `must equal registry key '${seat}'`,
+        });
+      }
+      for (const [field, value] of [
+        ["intent", pane.intent],
+        ["binding", pane.binding],
+        ["replaces", pane.replaces],
+      ] as const) {
+        if (value && value.workspace_id !== workspaceId) {
+          context.addIssue({
+            code: "custom",
+            path: ["panes", seat, field, "workspace_id"],
+            message: "must equal the bound Run Workspace",
+          });
+        }
+      }
+      if (!pane.binding) continue;
+      const paneOwner = paneOwners.get(pane.binding.pane_id);
+      if (paneOwner) {
+        context.addIssue({
+          code: "custom",
+          path: ["panes", seat, "binding", "pane_id"],
+          message: `is already bound to Seat '${paneOwner}'`,
+        });
+      } else {
+        paneOwners.set(pane.binding.pane_id, seat);
+      }
+      const surfaceOwner = surfaceOwners.get(pane.binding.surface_id);
+      if (surfaceOwner) {
+        context.addIssue({
+          code: "custom",
+          path: ["panes", seat, "binding", "surface_id"],
+          message: `is already bound to Seat '${surfaceOwner}'`,
+        });
+      } else {
+        surfaceOwners.set(pane.binding.surface_id, seat);
+      }
+    }
+  });
+export type CmuxRunState = z.output<typeof CmuxRunStateSchema>;
 
 export const CmuxProjectionSchema = z
   .object({

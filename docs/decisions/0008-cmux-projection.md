@@ -36,6 +36,6 @@ All CLI calls use argument arrays rather than a host shell. A trusted command in
 
 ## Consequences
 
-The Orchestrator must start from a cmux-created control terminal so the inherited socket capability is valid. It must persist creation intents and returned bindings in authoritative Run state before relying on retry behavior; that wiring belongs to Run lifecycle and replacement work.
+The Orchestrator must start from a cmux-created control terminal so the inherited socket capability is valid. The Run lifecycle persists creation operations, intents, and returned bindings in authoritative state before relying on retry behavior. Pane records are bound to the exact Session epoch and must be retired before replacement advances that epoch.
 
 cmux panes can be recreated or reattached without changing the Session authority model. Terminal scrollback, pane presence, and titles remain operational signals rather than workflow facts.

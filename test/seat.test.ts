@@ -12,9 +12,12 @@ import type {
 } from "../src/openshell.js";
 import {
   PiClientConfigSchema,
+  resumeReadSession,
   startReadSession,
   type ReadSessionOpenShell,
+  type ResumeReadSessionOpenShell,
 } from "../src/seat.js";
+import { loadSandboxPolicy } from "../src/policy.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
 import { commitFixture, createFixtureProject } from "./fixture.js";
@@ -148,6 +151,10 @@ describe("read Session bootstrap", () => {
         sandboxName: "pio-read-test",
       });
       expect(session.info.sourceDigest).toBe(snapshot.manifest.source_digest);
+      expect(config).toMatchObject({
+        source_digest: snapshot.manifest.source_digest,
+        policy_digest: session.info.readPolicyDigest,
+      });
       expect(session.identity).toEqual({
         run: "run-one",
         seat: "scout",
@@ -168,6 +175,217 @@ describe("read Session bootstrap", () => {
     } finally {
       await snapshot.dispose();
     }
+  });
+
+  it("recovers a Link from immutable Sandbox input without deleting the Sandbox", async () => {
+    const identity = {
+      run: "run-one",
+      seat: "scout",
+      session: "session-one",
+      epoch: 1,
+    } as const;
+    const port = await availablePort();
+    const policy = await loadSandboxPolicy(
+      "read",
+      path.join(process.cwd(), "sandbox", "policies", "read.yaml"),
+    );
+    const config = PiClientConfigSchema.parse({
+      version: 1,
+      identity,
+      token: "a".repeat(64),
+      listen: { host: "127.0.0.1", port },
+      client_version: "0.2.0",
+      pi_version: "0.84.2",
+      source_digest: `sha256:${"1".repeat(64)}`,
+      policy_digest: policy.digest,
+    });
+    const delivered: string[] = [];
+    const server = await startLinkServer({
+      config,
+      deliver(message) {
+        delivered.push(message.id);
+      },
+    });
+    let deletes = 0;
+    let forwards = 0;
+    const client: ResumeReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      getSandbox: () => Promise.resolve(sandbox(1)),
+      execSandbox(_name, command) {
+        expect(command).toEqual(["/bin/cat", "/workspace/input/session.json"]);
+        return Promise.resolve({
+          stdout: JSON.stringify(config),
+          stderr: "",
+          exitCode: 0,
+        });
+      },
+      startServiceForward: () => {
+        forwards += 1;
+        return Promise.resolve({
+          sandboxName: "pio-read-test",
+          localHost: "127.0.0.1",
+          localPort: port,
+          targetHost: "127.0.0.1",
+          targetPort: port,
+          closed: Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+          stop: () => Promise.resolve(),
+        });
+      },
+      deleteSandbox: () => {
+        deletes += 1;
+        return Promise.resolve();
+      },
+    };
+    const expectedSandbox = {
+      id: sandbox(1).id,
+      name: sandbox(1).name,
+      workspace: sandbox(1).workspace,
+    };
+    const message = MessageSchema.parse({
+      version: 1,
+      id: "recovery-message",
+      run: identity.run,
+      from: { host: true },
+      to: {
+        seat: identity.seat,
+        session: identity.session,
+        epoch: identity.epoch,
+      },
+      type: "instruction",
+      priority: "normal",
+      reply_to: null,
+      body: { instruction: "Recover this delivery." },
+      references: [],
+      created_at: "2026-08-18T12:00:00.000Z",
+    });
+
+    let first: Awaited<ReturnType<typeof resumeReadSession>> | undefined;
+    let second: Awaited<ReturnType<typeof resumeReadSession>> | undefined;
+    try {
+      first = await resumeReadSession({
+        client,
+        identity,
+        sandbox: expectedSandbox,
+      });
+      await expect(first.deliver(message)).resolves.toBe("queued");
+      await first.release();
+      expect(deletes).toBe(0);
+
+      second = await resumeReadSession({
+        client,
+        identity,
+        sandbox: expectedSandbox,
+      });
+      await expect(second.deliver(message)).resolves.toBe("duplicate");
+      expect(delivered).toEqual(["recovery-message"]);
+      expect(forwards).toBe(2);
+      await second.stop();
+      expect(deletes).toBe(1);
+      second = undefined;
+    } finally {
+      await first?.release().catch(() => undefined);
+      await second?.release().catch(() => undefined);
+      await server.close();
+    }
+  });
+
+  it("fails recovery before forwarding when Sandbox provenance changed", async () => {
+    const identity = {
+      run: "run-one",
+      seat: "scout",
+      session: "session-one",
+      epoch: 1,
+    } as const;
+    let forwarded = false;
+    let executed = false;
+    const client: ResumeReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      getSandbox: () =>
+        Promise.resolve({
+          ...sandbox(1),
+          id: "53502221-db6b-49f2-a316-673792b3faae",
+        }),
+      execSandbox: () => {
+        executed = true;
+        return Promise.resolve({ stdout: "{}", stderr: "", exitCode: 0 });
+      },
+      startServiceForward: () => {
+        forwarded = true;
+        throw new Error("must not forward");
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    await expect(
+      resumeReadSession({
+        client,
+        identity,
+        sandbox: {
+          id: sandbox(1).id,
+          name: sandbox(1).name,
+          workspace: sandbox(1).workspace,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "sandbox_identity_mismatch" });
+    expect(executed).toBe(false);
+    expect(forwarded).toBe(false);
+  });
+
+  it("requires an expected Brief digest before model-routed recovery", async () => {
+    const identity = {
+      run: "run-one",
+      seat: "scout",
+      session: "session-one",
+      epoch: 1,
+    } as const;
+    let touchedOpenShell = false;
+    const client: ResumeReadSessionOpenShell = {
+      preflight: () => {
+        touchedOpenShell = true;
+        return Promise.resolve(preflight);
+      },
+      getSandbox: () => {
+        touchedOpenShell = true;
+        return Promise.resolve(sandbox(1));
+      },
+      execSandbox: () => {
+        touchedOpenShell = true;
+        return Promise.resolve({ stdout: "{}", stderr: "", exitCode: 0 });
+      },
+      startServiceForward: () => {
+        touchedOpenShell = true;
+        throw new Error("must not forward");
+      },
+      deleteSandbox: () => Promise.resolve(),
+      getInferenceRoute: () => {
+        touchedOpenShell = true;
+        return Promise.resolve({ provider: "fixture", model: "fixture-model" });
+      },
+    };
+
+    await expect(
+      resumeReadSession({
+        client,
+        identity,
+        sandbox: {
+          id: sandbox(1).id,
+          name: sandbox(1).name,
+          workspace: sandbox(1).workspace,
+        },
+        model: {
+          alias: "fast",
+          gateway_alias: "code",
+          gateway: "openshell",
+          pi_model: "fixture-model",
+          api: "openai-completions",
+          locality: "local",
+          context_window: 32768,
+          max_tokens: 4096,
+          reasoning: false,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_session_input" });
+    expect(touchedOpenShell).toBe(false);
   });
 
   it("binds a compiled Brief and verified model route to a completed Pi turn", async () => {

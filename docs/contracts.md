@@ -97,6 +97,8 @@ The host serializes Mailbox delivery for the current implementation. It writes t
 
 Transport failure removes the live Link, records the current Session as `disconnected`, and leaves the Message `pending`. Attaching a replacement transport for the same Session identity moves the Session back to `active` and redelivers its pending Messages in deterministic creation order. The Pi client deduplicates the stable IDs, so recovery after acknowledgement loss does not inject a Message twice. The host validates the current identity again after acknowledgement so an epoch change cannot satisfy delivery state for a stale Session.
 
+Session replacement first makes the old epoch terminal, preventing any new Message from binding to it. Pending Messages already bound to that epoch move atomically to `superseded` before the replacement epoch becomes current. Queued Messages remain durable evidence that the old Pi client accepted delivery; they are not silently retargeted.
+
 ## Briefs
 
 Brief compilation is deterministic. Required constraints are never silently truncated. Supporting Skill content that cannot fit the initial budget is replaced by an explicit omission naming its source path. Brief freshness binds Plan, Role, Task, Decisions, source digests, Session identity, and Seat epoch.
@@ -139,6 +141,10 @@ Registry mutations are serialized by the single-writer Project store. Starting o
 
 Session status transitions follow an explicit graph. `stopped` and `failed` are terminal and require an end time and reason. An OpenShell Sandbox binding records its UUID, name, and workspace once and cannot be replaced in place. Older version-one Run files without registry fields read as empty registries and acquire the fields on their next atomic mutation.
 
+Lifecycle reconciliation observes the current Seat, Session, exact Sandbox provenance, live Link identity, and cmux projection before recommending `start`, `reconnect`, `reattach`, `replace`, or `blocked`. Observation alone does not change workflow state. A host restart may rebuild a Link for the same Session only after the immutable Sandbox configuration matches the current identity, pinned Pi and client versions, current read-policy digest, and expected model and Brief route.
+
+Replacement is an ordered retryable operation. The host validates the replacement input and exact Sandbox provenance before side effects, detaches the Link, marks the old Session terminal, removes its Sandbox and Pane, supersedes pending Messages for that exact epoch, and creates the next Session last. A failure leaves enough durable state to resume the same operation. A Sandbox with the expected name but a different UUID or workspace blocks replacement before any state changes.
+
 ## OpenShell lifecycle
 
 The OpenShell adapter validates Sandbox names before launch, disables automatic credential providers, observes remote exit codes without treating expected denial as an infrastructure error, and parses `get` and `list` responses into versioned host types. Creation is followed by an authoritative `get`; JSON output is not requested from `sandbox create` because OpenShell 0.0.106 forbids combining it with an initial command.
@@ -147,15 +153,21 @@ Every programmatic `sandbox exec` closes the CLI child process's stdin immediate
 
 Deletion with `missingOk` verifies absence through `sandbox list`; it does not suppress a failure while a Sandbox with the requested name still exists.
 
+Every new read Session records source and read-policy digests in immutable Sandbox input. Same-Session recovery first verifies the durable Sandbox UUID, name, workspace, and ready phase, then reads that input and validates the current identity, epoch, versions, policy, and, for a model-routed Session, the expected model route and Brief digest before opening a new loopback forward. Releasing a recovered host Link does not delete the Sandbox; each Link, forward, and Sandbox cleanup step remains independently retryable.
+
 ## cmux projection
 
 cmux is a trusted host cockpit, not an authoritative state store. The adapter is pinned to cmux 0.64.22, verifies its required socket capabilities, requests JSON output with UUID identifiers, and invokes the CLI without a host shell. The cmux socket password remains inherited host-process state and is never persisted or forwarded to a Sandbox.
 
 A Run Workspace binding contains its stable creation operation UUID, Workspace UUID, and expected title. A Seat Pane binding contains its stable creation operation UUID, Workspace UUID, Pane UUID, Surface UUID, and expected title. Titles are labels and bounded recovery evidence; UUID bindings remain authoritative.
 
+Run state stores the Workspace operation before mutation and stores each Session-bound Pane operation and creation intent before mutation. Returned UUID bindings are written atomically. A host restart therefore resumes the same operation rather than inferring ownership from titles or creating an untracked duplicate.
+
 Workspace creation uses cmux's native operation UUID. Before unbound Pane creation, the caller must persist a Pane intent containing the operation UUID and the complete prior Pane UUID set. A retry may adopt exactly one new single-Surface Pane; zero candidates permits creation and multiple candidates fail closed. Once a binding exists, a missing target is drift and cannot trigger implicit replacement.
 
 Projection reconciliation only observes cmux state. It may report missing objects or title mismatches, but it cannot complete a Task, terminate a Session, or mutate Run state. Pane deletion refuses to close a Pane that has acquired any Surface beyond its bound one.
+
+A missing Pane may be reattached only with a new durable operation ID and only after observation proves the old binding is absent. If the entire Workspace is absent, stale Pane state can be retired without issuing an unsafe close; recreating the Run Workspace remains an explicit blocked recovery decision.
 
 ## Sandbox profiles
 

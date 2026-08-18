@@ -156,7 +156,7 @@ function parseConfig(value) {
         "client_version",
         "pi_version",
       ],
-      ["model", "brief"],
+      ["source_digest", "policy_digest", "model", "brief"],
     ) ||
     value.version !== 1 ||
     !validIdentity(value.identity) ||
@@ -170,6 +170,10 @@ function parseConfig(value) {
     value.client_version.length === 0 ||
     typeof value.pi_version !== "string" ||
     value.pi_version.length === 0 ||
+    (value.source_digest !== undefined &&
+      !digestPattern.test(value.source_digest)) ||
+    (value.policy_digest !== undefined &&
+      !digestPattern.test(value.policy_digest)) ||
     (value.model === undefined) !== (value.brief === undefined) ||
     (value.model !== undefined && !validModel(value.model)) ||
     (value.brief !== undefined && !validBrief(value.brief))

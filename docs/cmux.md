@@ -39,7 +39,11 @@ Pane intent    operation UUID + Workspace UUID + expected title + prior Pane UUI
 
 Workspace creation uses cmux's native operation UUID. A Pane intent must be written to authoritative state before `ensurePane` is allowed to create an unbound Pane. This lets a retry identify exactly one Pane created after the intent, including interruption between Pane creation and title assignment.
 
+The Run state store owns those operations, intents, and returned bindings. Pane records also carry the exact Run, Seat, Session, and epoch, so a stale Pane must be removed before Session replacement can advance the Seat epoch.
+
 An existing binding is authoritative. If its target is missing, the adapter reports drift and does not silently create a replacement. Reconciliation is read-only, and a missing pane never means that a Task finished.
+
+The lifecycle layer may reattach a missing Pane only after that observation and with a new operation UUID. It may clear a stale Pane binding without a close when the entire bound Workspace is already absent. Title drift is repairable, but titles never substitute for UUID ownership.
 
 ## Process launch
 

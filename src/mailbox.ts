@@ -165,6 +165,21 @@ export class MailboxRouter {
     });
   }
 
+  async supersedePending(identity: SessionIdentity): Promise<StoredMessage[]> {
+    return this.serialize(async () => {
+      const parsed = SessionIdentitySchema.parse(identity);
+      await this.registry.requireCurrent(parsed);
+      const superseded: StoredMessage[] = [];
+      for (const stored of await this.mailbox.list("pending")) {
+        if (!this.targets(stored.message, parsed)) continue;
+        superseded.push(
+          await this.mailbox.move(stored.message.id, "pending", "superseded"),
+        );
+      }
+      return superseded;
+    });
+  }
+
   private async bindTarget(message: Message): Promise<Message> {
     const parsed = MessageSchema.parse(message);
     if (parsed.run !== this.runId) {

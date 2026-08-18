@@ -27,7 +27,7 @@
 - durable Seats, Sessions, and epochs (complete)
 - cmux workspace and pane adapter (complete)
 - durable Mailbox delivery and acknowledgements (complete)
-- reconnection and replacement (Link and Mailbox reconnection complete; lifecycle replacement remains)
+- reconnection and replacement (complete)
 
 ## Milestone 4: One-Task vertical slice
 

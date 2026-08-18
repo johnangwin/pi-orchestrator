@@ -28,10 +28,10 @@ Both acknowledgement values satisfy the queued transition. `duplicate` recovers 
 
 When delivery fails, the router removes the in-memory Link, marks the still-current Session `disconnected`, and leaves the Message `pending`. Attaching a Link for that same Session and epoch restores it to `active` and replays its pending Messages in deterministic order. Host operations are serialized because the current Link implementation permits one outstanding exchange.
 
-A pending Message bound to an older epoch is not delivered to a replacement Session. Later replacement orchestration must explicitly supersede it or create a new Message with a new stable ID.
+A pending Message bound to an older epoch is not delivered to a replacement Session. Replacement orchestration explicitly supersedes pending Messages for the old exact identity before advancing the epoch; continuing the request requires a new Message with a new stable ID.
 
 ## Consequences
 
 Host restart and acknowledgement loss are recoverable from Message files and Run state without a transcript or terminal buffer. A stale Link cannot advance a lifecycle file, and an old Message cannot leak into a new Session's context.
 
-The router currently keeps attached Links in process memory. Reconstructing those attachments and deciding how replacement supersedes old pending Messages remain part of Session reconciliation and replacement work.
+Attached Links remain process memory. The lifecycle reconciler reconstructs a same-Session Link from immutable Sandbox input after a host restart and explicitly supersedes old pending Messages during replacement.

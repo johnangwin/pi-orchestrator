@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { CompiledBrief } from "./brief.js";
-import { digestParts } from "./digest.js";
+import { canonicalJson, digestParts } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { HostLink, TcpLinkTransport } from "./link.js";
 import { VersionSchema } from "./local.js";
@@ -31,9 +31,12 @@ import { loadSandboxPolicy } from "./policy.js";
 import {
   ModelTurnFailureSchema,
   ModelTurnResultSchema,
+  sameSessionIdentity,
   SessionIdentitySchema,
+  SessionSandboxSchema,
   type ModelTurnResult,
   type SessionIdentity,
+  type SessionSandbox,
 } from "./session.js";
 import { verifySourceSnapshot, type SourceSnapshot } from "./snapshot.js";
 
@@ -81,6 +84,14 @@ export const PiClientConfigSchema = z
       .strict(),
     client_version: VersionSchema,
     pi_version: VersionSchema,
+    source_digest: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .optional(),
+    policy_digest: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .optional(),
     model: PiSessionModelSchema.optional(),
     brief: PiSessionBriefSchema.optional(),
   })
@@ -104,6 +115,18 @@ export type ReadSessionOpenShell = Pick<
 > &
   Partial<Pick<OpenShellClient, "getInferenceRoute">>;
 
+export type ResumeReadSessionOpenShell = Pick<
+  OpenShellClient,
+  | "deleteSandbox"
+  | "execSandbox"
+  | "getSandbox"
+  | "preflight"
+  | "startServiceForward"
+> &
+  Partial<Pick<OpenShellClient, "getInferenceRoute">>;
+
+type ReadSessionCleanupOpenShell = Pick<OpenShellClient, "deleteSandbox">;
+
 export interface StartReadSessionOptions {
   readonly client: ReadSessionOpenShell;
   readonly identity: SessionIdentity;
@@ -118,6 +141,19 @@ export interface StartReadSessionOptions {
   readonly turnTimeoutMs?: number;
   readonly model?: ResolvedModelRoute;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
+}
+
+export interface ResumeReadSessionOptions {
+  readonly client: ResumeReadSessionOpenShell;
+  readonly identity: SessionIdentity;
+  readonly sandbox: SessionSandbox;
+  readonly policyDirectory?: string;
+  readonly piVersion?: string;
+  readonly clientVersion?: string;
+  readonly startupTimeoutMs?: number;
+  readonly turnTimeoutMs?: number;
+  readonly model?: ResolvedModelRoute;
+  readonly briefDigest?: string;
 }
 
 export interface ReadSessionInfo {
@@ -292,11 +328,14 @@ async function connectWithRetry(options: {
 
 export class ReadSession {
   readonly info: ReadSessionInfo;
-  private stopped = false;
+  private releaseRequested = false;
+  private linkReleased = false;
+  private forwardReleased = false;
+  private deleted = false;
   private running = false;
 
   constructor(
-    private readonly client: ReadSessionOpenShell,
+    private readonly client: ReadSessionCleanupOpenShell,
     private readonly forward: OpenShellForward,
     private link: HostLink,
     info: ReadSessionInfo,
@@ -383,10 +422,10 @@ export class ReadSession {
   }
 
   async reconnect(): Promise<void> {
-    if (this.stopped) {
+    if (this.releaseRequested) {
       throw new OrchestratorError(
         "session_stopped",
-        "Cannot reconnect a stopped Session",
+        "Cannot reconnect a released Session",
       );
     }
     await this.link.close();
@@ -400,26 +439,49 @@ export class ReadSession {
     });
   }
 
-  async stop(): Promise<void> {
-    if (this.stopped) return;
-    this.stopped = true;
+  private async releaseHandles(): Promise<string[]> {
+    this.releaseRequested = true;
     const failures: string[] = [];
-    try {
-      await this.link.close();
-    } catch (error) {
-      failures.push(`Link: ${formatUnknownError(error)}`);
+    if (!this.linkReleased) {
+      try {
+        await this.link.close();
+        this.linkReleased = true;
+      } catch (error) {
+        failures.push(`Link: ${formatUnknownError(error)}`);
+      }
     }
-    try {
-      await this.forward.stop();
-    } catch (error) {
-      failures.push(`forward: ${formatUnknownError(error)}`);
+    if (!this.forwardReleased) {
+      try {
+        await this.forward.stop();
+        this.forwardReleased = true;
+      } catch (error) {
+        failures.push(`forward: ${formatUnknownError(error)}`);
+      }
     }
-    try {
-      await this.client.deleteSandbox(this.info.sandbox.name, {
-        missingOk: true,
-      });
-    } catch (error) {
-      failures.push(`Sandbox: ${formatUnknownError(error)}`);
+    return failures;
+  }
+
+  async release(): Promise<void> {
+    const failures = await this.releaseHandles();
+    if (failures.length > 0) {
+      throw new OrchestratorError(
+        "session_release_failed",
+        failures.join("; "),
+      );
+    }
+  }
+
+  async stop(): Promise<void> {
+    const failures = await this.releaseHandles();
+    if (!this.deleted) {
+      try {
+        await this.client.deleteSandbox(this.info.sandbox.name, {
+          missingOk: true,
+        });
+        this.deleted = true;
+      } catch (error) {
+        failures.push(`Sandbox: ${formatUnknownError(error)}`);
+      }
     }
     if (failures.length > 0) {
       throw new OrchestratorError(
@@ -427,6 +489,231 @@ export class ReadSession {
         failures.join("; "),
       );
     }
+  }
+}
+
+async function readSandboxJson(
+  client: ResumeReadSessionOpenShell,
+  sandboxName: string,
+  filePath: string,
+): Promise<unknown> {
+  const result = await client.execSandbox(sandboxName, ["/bin/cat", filePath], {
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0) {
+    const diagnostic = result.stderr.trim() || result.stdout.trim();
+    throw new OrchestratorError(
+      "session_recovery_failed",
+      `Cannot read immutable Session input '${filePath}'${diagnostic ? `: ${diagnostic.slice(0, 1_000)}` : ""}`,
+    );
+  }
+  try {
+    return JSON.parse(result.stdout) as unknown;
+  } catch (error) {
+    throw new OrchestratorError(
+      "session_recovery_failed",
+      `Immutable Session input '${filePath}' is not valid JSON`,
+      { cause: error },
+    );
+  }
+}
+
+function expectedPiModel(model: ResolvedModelRoute): PiSessionModel {
+  return PiSessionModelSchema.parse({
+    alias: model.alias,
+    pi_model: model.pi_model,
+    api: model.api,
+    context_window: model.context_window,
+    max_tokens: model.max_tokens,
+    reasoning: model.reasoning,
+  });
+}
+
+export async function resumeReadSession(
+  options: ResumeReadSessionOptions,
+): Promise<ReadSession> {
+  const identity = SessionIdentitySchema.parse(options.identity);
+  const expectedSandbox = SessionSandboxSchema.parse(options.sandbox);
+  const piVersion = VersionSchema.parse(
+    options.piVersion ?? PI_RUNTIME_VERSION,
+  );
+  const clientVersion = VersionSchema.parse(
+    options.clientVersion ?? PI_CLIENT_VERSION,
+  );
+  const startupTimeoutMs = options.startupTimeoutMs ?? 30_000;
+  const turnTimeoutMs = options.turnTimeoutMs ?? 5 * 60_000;
+  const policyDirectory = options.policyDirectory ?? bundledPath("policies");
+  const model = options.model
+    ? ResolvedModelRouteSchema.parse(options.model)
+    : undefined;
+  const briefDigest =
+    options.briefDigest === undefined
+      ? undefined
+      : z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .parse(options.briefDigest);
+  if ((model === undefined) !== (briefDigest === undefined)) {
+    throw new OrchestratorError(
+      "invalid_session_input",
+      "Model-routed Session recovery requires both a model route and an expected Brief digest",
+    );
+  }
+
+  const [sandbox, preflight, readPolicy] = await Promise.all([
+    options.client.getSandbox(expectedSandbox.name),
+    options.client.preflight(),
+    loadSandboxPolicy("read", path.join(policyDirectory, "read.yaml")),
+  ]);
+  if (
+    sandbox.id !== expectedSandbox.id ||
+    sandbox.name !== expectedSandbox.name ||
+    sandbox.workspace !== expectedSandbox.workspace
+  ) {
+    throw new OrchestratorError(
+      "sandbox_identity_mismatch",
+      `Sandbox '${expectedSandbox.name}' no longer matches its durable Session binding`,
+    );
+  }
+  if (sandbox.phase !== "Ready") {
+    throw new OrchestratorError(
+      "sandbox_not_ready",
+      `Sandbox '${sandbox.name}' is ${sandbox.phase}, not Ready`,
+    );
+  }
+  if (preflight.requiredVersion === undefined) {
+    throw new OrchestratorError(
+      "openshell_version_unpinned",
+      "Session recovery requires an exact OpenShell version pin",
+    );
+  }
+
+  const rawConfig = await readSandboxJson(
+    options.client,
+    expectedSandbox.name,
+    "/workspace/input/session.json",
+  );
+  const config = PiClientConfigSchema.parse(rawConfig);
+  if (!sameSessionIdentity(config.identity, identity)) {
+    throw new OrchestratorError(
+      "stale_session_epoch",
+      "Immutable Sandbox configuration identifies another Session or epoch",
+    );
+  }
+  if (
+    config.pi_version !== piVersion ||
+    config.client_version !== clientVersion
+  ) {
+    throw new OrchestratorError(
+      "link_version_mismatch",
+      `Sandbox Session uses client ${config.client_version} and Pi ${config.pi_version}`,
+    );
+  }
+  if (!config.source_digest || !config.policy_digest) {
+    throw new OrchestratorError(
+      "session_recovery_unsupported",
+      "Sandbox Session configuration predates durable recovery metadata",
+    );
+  }
+  if (config.policy_digest !== readPolicy.digest) {
+    throw new OrchestratorError(
+      "session_policy_stale",
+      "Sandbox Session was created under another read policy digest",
+    );
+  }
+
+  if ((config.model === undefined) !== (model === undefined)) {
+    throw new OrchestratorError(
+      "model_route_mismatch",
+      "Recovered Session model routing does not match the current Seat route",
+    );
+  }
+  if (
+    config.model &&
+    model &&
+    canonicalJson(config.model) !== canonicalJson(expectedPiModel(model))
+  ) {
+    throw new OrchestratorError(
+      "model_route_mismatch",
+      `Recovered Session route does not match '${model.alias}/${model.pi_model}'`,
+    );
+  }
+  if (briefDigest !== undefined && config.brief?.digest !== briefDigest) {
+    throw new OrchestratorError(
+      "brief_digest_mismatch",
+      "Recovered Session Brief does not match the expected digest",
+    );
+  }
+  if (model && !options.client.getInferenceRoute) {
+    throw new OrchestratorError(
+      "openshell_inference_unavailable",
+      "The OpenShell adapter cannot inspect the configured inference route",
+    );
+  }
+  const inference = model
+    ? await options.client.getInferenceRoute!()
+    : undefined;
+  if (model) {
+    if (preflight.status.gateway !== model.gateway) {
+      throw new OrchestratorError(
+        "model_gateway_mismatch",
+        `Model alias '${model.alias}' resolved to gateway '${model.gateway}', but the recovery client reached '${preflight.status.gateway}'`,
+      );
+    }
+    if (inference?.model !== model.pi_model) {
+      throw new OrchestratorError(
+        "model_route_mismatch",
+        `OpenShell gateway '${model.gateway}' routes '${inference?.model ?? "nothing"}', not '${model.pi_model}'`,
+      );
+    }
+  }
+
+  let forward: OpenShellForward | undefined;
+  let link: HostLink | undefined;
+  try {
+    forward = await options.client.startServiceForward({
+      sandboxName: sandbox.name,
+      targetPort: config.listen.port,
+      readyTimeoutMs: 10_000,
+    });
+    link = await connectWithRetry({
+      forward,
+      identity,
+      token: config.token,
+      piVersion,
+      clientVersion,
+      timeoutMs: startupTimeoutMs,
+    });
+    if (model && !link.peer.capabilities.includes("events")) {
+      throw new OrchestratorError(
+        "link_capability_mismatch",
+        "A model-routed Session requires Link event delivery",
+      );
+    }
+    return new ReadSession(
+      options.client,
+      forward,
+      link,
+      {
+        sandbox,
+        identity,
+        sourceDigest: config.source_digest,
+        readPolicyDigest: config.policy_digest,
+        openshell: preflight,
+        piVersion,
+        clientVersion,
+        ...(model ? { model } : {}),
+        ...(inference ? { inference } : {}),
+        ...(config.brief ? { briefDigest: config.brief.digest } : {}),
+      },
+      config.token,
+      startupTimeoutMs,
+      turnTimeoutMs,
+    );
+  } catch (error) {
+    await link?.close().catch(() => undefined);
+    await forward?.stop().catch(() => undefined);
+    throw error;
   }
 }
 
@@ -513,6 +800,8 @@ export async function startReadSession(
     listen: { host: "127.0.0.1", port: linkPort },
     client_version: clientVersion,
     pi_version: piVersion,
+    source_digest: snapshotManifest.source_digest,
+    policy_digest: readPolicy.digest,
     ...(model
       ? {
           model: {

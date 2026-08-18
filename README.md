@@ -54,6 +54,8 @@ The cmux host adapter now verifies an exact CLI and capability set, creates retr
 
 Host Mailbox routing now resolves Seat-addressed Messages to the authoritative current Session and epoch before persistence, advances them only after a valid Link acknowledgement, and redelivers pending work after same-Session reconnection. Delivery failures leave Messages durable and mark the Session disconnected; replacement epochs never inherit old pending Messages implicitly.
 
+Visible Session lifecycle is now recoverable across host restarts. Run state durably binds cmux creation operations, Pane intents, and UUID handles to the exact Session epoch. The reconciler compares Seat, Session, OpenShell Sandbox, Link, and cmux state; it can rebuild a Link from immutable Sandbox input, reattach a missing Pane with a new operation ID, or perform ordered Session replacement. Replacement verifies Sandbox provenance before side effects, closes the old epoch to new delivery, removes external resources, supersedes its pending Messages, and advances the epoch last.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:

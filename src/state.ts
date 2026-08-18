@@ -5,6 +5,7 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 import { z } from "zod";
 import { ApprovalSchema, type Approval } from "./approval.js";
+import { CmuxRunStateSchema } from "./cmux.js";
 import { IdentifierSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
 import { SeatRecordSchema, SessionRecordSchema } from "./session.js";
@@ -92,6 +93,7 @@ export const RunStateSchema = z
     tasks: z.record(IdentifierSchema, TaskRecordSchema),
     seats: z.record(IdentifierSchema, SeatRecordSchema).default({}),
     sessions: z.record(IdentifierSchema, SessionRecordSchema).default({}),
+    cmux: CmuxRunStateSchema.default({ workspace: null, panes: {} }),
     created_at: z.string().datetime({ offset: true }),
     updated_at: z.string().datetime({ offset: true }),
   })
@@ -233,6 +235,29 @@ export const RunStateSchema = z
           code: "custom",
           path: ["seats", seatId, "epoch"],
           message: "must equal the contiguous Session history length",
+        });
+      }
+    }
+
+    for (const [seatId, pane] of Object.entries(run.cmux.panes)) {
+      const seat = run.seats[seatId];
+      if (!seat) {
+        context.addIssue({
+          code: "custom",
+          path: ["cmux", "panes", seatId],
+          message: `references unknown Seat '${seatId}'`,
+        });
+        continue;
+      }
+      if (
+        pane.identity.run !== run.id ||
+        pane.identity.session !== seat.session ||
+        pane.identity.epoch !== seat.epoch
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["cmux", "panes", seatId, "identity"],
+          message: "must identify the current Session for the Seat",
         });
       }
     }

@@ -155,7 +155,11 @@ The Patch bundle binds the source snapshot digest, complete base and result tree
 
 Patch Artifact validation replays the patch against two fresh extractions of the host-verified source archive. The host independently recomputes the base tree, applies with unsafe paths disabled, confirms the base remained unchanged, and recomputes the result tree and change manifest before Artifact publication. Validation failure leaves no published Artifact.
 
-An imported Patch Artifact does not authorize source mutation. Until scope and protected-path validation is implemented, the host Run worktree remains untouched.
+An imported Patch Artifact does not by itself authorize source mutation. The application gate first revalidates the current Plan approval, Task input commit, Artifact provenance, current Session epoch, implementation attempt, and one-active-writer rule. It evaluates every changed path against bounded relative POSIX Task-scope and Project-protection globs; protected paths take precedence over scope.
+
+Before Git mutation, Run state records a `prepared` application bound to the Artifact content, Session and Sandbox provenance, source commit and selected snapshot paths, source and result tree digests, Sandbox diff digest, and exact changed-path set. Host Git then verifies the repository common directory, canonical worktree, full branch ref, exact `HEAD`, and clean state before checking and applying the binary patch. The host independently reads the resulting NUL-delimited Git status, hashes actual regular-file or symlink results without following path symlinks, reconstructs the result tree, and records a distinct host diff digest before advancing the Task to `checking`.
+
+Retry loads the immutable stored Artifact, recreates its exact source snapshot from the durable commit and path selection, and repeats Patch validation. A prepared worktree may be clean or exactly applied; an applied worktree must remain exact. Any other dirty state, conflicting Patch, changed branch or `HEAD`, missing Artifact, or digest mismatch blocks without reset, clean, stash, or repair.
 
 ## Session identity
 

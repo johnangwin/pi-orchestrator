@@ -62,7 +62,7 @@ export interface RunWorktreeResult {
   readonly recovered: boolean;
 }
 
-interface GitCommandResult {
+export interface GitCommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode: number;
@@ -79,7 +79,7 @@ interface GitFailure extends Error {
   readonly stderr?: string;
 }
 
-const defaultRunner: GitCommandRunner = (args, cwd) =>
+export const defaultGitCommandRunner: GitCommandRunner = (args, cwd) =>
   new Promise((resolve, reject) => {
     execFile(
       "git",
@@ -88,7 +88,13 @@ const defaultRunner: GitCommandRunner = (args, cwd) =>
         cwd,
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_TERMINAL_PROMPT: "0",
+          LANG: "C.UTF-8",
+        },
       },
       (error, stdout, stderr) => {
         if (!error) {
@@ -309,7 +315,7 @@ export class GitWorktreeManager {
 
   constructor(
     repository: string,
-    private readonly runner: GitCommandRunner = defaultRunner,
+    private readonly runner: GitCommandRunner = defaultGitCommandRunner,
   ) {
     this.repository = path.resolve(repository);
   }

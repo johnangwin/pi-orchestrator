@@ -9,6 +9,7 @@ import {
 } from "./config.js";
 import { digestPlan, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
+import { PathPatternSchema } from "./scope.js";
 
 export const SourceAnchorSchema = z
   .object({
@@ -26,7 +27,7 @@ export const PlanTaskSchema = z
     role: IdentifierSchema,
     goal: z.string().min(1),
     depends: z.array(IdentifierSchema),
-    scope: z.array(z.string().min(1)).min(1),
+    scope: z.array(PathPatternSchema).min(1).max(1_024),
     non_goals: z.array(z.string().min(1)),
     acceptance: z.array(z.string().min(1)).min(1),
     checks: z.array(IdentifierSchema).min(1),

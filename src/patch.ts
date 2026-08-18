@@ -26,6 +26,7 @@ import { OrchestratorError } from "./error.js";
 import type { OpenShellSandbox } from "./openshell.js";
 import type { SessionIdentity } from "./session.js";
 import {
+  SourceSnapshotManifestSchema,
   verifySourceSnapshot,
   type SourceSnapshot,
   type SourceSnapshotManifest,
@@ -36,7 +37,7 @@ const MAX_TREE_ENTRIES = 100_000;
 const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-const WorkspacePathSchema = z
+export const WorkspacePathSchema = z
   .string()
   .min(1)
   .refine((value) => !value.includes("\0"), "must not contain NUL")
@@ -157,10 +158,51 @@ export const PatchBundleSchema = z
 export type PatchBundle = z.infer<typeof PatchBundleSchema>;
 
 export interface VerifiedPatch {
+  readonly source: SourceSnapshotManifest;
   readonly bundle: PatchBundle;
   readonly patch: Buffer;
   readonly baseEntries: readonly WorkspaceEntry[];
   readonly resultEntries: readonly WorkspaceEntry[];
+}
+
+export function validateVerifiedPatch(value: VerifiedPatch): VerifiedPatch {
+  const source = SourceSnapshotManifestSchema.parse(value.source);
+  const bundle = PatchBundleSchema.parse(value.bundle);
+  if (bundle.source_digest !== source.source_digest) {
+    throw new OrchestratorError(
+      "invalid_verified_patch",
+      "Verified Patch does not match its source snapshot",
+    );
+  }
+  if (!Buffer.isBuffer(value.patch)) {
+    throw new OrchestratorError(
+      "invalid_verified_patch",
+      "Verified Patch bytes must be a Buffer",
+    );
+  }
+  const decoded = decodePatch(bundle);
+  if (!decoded.equals(value.patch)) {
+    throw new OrchestratorError(
+      "invalid_verified_patch",
+      "Verified Patch bytes do not match the Patch bundle",
+    );
+  }
+  const baseEntries = z.array(WorkspaceEntrySchema).parse(value.baseEntries);
+  const resultEntries = z
+    .array(WorkspaceEntrySchema)
+    .parse(value.resultEntries);
+  if (
+    workspaceTreeDigest(baseEntries) !== bundle.base_tree_digest ||
+    workspaceTreeDigest(resultEntries) !== bundle.result_tree_digest ||
+    canonicalJson(changeManifest(baseEntries, resultEntries)) !==
+      canonicalJson(bundle.changes)
+  ) {
+    throw new OrchestratorError(
+      "invalid_verified_patch",
+      "Verified Patch trees do not match the Patch bundle",
+    );
+  }
+  return { source, bundle, patch: decoded, baseEntries, resultEntries };
 }
 
 export interface PatchContractOptions {
@@ -191,7 +233,9 @@ function patchDigest(bundle: Omit<PatchBundle, "diff_digest">): Digest {
   ]);
 }
 
-function workspaceTreeDigest(entries: readonly WorkspaceEntry[]): Digest {
+export function workspaceTreeDigest(
+  entries: readonly WorkspaceEntry[],
+): Digest {
   return digestParts("pi-orchestrator/workspace-tree/v1", [
     ["entries", canonicalJson(entries)],
   ]);
@@ -389,6 +433,59 @@ async function workspaceEntries(root: string): Promise<WorkspaceEntry[]> {
   return entries.sort((left, right) => compareUtf8(left.path, right.path));
 }
 
+export async function inspectWorkspaceEntry(
+  root: string,
+  relativePath: string,
+): Promise<WorkspaceEntry | undefined> {
+  const parsedPath = WorkspacePathSchema.parse(relativePath);
+  const resolvedRoot = path.resolve(root);
+  const segments = parsedPath.split("/");
+  let current = resolvedRoot;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    current = path.join(current, segments[index]!);
+    const state = await lstat(current).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!state) return undefined;
+    if (!state.isDirectory() || state.isSymbolicLink()) {
+      throw new OrchestratorError(
+        "unsafe_patch_result",
+        `Patch result path '${parsedPath}' traverses a non-directory or symlink`,
+      );
+    }
+  }
+
+  const absolute = path.join(resolvedRoot, ...segments);
+  const state = await lstat(absolute).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!state) return undefined;
+  if (state.isSymbolicLink()) {
+    const target = await readlink(absolute, { encoding: "buffer" });
+    return WorkspaceEntrySchema.parse({
+      path: parsedPath,
+      mode: "120000",
+      size: target.byteLength,
+      content_digest: sha256(target),
+    });
+  }
+  if (!state.isFile()) {
+    throw new OrchestratorError(
+      "unsupported_patch_entry",
+      `Patch result contains unsupported entry '${parsedPath}'`,
+    );
+  }
+  const content = await hashFile(absolute);
+  return WorkspaceEntrySchema.parse({
+    path: parsedPath,
+    mode: (state.mode & 0o111) === 0 ? "100644" : "100755",
+    size: content.size,
+    content_digest: content.digest,
+  });
+}
+
 function changeManifest(
   before: readonly WorkspaceEntry[],
   after: readonly WorkspaceEntry[],
@@ -429,6 +526,73 @@ function changeManifest(
       }),
     ];
   });
+}
+
+export async function verifyAppliedPatchResult(options: {
+  readonly root: string;
+  readonly patch: VerifiedPatch;
+  readonly changedPaths: readonly string[];
+}): Promise<{
+  readonly changes: readonly PatchChange[];
+  readonly resultEntries: readonly WorkspaceEntry[];
+  readonly resultSourceDigest: Digest;
+}> {
+  const expectedPaths = options.patch.bundle.changes.map(
+    (change) => change.path,
+  );
+  const actualPaths = [...new Set(options.changedPaths)].sort(compareUtf8);
+  if (canonicalJson(actualPaths) !== canonicalJson(expectedPaths)) {
+    throw new OrchestratorError(
+      "worktree_diff_mismatch",
+      "Run worktree changed paths do not match the verified Patch Artifact",
+    );
+  }
+
+  const changes: PatchChange[] = [];
+  for (const expected of options.patch.bundle.changes) {
+    const after = await inspectWorkspaceEntry(options.root, expected.path);
+    if (
+      (expected.status === "deleted" && after !== undefined) ||
+      (expected.status !== "deleted" && after === undefined)
+    ) {
+      throw new OrchestratorError(
+        "worktree_result_mismatch",
+        `Run worktree path '${expected.path}' does not have the expected ${expected.status} result`,
+      );
+    }
+    const actual = PatchChangeSchema.parse({
+      path: expected.path,
+      status: expected.status,
+      ...(expected.before ? { before: expected.before } : {}),
+      ...(after ? { after } : {}),
+    });
+    changes.push(actual);
+  }
+  if (canonicalJson(changes) !== canonicalJson(options.patch.bundle.changes)) {
+    throw new OrchestratorError(
+      "worktree_result_mismatch",
+      "Run worktree content does not match the verified Patch Artifact",
+    );
+  }
+
+  const result = new Map(
+    options.patch.baseEntries.map((entry) => [entry.path, entry]),
+  );
+  for (const change of changes) {
+    if (change.after) result.set(change.path, change.after);
+    else result.delete(change.path);
+  }
+  const resultEntries = [...result.values()].sort((left, right) =>
+    compareUtf8(left.path, right.path),
+  );
+  const resultSourceDigest = workspaceTreeDigest(resultEntries);
+  if (resultSourceDigest !== options.patch.bundle.result_tree_digest) {
+    throw new OrchestratorError(
+      "worktree_result_mismatch",
+      "Run worktree result digest does not match the verified Patch Artifact",
+    );
+  }
+  return { changes, resultEntries, resultSourceDigest };
 }
 
 async function command(
@@ -473,6 +637,7 @@ async function command(
 
 async function replayPatch(options: {
   readonly snapshot: SourceSnapshot;
+  readonly source: SourceSnapshotManifest;
   readonly bundle: PatchBundle;
   readonly patch: Buffer;
   readonly temporaryRoot?: string;
@@ -539,6 +704,7 @@ async function replayPatch(options: {
       );
     }
     return {
+      source: options.source,
       bundle: options.bundle,
       patch: options.patch,
       baseEntries,
@@ -558,6 +724,7 @@ export async function verifyPatchBundle(options: {
   const parsed = parsePatchPayload(options.payload, source);
   return replayPatch({
     snapshot: options.snapshot,
+    source,
     bundle: parsed.bundle,
     patch: parsed.patch,
     ...(options.temporaryRoot ? { temporaryRoot: options.temporaryRoot } : {}),

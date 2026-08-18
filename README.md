@@ -61,7 +61,7 @@ Visible Session lifecycle is now recoverable across host restarts. Run state dur
 
 An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
 
-Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. Imported patches do not touch the Run worktree until the next scope and protected-path gate is implemented.
+Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. The host then validates every changed path against approved Task scope and protected Project patterns, durably prepares the operation, applies it only to the exact isolated Run worktree, and independently verifies the resulting path, content, mode, source, and diff digests. A retry can reconstruct the verified Patch from durable state and its stored Artifact; unexpected worktree content always blocks without repair.
 
 ## OpenShell
 

@@ -1,4 +1,5 @@
 export * from "./approval.js";
+export * from "./apply.js";
 export * from "./artifact.js";
 export * from "./brief.js";
 export * from "./canary.js";
@@ -25,6 +26,7 @@ export * from "./registry.js";
 export * from "./reconcile.js";
 export * from "./role.js";
 export * from "./run.js";
+export * from "./scope.js";
 export * from "./seat.js";
 export * from "./session.js";
 export * from "./snapshot.js";

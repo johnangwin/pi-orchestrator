@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import { z } from "zod";
 import { OrchestratorError } from "./error.js";
+import { PathPatternSchema } from "./scope.js";
 
 export const IdentifierSchema = z
   .string()
@@ -82,7 +83,7 @@ export const ProjectConfigSchema = z
         default: z.literal("none"),
       })
       .strict(),
-    protected: z.array(z.string().min(1)),
+    protected: z.array(PathPatternSchema).max(1_024),
     checks: z.record(IdentifierSchema, CheckDefinitionSchema),
   })
   .strict()

@@ -122,6 +122,11 @@ describe("Plan validation and approval", () => {
       { ...fixtureTask(), reviews: ["security"] },
       "invalid_plan",
     ],
+    [
+      "unsafe source scope",
+      fixtureTask({ scope: ["../src/**"] }),
+      "invalid_plan",
+    ],
   ])("rejects an %s", async (_label, task, code) => {
     const root = await createFixtureProject();
     roots.push(root);

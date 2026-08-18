@@ -63,6 +63,115 @@ export const GateRecordSchema = z
   })
   .strict();
 
+const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const GitCommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
+const SourcePathSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.includes("\0"), "must not contain NUL")
+  .refine((value) => !path.posix.isAbsolute(value), "must be relative")
+  .refine(
+    (value) => path.posix.normalize(value) === value,
+    "must be normalized",
+  )
+  .refine(
+    (value) =>
+      value !== ".." &&
+      !value.startsWith("../") &&
+      !value.split("/").includes(".git"),
+    "must remain inside the Project and exclude Git metadata",
+  );
+const ChangedPathSchema = SourcePathSchema.refine(
+  (value) => value !== ".",
+  "must identify a workspace entry",
+);
+
+export const PatchApplicationSchema = z
+  .object({
+    artifact_id: IdentifierSchema.max(128),
+    artifact_content_digest: DigestSchema,
+    seat: IdentifierSchema,
+    session: IdentifierSchema,
+    epoch: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sandbox_id: z.string().uuid(),
+    source_commit: GitCommitSchema,
+    source_paths: z.array(SourcePathSchema).min(1),
+    source_digest: DigestSchema,
+    result_source_digest: DigestSchema,
+    sandbox_diff_digest: DigestSchema,
+    changed_paths: z.array(ChangedPathSchema).min(1),
+    state: z.enum(["prepared", "applied"]),
+    host_diff_digest: DigestSchema.optional(),
+    prepared_at: z.string().datetime({ offset: true }),
+    applied_at: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict()
+  .superRefine((application, context) => {
+    if (
+      new Set(application.source_paths).size !== application.source_paths.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source_paths"],
+        message: "must contain unique paths",
+      });
+    }
+    const sortedSourcePaths = [...application.source_paths].sort();
+    if (
+      sortedSourcePaths.some(
+        (entry, index) => entry !== application.source_paths[index],
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["source_paths"],
+        message: "must be sorted",
+      });
+    }
+    if (
+      new Set(application.changed_paths).size !==
+      application.changed_paths.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["changed_paths"],
+        message: "must contain unique paths",
+      });
+    }
+    const sorted = [...application.changed_paths].sort((left, right) =>
+      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+    );
+    if (
+      sorted.some((entry, index) => entry !== application.changed_paths[index])
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["changed_paths"],
+        message: "must be sorted by UTF-8 byte order",
+      });
+    }
+    const hasAppliedFields =
+      application.host_diff_digest !== undefined &&
+      application.applied_at !== undefined;
+    if (application.state === "applied" && !hasAppliedFields) {
+      context.addIssue({
+        code: "custom",
+        message: "an applied Patch requires its host digest and timestamp",
+      });
+    }
+    if (
+      application.state === "prepared" &&
+      (application.host_diff_digest !== undefined ||
+        application.applied_at !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "a prepared Patch cannot be partially applied",
+      });
+    }
+  });
+export type PatchApplication = z.infer<typeof PatchApplicationSchema>;
+
 export const TaskRecordSchema = z
   .object({
     id: IdentifierSchema,
@@ -70,12 +179,48 @@ export const TaskRecordSchema = z
     implementation_attempts: z.number().int().nonnegative(),
     review_rounds: z.number().int().nonnegative(),
     input_commit: z.string().optional(),
-    input_source_digest: z.string().optional(),
-    output_source_digest: z.string().optional(),
-    diff_digest: z.string().optional(),
+    input_source_digest: DigestSchema.optional(),
+    output_source_digest: DigestSchema.optional(),
+    diff_digest: DigestSchema.optional(),
+    patch_application: PatchApplicationSchema.optional(),
     gates: z.record(IdentifierSchema, GateRecordSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((task, context) => {
+    const application = task.patch_application;
+    if (!application) return;
+    if (task.input_source_digest !== application.source_digest) {
+      context.addIssue({
+        code: "custom",
+        path: ["input_source_digest"],
+        message: "must equal the prepared Patch source digest",
+      });
+    }
+    if (task.output_source_digest !== application.result_source_digest) {
+      context.addIssue({
+        code: "custom",
+        path: ["output_source_digest"],
+        message: "must equal the prepared Patch result digest",
+      });
+    }
+    if (application.state === "prepared" && task.diff_digest !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diff_digest"],
+        message: "must remain empty until the host applies the Patch",
+      });
+    }
+    if (
+      application.state === "applied" &&
+      task.diff_digest !== application.host_diff_digest
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["diff_digest"],
+        message: "must equal the applied host diff digest",
+      });
+    }
+  });
 export type TaskRecord = z.infer<typeof TaskRecordSchema>;
 
 export const RunStateSchema = z

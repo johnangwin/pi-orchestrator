@@ -36,5 +36,6 @@ export * from "./seat.js";
 export * from "./session.js";
 export * from "./snapshot.js";
 export * from "./state.js";
+export * from "./synthesis.js";
 export * from "./task.js";
 export * from "./transport.js";

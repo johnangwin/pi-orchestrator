@@ -42,7 +42,7 @@
 
 - repository-aware planning and questionnaire (implementation complete; Stepout exercise pending)
 - architecture and quantitative consultation (implementation complete; Stepout exercise pending)
-- independent criticism and Lead Plan synthesis
+- independent criticism and Lead Plan synthesis (implementation complete; Stepout exercise pending)
 - all required Review Lenses
 - Handoff and terminated-Session recovery
 - metrics and retrospective

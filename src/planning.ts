@@ -126,6 +126,10 @@ export const PlanningStatusSchema = z.enum([
   "answered",
   "consulting",
   "consulted",
+  "criticizing",
+  "criticized",
+  "synthesizing",
+  "drafted",
 ]);
 export type PlanningStatus = z.infer<typeof PlanningStatusSchema>;
 
@@ -193,6 +197,61 @@ const PlanningConsultationsSchema = z
   })
   .strict();
 
+const PlanningSynthesisProgressSchema = z
+  .object({
+    attempts: z.number().int().nonnegative(),
+    current_request_digest: DigestSchema.nullable(),
+    record_digest: DigestSchema.nullable(),
+    report_digest: DigestSchema.nullable(),
+    plan_digest: DigestSchema.nullable(),
+  })
+  .strict()
+  .superRefine((progress, context) => {
+    if (
+      (progress.attempts === 0) !==
+      (progress.current_request_digest === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["current_request_digest"],
+        message: "must exist exactly after a synthesis attempt starts",
+      });
+    }
+    const published = [
+      progress.record_digest,
+      progress.report_digest,
+      progress.plan_digest,
+    ].filter((value) => value !== null).length;
+    if (published !== 0 && published !== 3) {
+      context.addIssue({
+        code: "custom",
+        path: ["plan_digest"],
+        message: "record, Report, and Plan digests must be published together",
+      });
+    }
+    if (progress.record_digest !== null && progress.attempts === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["record_digest"],
+        message: "cannot exist before a synthesis attempt",
+      });
+    }
+  });
+
+type PlanningSynthesisProgress = z.infer<
+  typeof PlanningSynthesisProgressSchema
+>;
+
+function emptySynthesisProgress(): PlanningSynthesisProgress {
+  return {
+    attempts: 0,
+    current_request_digest: null,
+    record_digest: null,
+    report_digest: null,
+    plan_digest: null,
+  };
+}
+
 export const PlanningStateSchema = z
   .object({
     version: z.literal(1),
@@ -212,6 +271,12 @@ export const PlanningStateSchema = z
       architecture: emptyConsultationProgress(),
       quant: emptyConsultationProgress(),
     }),
+    critique: PlanningConsultationProgressSchema.default(
+      emptyConsultationProgress(),
+    ),
+    synthesis: PlanningSynthesisProgressSchema.default(
+      emptySynthesisProgress(),
+    ),
     created_at: z.string().datetime({ offset: true }),
     updated_at: z.string().datetime({ offset: true }),
   })
@@ -240,7 +305,15 @@ export const PlanningStateSchema = z
       });
     }
     if (
-      !["answered", "consulting", "consulted"].includes(state.status) &&
+      ![
+        "answered",
+        "consulting",
+        "consulted",
+        "criticizing",
+        "criticized",
+        "synthesizing",
+        "drafted",
+      ].includes(state.status) &&
       Object.keys(state.decisions).length > 0
     ) {
       context.addIssue({
@@ -273,11 +346,80 @@ export const PlanningStateSchema = z
         message: "must contain an incomplete consultation attempt",
       });
     }
-    if (state.status === "consulted" && completed !== 2) {
+    if (
+      [
+        "consulted",
+        "criticizing",
+        "criticized",
+        "synthesizing",
+        "drafted",
+      ].includes(state.status) &&
+      completed !== 2
+    ) {
       context.addIssue({
         code: "custom",
         path: ["consultations"],
         message: "must contain both completed consultation Reports",
+      });
+    }
+    const critiqueStarted = state.critique.attempts > 0;
+    const critiqueComplete = state.critique.record_digest !== null;
+    const synthesisStarted = state.synthesis.attempts > 0;
+    const synthesisComplete = state.synthesis.record_digest !== null;
+    if (
+      [
+        "drafting",
+        "awaiting-answers",
+        "answered",
+        "consulting",
+        "consulted",
+      ].includes(state.status) &&
+      (critiqueStarted || synthesisStarted)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["critique"],
+        message: "cannot start before both consultations are complete",
+      });
+    }
+    if (
+      state.status === "criticizing" &&
+      (!critiqueStarted || critiqueComplete || synthesisStarted)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["critique"],
+        message: "must contain an incomplete critic attempt",
+      });
+    }
+    if (
+      state.status === "criticized" &&
+      (!critiqueComplete || synthesisStarted)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["critique"],
+        message: "must contain a completed critique before synthesis",
+      });
+    }
+    if (
+      state.status === "synthesizing" &&
+      (!critiqueComplete || !synthesisStarted || synthesisComplete)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["synthesis"],
+        message: "must contain an incomplete synthesis attempt",
+      });
+    }
+    if (
+      state.status === "drafted" &&
+      (!critiqueComplete || !synthesisComplete)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["synthesis"],
+        message: "must contain a completed critique and Plan draft",
       });
     }
   });
@@ -822,6 +964,8 @@ export class PlanningStore {
         architecture: emptyConsultationProgress(),
         quant: emptyConsultationProgress(),
       },
+      critique: emptyConsultationProgress(),
+      synthesis: emptySynthesisProgress(),
       created_at: timestamp,
       updated_at: timestamp,
     });
@@ -1357,6 +1501,174 @@ export class PlanningStore {
       ...current,
       status: complete ? "consulted" : "consulting",
       consultations,
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
+
+  async beginCritique(input: {
+    readonly expected: PlanningState;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before criticism`,
+      );
+    }
+    if (!["consulted", "criticizing"].includes(current.status)) {
+      throw new OrchestratorError(
+        "planning_not_consulted",
+        `Planning request '${current.id}' is ${current.status}`,
+      );
+    }
+    if (current.critique.record_digest !== null) return current;
+    if (input.attempt !== current.critique.attempts + 1) {
+      throw new OrchestratorError(
+        "critique_attempt_conflict",
+        `Critique expected attempt ${current.critique.attempts + 1}`,
+      );
+    }
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: "criticizing",
+      critique: {
+        attempts: input.attempt,
+        current_request_digest: input.requestDigest,
+        record_digest: null,
+        report_digest: null,
+      },
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
+
+  async publishCritique(input: {
+    readonly expected: PlanningState;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly recordDigest: Digest;
+    readonly reportDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before critique publication`,
+      );
+    }
+    if (
+      current.status !== "criticizing" ||
+      current.critique.attempts !== input.attempt ||
+      current.critique.current_request_digest !== input.requestDigest ||
+      current.critique.record_digest !== null ||
+      current.critique.report_digest !== null
+    ) {
+      throw new OrchestratorError(
+        "critique_attempt_conflict",
+        "Critique does not match its active attempt",
+      );
+    }
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: "criticized",
+      critique: {
+        ...current.critique,
+        record_digest: input.recordDigest,
+        report_digest: input.reportDigest,
+      },
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
+
+  async beginSynthesis(input: {
+    readonly expected: PlanningState;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (!["criticized", "synthesizing"].includes(current.status)) {
+      throw new OrchestratorError(
+        "planning_not_criticized",
+        `Planning request '${current.id}' is ${current.status}`,
+      );
+    }
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before synthesis`,
+      );
+    }
+    if (current.synthesis.record_digest !== null) return current;
+    if (input.attempt !== current.synthesis.attempts + 1) {
+      throw new OrchestratorError(
+        "synthesis_attempt_conflict",
+        `Synthesis expected attempt ${current.synthesis.attempts + 1}`,
+      );
+    }
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: "synthesizing",
+      synthesis: {
+        attempts: input.attempt,
+        current_request_digest: input.requestDigest,
+        record_digest: null,
+        report_digest: null,
+        plan_digest: null,
+      },
+      updated_at: input.now.toISOString(),
+    });
+    await writeJsonAtomic(this.stateFile(current.id), next);
+    return next;
+  }
+
+  async publishSynthesis(input: {
+    readonly expected: PlanningState;
+    readonly attempt: number;
+    readonly requestDigest: Digest;
+    readonly recordDigest: Digest;
+    readonly reportDigest: Digest;
+    readonly planDigest: Digest;
+    readonly now: Date;
+  }): Promise<PlanningState> {
+    const current = await this.get(input.expected.id);
+    if (canonicalJson(current) !== canonicalJson(input.expected)) {
+      throw new OrchestratorError(
+        "planning_state_conflict",
+        `Planning request '${current.id}' changed before Plan draft publication`,
+      );
+    }
+    if (
+      current.status !== "synthesizing" ||
+      current.synthesis.attempts !== input.attempt ||
+      current.synthesis.current_request_digest !== input.requestDigest ||
+      current.synthesis.record_digest !== null ||
+      current.synthesis.report_digest !== null ||
+      current.synthesis.plan_digest !== null
+    ) {
+      throw new OrchestratorError(
+        "synthesis_attempt_conflict",
+        "Plan synthesis does not match its active attempt",
+      );
+    }
+    const next = PlanningStateSchema.parse({
+      ...current,
+      status: "drafted",
+      synthesis: {
+        ...current.synthesis,
+        record_digest: input.recordDigest,
+        report_digest: input.reportDigest,
+        plan_digest: input.planDigest,
+      },
       updated_at: input.now.toISOString(),
     });
     await writeJsonAtomic(this.stateFile(current.id), next);

@@ -252,8 +252,8 @@ export interface RunPlanningConsultationsOptions {
   readonly store: Pick<ProjectStore, "planningDirectory">;
   readonly project: Project;
   readonly local: LocalConfig;
-  readonly clients: Readonly<
-    Record<PlanningConsultationRole, ReadSessionOpenShell>
+  readonly clients?: Readonly<
+    Partial<Record<PlanningConsultationRole, ReadSessionOpenShell>>
   >;
   readonly planningId: string;
   readonly imageContext?: string;
@@ -1092,7 +1092,13 @@ async function executeRole(input: {
     }
   }
 
-  const client = input.options.clients[input.role];
+  const client = input.options.clients?.[input.role];
+  if (!client) {
+    throw new OrchestratorError(
+      "consultation_incomplete",
+      `${input.role} consultation requires a fresh Session before synthesis`,
+    );
+  }
   const preflight = await client.preflight();
   requirePreflight(preflight, model);
   if (!client.getInferenceRoute) {
@@ -1344,7 +1350,17 @@ export async function runPlanningConsultations(
         `Planning request '${state.id}' is bound to another repository revision`,
       );
     }
-    if (!["answered", "consulting", "consulted"].includes(state.status)) {
+    if (
+      ![
+        "answered",
+        "consulting",
+        "consulted",
+        "criticizing",
+        "criticized",
+        "synthesizing",
+        "drafted",
+      ].includes(state.status)
+    ) {
       throw new OrchestratorError(
         "planning_not_answered",
         `Planning request '${state.id}' is ${state.status}`,

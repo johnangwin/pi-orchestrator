@@ -79,6 +79,8 @@ Repository-aware planning now opens Milestone 5. A clean committed Project is co
 
 Answered planning requests can now launch independent Architecture and Quant consultations. Each fresh read-only Session receives the exact repository, questionnaire, Decisions, Role, Skills, and its own output contract, but no transcript or peer result. Immutable evidence and rendered Reports bind each result to its model route, policy, Brief, Session, Sandbox, source, and attempt; partial failure preserves the completed Role and retries only the failed Role with a fresh Session.
 
+Consulted requests can now produce a validated Plan draft through `orchestrator draft`. A fresh Reviewer-route critic evaluates the frozen specialist Reports before a fresh Lead Session synthesizes `plan.md` and `tasks.yaml`. The host validates required sections, Task dependencies, Roles, Checks, scope, acceptance criteria, required Review Lenses, critic resolutions, source anchors, and Plan revision, then stores the exact draft and immutable evidence outside the repository. The command is resumable and does not modify the Project, approve the Plan, or create a Run.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:
@@ -115,8 +117,9 @@ orchestrator init . --project-id stepout
 orchestrator plan "Introduce a strategy identity boundary" --id strategy-boundary-planning
 orchestrator answer strategy-boundary-planning
 orchestrator consult strategy-boundary-planning
+orchestrator draft strategy-boundary-planning
 
-# After creating a Plan and defining its registered Checks
+# After reviewing and placing the draft in docs/plans/<plan-id>/
 orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
 orchestrator start strategy-boundary

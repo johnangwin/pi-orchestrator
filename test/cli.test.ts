@@ -29,11 +29,12 @@ async function orchestrator(args: readonly string[]): Promise<string> {
 }
 
 describe("host CLI", () => {
-  it("exposes the repository planning, answer, and consultation commands", async () => {
+  it("exposes the repository planning workflow commands", async () => {
     const help = await orchestrator(["--help"]);
     expect(help).toContain("plan [options] <goal>");
     expect(help).toContain("answer [options] <planning>");
     expect(help).toContain("consult [options] <planning>");
+    expect(help).toContain("draft [options] <planning>");
   });
 
   it("validates, approves, and reports a fresh Plan", async () => {
@@ -165,6 +166,8 @@ describe("host CLI", () => {
           architecture: { report_digest: string | null };
           quant: { report_digest: string | null };
         };
+        critique: { attempts: number; report_digest: string | null };
+        synthesis: { attempts: number; plan_digest: string | null };
       }>;
       approvals: Array<{ fresh: boolean }>;
       runs: Array<{ id: string; status: string }>;
@@ -177,6 +180,8 @@ describe("host CLI", () => {
           architecture: { report_digest: digest },
           quant: { report_digest: null },
         },
+        critique: { attempts: 0, report_digest: null },
+        synthesis: { attempts: 0, plan_digest: null },
       },
     ]);
     expect(status.approvals).toHaveLength(1);

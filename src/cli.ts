@@ -38,6 +38,7 @@ import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
 import { resolveRoleModelRoute } from "./model.js";
 import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
+import { runPlanSynthesis } from "./synthesis.js";
 
 interface CommonOptions {
   readonly project?: string;
@@ -95,6 +96,11 @@ interface AnswerOptions extends CommonOptions {
 }
 
 interface ConsultOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+}
+
+interface DraftOptions extends CommonOptions {
   readonly config?: string;
   readonly home?: string;
 }
@@ -671,6 +677,118 @@ program
   });
 
 program
+  .command("draft")
+  .description(
+    "critique planning evidence and synthesize a validated Plan draft",
+  )
+  .argument("<planning>", "planning identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--json", "emit JSON")
+  .action(async (planningId: string, options: DraftOptions) => {
+    const project = await loadProject(options.project ?? process.cwd());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const clients = Object.fromEntries(
+      (
+        [
+          ["critic", "reviewer"],
+          ["lead", "lead"],
+        ] as const
+      ).map(([stage, roleName]) => {
+        const role = project.roles.get(roleName);
+        if (!role) {
+          throw new OrchestratorError(
+            "planning_stage_role_not_found",
+            `Plan drafting requires the '${roleName}' Role`,
+          );
+        }
+        const model = resolveRoleModelRoute(
+          project.config,
+          local,
+          role.definition.name,
+          role.definition.inference,
+        );
+        return [
+          stage,
+          new OpenShellClient({
+            command: local.openshell.command,
+            gateway: model.gateway,
+            workspace: local.openshell.workspace,
+            ...(local.openshell.required_version
+              ? { requiredVersion: local.openshell.required_version }
+              : {}),
+          }),
+        ];
+      }),
+    ) as {
+      critic: OpenShellClient;
+      lead: OpenShellClient;
+    };
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const result = await runPlanSynthesis({
+        store,
+        project,
+        local,
+        clients,
+        planningId,
+      });
+      const output = {
+        id: result.state.id,
+        status: result.state.status,
+        critique: {
+          attempt: result.critique.request.attempt,
+          request_digest: result.critique.request.request_digest,
+          record_digest: result.critique.record.record_digest,
+          report_digest: result.critique.record.report.content_digest,
+          verdict: result.critique.record.output.verdict,
+          output: result.critique.record.output,
+          reused: result.critique.reused,
+        },
+        synthesis: {
+          attempt: result.synthesis.request.attempt,
+          request_digest: result.synthesis.request.request_digest,
+          record_digest: result.synthesis.record.record_digest,
+          report_digest: result.synthesis.record.report.content_digest,
+          plan_digest: result.synthesis.plan.digest,
+          directory: result.synthesis.directory,
+          plan: {
+            id: result.synthesis.plan.id,
+            revision: result.synthesis.plan.revision,
+            markdown: result.synthesis.plan.markdown,
+            tasks_yaml: result.synthesis.plan.tasksYaml,
+            tasks: result.synthesis.plan.tasks,
+          },
+          reused: result.synthesis.reused,
+        },
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(`Planning ${result.state.id}: ${result.state.status}`);
+        console.log(
+          `  critic: ${result.critique.reused ? "reused" : "recorded"} attempt ${result.critique.request.attempt} (${result.critique.record.output.verdict})`,
+        );
+        console.log(
+          `  plan: ${result.synthesis.reused ? "reused" : "drafted"} ${result.synthesis.plan.id} r${result.synthesis.plan.revision} (${result.synthesis.plan.digest})`,
+        );
+        console.log(`  directory: ${result.synthesis.directory}`);
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+program
   .command("validate")
   .description("validate a Plan without approving it")
   .argument("<plan>", "Plan ID or directory")
@@ -948,6 +1066,8 @@ program
           attempts: item.attempts,
           decisions: Object.keys(item.decisions).length,
           consultations: item.consultations,
+          critique: item.critique,
+          synthesis: item.synthesis,
         })),
         approvals,
         runs: Object.values(record.runs),
@@ -967,6 +1087,16 @@ program
                 `    ${role}: ${consultation.report_digest ? "complete" : "pending"} (attempt ${consultation.attempts})`,
               );
             }
+          }
+          if (item.critique.attempts > 0) {
+            console.log(
+              `    critic: ${item.critique.report_digest ? "complete" : "pending"} (attempt ${item.critique.attempts})`,
+            );
+          }
+          if (item.synthesis.attempts > 0) {
+            console.log(
+              `    synthesis: ${item.synthesis.plan_digest ? "complete" : "pending"} (attempt ${item.synthesis.attempts})`,
+            );
           }
         }
         console.log(`Approvals: ${approvals.length}`);

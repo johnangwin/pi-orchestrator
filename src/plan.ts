@@ -76,6 +76,15 @@ export interface LoadedPlan {
   readonly digest: Digest;
 }
 
+export interface ValidatedPlanDraft {
+  readonly id: string;
+  readonly revision: number;
+  readonly markdown: string;
+  readonly tasksYaml: string;
+  readonly tasks: readonly PlanTask[];
+  readonly digest: Digest;
+}
+
 function validateMarkdown(markdown: string, filePath: string): void {
   let previous = -1;
   for (const section of requiredSections) {
@@ -205,26 +214,62 @@ export async function loadPlan(
   ]);
   const markdown = markdownBytes.toString("utf8");
   const tasksSource = tasksBytes.toString("utf8");
-  const tasksFile = parseTasks(tasksSource, tasksPath);
+  const draft = validatePlanDraft(
+    {
+      id: path.basename(path.resolve(directory)),
+      markdown,
+      tasksYaml: tasksSource,
+      markdownPath,
+      tasksPath,
+    },
+    catalog,
+  );
 
-  validateMarkdown(markdown, markdownPath);
+  return {
+    id: draft.id,
+    revision: draft.revision,
+    directory: path.resolve(directory),
+    markdown: draft.markdown,
+    tasks: draft.tasks,
+    digest: draft.digest,
+  };
+}
+
+export function validatePlanDraft(
+  input: {
+    readonly id: string;
+    readonly markdown: string;
+    readonly tasksYaml: string;
+    readonly markdownPath?: string;
+    readonly tasksPath?: string;
+  },
+  catalog: PlanCatalog,
+): ValidatedPlanDraft {
+  const id = IdentifierSchema.parse(input.id);
+  const markdownPath = input.markdownPath ?? `${id}/plan.md`;
+  const tasksPath = input.tasksPath ?? `${id}/tasks.yaml`;
+  const tasksFile = parseTasks(input.tasksYaml, tasksPath);
+
+  validateMarkdown(input.markdown, markdownPath);
   validateGraph(tasksFile.tasks);
   validateCatalog(tasksFile.tasks, catalog);
-
-  if (path.basename(path.resolve(directory)) !== tasksFile.plan.id) {
+  if (tasksFile.plan.id !== id) {
     throw new OrchestratorError(
       "invalid_plan",
-      `Plan directory '${path.basename(directory)}' does not match Plan ID '${tasksFile.plan.id}'`,
+      `Plan directory '${id}' does not match Plan ID '${tasksFile.plan.id}'`,
     );
   }
 
   return {
-    id: tasksFile.plan.id,
+    id,
     revision: tasksFile.plan.revision,
-    directory: path.resolve(directory),
-    markdown,
+    markdown: input.markdown,
+    tasksYaml: input.tasksYaml,
     tasks: tasksFile.tasks,
-    digest: digestPlan(markdownBytes, tasksBytes),
+    digest: digestPlan(
+      Buffer.from(input.markdown, "utf8"),
+      Buffer.from(input.tasksYaml, "utf8"),
+    ),
   };
 }
 

@@ -71,6 +71,14 @@ Architecture must return current constraints, one conservative alternative, one 
 
 Planning state records monotonic attempts plus current request, evidence-record, and Report digests separately for `architecture` and `quant`. The first attempt moves planning to `consulting`; only two validated Reports move it to `consulted`. Requests, Briefs, raw final structured responses, model-turn evidence, Sandbox provenance, and rendered consultation Reports are immutable host files. Exact completed work is reused, an output stored before state publication is adopted, and a failed Role advances to a fresh Session attempt without changing the other Role's Report.
 
+`orchestrator draft <planning-id>` first revalidates both frozen consultation Reports, then runs a fresh independent critic through the `reviewer` Role and its default review route. The critic receives the questionnaire, Decisions, Architecture and Quant Reports, exact source identity, and a strict structured output contract. It receives no planning transcript or future Lead output. Its verdict is `accept` only when it has no blocking findings; every blocking finding has a stable identifier, source evidence, and required correction.
+
+After the critic Report is frozen, a fresh Lead Session receives the same durable planning inputs plus that Report and the configured Role and Check catalog. It emits one structured Plan candidate. The host validates the exact required `plan.md` sections, Plan ID and revision, Task graph, Roles, Checks, source scopes, acceptance criteria, and Review Lenses. Every Task must require Spec, Architecture, and Quality Reviews; material Quant consultation also requires a Quant Review. Lead output must resolve every blocking critic finding exactly once.
+
+Critique and synthesis use separate monotonic attempts and transition planning through `criticizing`, `criticized`, `synthesizing`, and `drafted`. A failed stage gets a fresh Session while completed upstream Reports remain frozen. Requests, Briefs, structured responses, model-turn evidence, Sandbox provenance, Reports, and a self-digested draft manifest are immutable. The manifest binds the resulting Plan digest and exact source, questionnaire, consultation, critique, and file digests.
+
+Validated drafts are staged under `$ORCHESTRATOR_HOME/projects/<project-id>/planning/<planning-id>/draft/<plan-id>/`. They remain outside the Project and are not approved automatically. `draft` never mutates the repository, creates a Run, or satisfies a human Gate. Repeating the command revalidates and reuses exact completed evidence; changed source, policy, Role, route, Brief, record, Report, or draft bytes fail closed.
+
 ## Task provenance
 
 Each runtime Task has fields for:

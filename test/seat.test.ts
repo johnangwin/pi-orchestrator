@@ -148,6 +148,12 @@ describe("read Session bootstrap", () => {
         sandboxName: "pio-read-test",
       });
       expect(session.info.sourceDigest).toBe(snapshot.manifest.source_digest);
+      expect(session.identity).toEqual({
+        run: "run-one",
+        seat: "scout",
+        session: "session-one",
+        epoch: 1,
+      });
       await expect(session.ping()).resolves.toMatch(/^[a-f0-9]{32}$/);
       await session.reconnect();
       await expect(session.ping()).resolves.toMatch(/^[a-f0-9]{32}$/);

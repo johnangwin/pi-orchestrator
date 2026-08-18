@@ -89,7 +89,13 @@ expired
 superseded
 ```
 
-Lifecycle changes use same-filesystem rename. Retrying the same Message ID and content is idempotent. Reusing an ID for different content is rejected.
+Lifecycle changes use same-filesystem rename. Retrying the same Message ID and content is idempotent. Reusing an ID for different content is rejected. Reads fail closed if a filename disagrees with its Message ID or one ID appears in multiple lifecycle directories.
+
+A caller may initially address a Message to a Seat. Before the first durable write, the host resolves that Seat through authoritative Run state and adds the current Session ID and epoch. A Message with only one of those identity fields is invalid. Once stored, that complete target is immutable; Session replacement does not silently retarget an old pending Message.
+
+The host serializes Mailbox delivery for the current implementation. It writes the bound Message to `pending` before using a live Link, verifies that the Link identity is still current, and sends the exact stored content. A `queued` acknowledgement means the Pi client accepted the Message for injection. A `duplicate` acknowledgement means the same client already accepted the identical Message during an earlier attempt. Either acknowledgement atomically advances `pending` to `queued`; neither advances it to `answered`.
+
+Transport failure removes the live Link, records the current Session as `disconnected`, and leaves the Message `pending`. Attaching a replacement transport for the same Session identity moves the Session back to `active` and redelivers its pending Messages in deterministic creation order. The Pi client deduplicates the stable IDs, so recovery after acknowledgement loss does not inject a Message twice. The host validates the current identity again after acknowledgement so an epoch change cannot satisfy delivery state for a stale Session.
 
 ## Briefs
 

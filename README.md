@@ -52,6 +52,8 @@ Run state now includes a durable Seat and Session registry. It serializes lifecy
 
 The cmux host adapter now verifies an exact CLI and capability set, creates retriable Run Workspaces and Seat Panes from durable operation identities, launches trusted command arrays without a host shell, and reports UI drift through read-only reconciliation. Missing panes remain operational failures, never evidence that workflow work completed.
 
+Host Mailbox routing now resolves Seat-addressed Messages to the authoritative current Session and epoch before persistence, advances them only after a valid Link acknowledgement, and redelivers pending work after same-Session reconnection. Delivery failures leave Messages durable and mark the Session disconnected; replacement epochs never inherit old pending Messages implicitly.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:

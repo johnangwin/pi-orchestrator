@@ -307,6 +307,10 @@ export class ReadSession {
     this.info = info;
   }
 
+  get identity(): SessionIdentity {
+    return this.info.identity;
+  }
+
   ping(): Promise<string> {
     return this.link.ping();
   }

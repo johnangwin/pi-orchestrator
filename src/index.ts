@@ -10,6 +10,7 @@ export * from "./event.js";
 export * from "./init.js";
 export * from "./link.js";
 export * from "./local.js";
+export * from "./mailbox.js";
 export * from "./message.js";
 export * from "./model.js";
 export * from "./openshell.js";

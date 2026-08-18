@@ -24,7 +24,7 @@
 
 ## Milestone 3: Visible Sessions
 
-- durable Seats, Sessions, and epochs (schemas and live identity binding complete)
+- durable Seats, Sessions, and epochs (complete)
 - cmux workspace and pane adapter
 - durable Mailbox delivery and acknowledgements (wire protocol and client events complete)
 - reconnection and replacement

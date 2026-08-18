@@ -1,5 +1,15 @@
 import { z } from "zod";
 import { IdentifierSchema, ModelAliasSchema } from "./config.js";
+import { OrchestratorError } from "./error.js";
+import { OpenShellSandboxNameSchema } from "./openshell.js";
+
+const TimestampSchema = z.string().datetime({ offset: true });
+
+export const SessionEpochSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER);
 
 export const SessionStatusSchema = z.enum([
   "starting",
@@ -16,7 +26,7 @@ export const SessionIdentitySchema = z
     run: IdentifierSchema,
     seat: IdentifierSchema,
     session: IdentifierSchema,
-    epoch: z.number().int().nonnegative(),
+    epoch: SessionEpochSchema,
   })
   .strict();
 export type SessionIdentity = z.infer<typeof SessionIdentitySchema>;
@@ -24,14 +34,130 @@ export type SessionIdentity = z.infer<typeof SessionIdentitySchema>;
 export const SeatRecordSchema = z
   .object({
     role: IdentifierSchema,
-    sandbox: z.string().min(1).optional(),
-    session: IdentifierSchema,
-    epoch: z.number().int().nonnegative(),
-    status: SessionStatusSchema,
     model: ModelAliasSchema,
+    session: IdentifierSchema.nullable(),
+    epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+  })
+  .strict()
+  .superRefine((seat, context) => {
+    if ((seat.session === null) !== (seat.epoch === 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["session"],
+        message: "a Seat has no Session exactly when its epoch is zero",
+      });
+    }
+    if (Date.parse(seat.updated_at) < Date.parse(seat.created_at)) {
+      context.addIssue({
+        code: "custom",
+        path: ["updated_at"],
+        message: "must not precede created_at",
+      });
+    }
+  });
+export type SeatRecord = z.infer<typeof SeatRecordSchema>;
+
+export const SessionSandboxSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: OpenShellSandboxNameSchema,
+    workspace: z.string().min(1),
   })
   .strict();
-export type SeatRecord = z.infer<typeof SeatRecordSchema>;
+export type SessionSandbox = z.infer<typeof SessionSandboxSchema>;
+
+const SessionReplacementSchema = z
+  .object({
+    session: IdentifierSchema,
+    reason: z.string().trim().min(1).max(2_000),
+  })
+  .strict();
+
+export const SessionRecordSchema = z
+  .object({
+    identity: SessionIdentitySchema,
+    model: ModelAliasSchema,
+    status: SessionStatusSchema,
+    sandbox: SessionSandboxSchema.nullable(),
+    replaces: SessionReplacementSchema.nullable(),
+    termination_reason: z.string().trim().min(1).max(2_000).nullable(),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+    ended_at: TimestampSchema.nullable(),
+  })
+  .strict()
+  .superRefine((session, context) => {
+    const terminal = ["stopped", "failed"].includes(session.status);
+    if (terminal !== (session.ended_at !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["ended_at"],
+        message: terminal
+          ? "is required for a terminal Session"
+          : "is only allowed for a terminal Session",
+      });
+    }
+    if (terminal !== (session.termination_reason !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["termination_reason"],
+        message: terminal
+          ? "is required for a terminal Session"
+          : "is only allowed for a terminal Session",
+      });
+    }
+    if (Date.parse(session.updated_at) < Date.parse(session.created_at)) {
+      context.addIssue({
+        code: "custom",
+        path: ["updated_at"],
+        message: "must not precede created_at",
+      });
+    }
+    if (
+      session.ended_at !== null &&
+      Date.parse(session.ended_at) < Date.parse(session.created_at)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["ended_at"],
+        message: "must not precede created_at",
+      });
+    }
+  });
+export type SessionRecord = z.infer<typeof SessionRecordSchema>;
+
+const sessionTransitions: Readonly<
+  Record<SessionStatus, ReadonlySet<SessionStatus>>
+> = {
+  starting: new Set(["active", "disconnected", "stopped", "failed"]),
+  active: new Set(["waiting", "disconnected", "stopped", "failed"]),
+  disconnected: new Set(["active", "waiting", "stopped", "failed"]),
+  waiting: new Set(["active", "disconnected", "stopped", "failed"]),
+  stopped: new Set(),
+  failed: new Set(),
+};
+
+export function canTransitionSession(
+  from: SessionStatus,
+  to: SessionStatus,
+): boolean {
+  return sessionTransitions[from].has(to);
+}
+
+export function transitionSessionStatus(
+  from: SessionStatus,
+  to: SessionStatus,
+): SessionStatus {
+  if (!canTransitionSession(from, to)) {
+    throw new OrchestratorError(
+      "invalid_transition",
+      `Session cannot transition from '${from}' to '${to}'`,
+    );
+  }
+  return to;
+}
 
 export const ModelTurnResultSchema = z
   .object({

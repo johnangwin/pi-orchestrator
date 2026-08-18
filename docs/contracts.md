@@ -127,6 +127,12 @@ The payload and record are changed to mode `0400`, flushed, and published togeth
 
 A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.
 
+The Run state contains a stable Seat registry and immutable Session history. A newly registered Seat is dormant at epoch zero. Its first Session starts at epoch one; every replacement advances exactly one epoch, identifies its predecessor and replacement reason, and leaves the predecessor terminal. Session history must be contiguous, and only the current Session may be nonterminal.
+
+Registry mutations are serialized by the single-writer Project store. Starting or replacing a Session requires a caller-selected stable Session ID, so retrying the same operation is idempotent while competing replacements against the same expected identity cannot both advance the epoch. Every mutating Session operation verifies the full current identity. A stale Run, Seat, Session, or epoch is rejected before state changes.
+
+Session status transitions follow an explicit graph. `stopped` and `failed` are terminal and require an end time and reason. An OpenShell Sandbox binding records its UUID, name, and workspace once and cannot be replaced in place. Older version-one Run files without registry fields read as empty registries and acquire the fields on their next atomic mutation.
+
 ## OpenShell lifecycle
 
 The OpenShell adapter validates Sandbox names before launch, disables automatic credential providers, observes remote exit codes without treating expected denial as an infrastructure error, and parses `get` and `list` responses into versioned host types. Creation is followed by an authoritative `get`; JSON output is not requested from `sandbox create` because OpenShell 0.0.106 forbids combining it with an initial command.

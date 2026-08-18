@@ -7,6 +7,7 @@ import { z } from "zod";
 import { ApprovalSchema, type Approval } from "./approval.js";
 import { IdentifierSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
+import { SeatRecordSchema, SessionRecordSchema } from "./session.js";
 import { GateStatusSchema, RunStatusSchema, TaskStatusSchema } from "./task.js";
 
 export interface AtomicWriteOptions {
@@ -89,11 +90,155 @@ export const RunStateSchema = z
     worktree: z.string().min(1),
     status: RunStatusSchema,
     tasks: z.record(IdentifierSchema, TaskRecordSchema),
+    seats: z.record(IdentifierSchema, SeatRecordSchema).default({}),
+    sessions: z.record(IdentifierSchema, SessionRecordSchema).default({}),
     created_at: z.string().datetime({ offset: true }),
     updated_at: z.string().datetime({ offset: true }),
   })
-  .strict();
-export type RunState = z.infer<typeof RunStateSchema>;
+  .strict()
+  .superRefine((run, context) => {
+    const sessionsBySeat = new Map<
+      string,
+      Map<number, { id: string; status: string }>
+    >();
+
+    for (const [sessionId, session] of Object.entries(run.sessions)) {
+      const identity = session.identity;
+      if (identity.session !== sessionId) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessions", sessionId, "identity", "session"],
+          message: `must equal registry key '${sessionId}'`,
+        });
+      }
+      if (identity.run !== run.id) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessions", sessionId, "identity", "run"],
+          message: `must equal Run '${run.id}'`,
+        });
+      }
+
+      const seat = run.seats[identity.seat];
+      if (!seat) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessions", sessionId, "identity", "seat"],
+          message: `references unknown Seat '${identity.seat}'`,
+        });
+        continue;
+      }
+      if (session.model !== seat.model) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessions", sessionId, "model"],
+          message: `must equal Seat model '${seat.model}'`,
+        });
+      }
+
+      let epochs = sessionsBySeat.get(identity.seat);
+      if (!epochs) {
+        epochs = new Map();
+        sessionsBySeat.set(identity.seat, epochs);
+      }
+      if (epochs.has(identity.epoch)) {
+        context.addIssue({
+          code: "custom",
+          path: ["sessions", sessionId, "identity", "epoch"],
+          message: `duplicates epoch ${identity.epoch} for Seat '${identity.seat}'`,
+        });
+      } else {
+        epochs.set(identity.epoch, {
+          id: sessionId,
+          status: session.status,
+        });
+      }
+    }
+
+    for (const [seatId, seat] of Object.entries(run.seats)) {
+      const epochs = sessionsBySeat.get(seatId) ?? new Map();
+      if (seat.session === null) {
+        if (epochs.size > 0) {
+          context.addIssue({
+            code: "custom",
+            path: ["seats", seatId, "session"],
+            message: "a dormant Seat cannot have Session records",
+          });
+        }
+        continue;
+      }
+
+      const current = run.sessions[seat.session];
+      if (!current) {
+        context.addIssue({
+          code: "custom",
+          path: ["seats", seatId, "session"],
+          message: `references unknown Session '${seat.session}'`,
+        });
+      } else if (
+        current.identity.seat !== seatId ||
+        current.identity.epoch !== seat.epoch
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["seats", seatId, "session"],
+          message: "must reference the current Session at the Seat epoch",
+        });
+      }
+
+      const orderedEpochs = [...epochs.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      for (let index = 0; index < orderedEpochs.length; index += 1) {
+        const [epoch, entry] = orderedEpochs[index]!;
+        const expectedEpoch = index + 1;
+        if (epoch !== expectedEpoch) {
+          context.addIssue({
+            code: "custom",
+            path: ["sessions", entry.id, "identity", "epoch"],
+            message: `expected contiguous epoch ${expectedEpoch}, received ${epoch}`,
+          });
+        }
+        const session = run.sessions[entry.id]!;
+        if (epoch === 1 && session.replaces !== null) {
+          context.addIssue({
+            code: "custom",
+            path: ["sessions", entry.id, "replaces"],
+            message: "the first Session cannot replace another Session",
+          });
+        }
+        if (epoch > 1) {
+          const predecessor = epochs.get(epoch - 1);
+          if (session.replaces?.session !== predecessor?.id) {
+            context.addIssue({
+              code: "custom",
+              path: ["sessions", entry.id, "replaces"],
+              message: `must reference the Session at epoch ${epoch - 1}`,
+            });
+          }
+        }
+        if (
+          epoch < seat.epoch &&
+          !["stopped", "failed"].includes(entry.status)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["sessions", entry.id, "status"],
+            message: "a replaced Session must be terminal",
+          });
+        }
+      }
+      if (epochs.size !== seat.epoch) {
+        context.addIssue({
+          code: "custom",
+          path: ["seats", seatId, "epoch"],
+          message: "must equal the contiguous Session history length",
+        });
+      }
+    }
+  });
+export type RunState = z.output<typeof RunStateSchema>;
+export type RunStateInput = z.input<typeof RunStateSchema>;
 
 const RunSummarySchema = z
   .object({
@@ -129,7 +274,10 @@ export class ProjectStore {
   readonly directory: string;
   readonly projectFile: string;
   private readonly releaseLock: () => Promise<void>;
+  private mutationTail: Promise<void> = Promise.resolve();
+  private accepting = true;
   private closed = false;
+  private closePromise: Promise<void> | undefined;
 
   private constructor(directory: string, releaseLock: () => Promise<void>) {
     this.directory = directory;
@@ -173,8 +321,18 @@ export class ProjectStore {
   }
 
   private assertOpen(): void {
-    if (this.closed)
+    if (!this.accepting || this.closed)
       throw new OrchestratorError("store_closed", "Project store is closed");
+  }
+
+  private serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertOpen();
+    const result = this.mutationTail.then(operation);
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private async initialize(
@@ -216,6 +374,10 @@ export class ProjectStore {
 
   async read(): Promise<ProjectRecord> {
     this.assertOpen();
+    return this.readProjectFile();
+  }
+
+  private async readProjectFile(): Promise<ProjectRecord> {
     let source: string;
     try {
       source = await readFile(this.projectFile, "utf8");
@@ -231,7 +393,16 @@ export class ProjectStore {
       throw error;
     }
 
-    const parsed: unknown = JSON.parse(source);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source);
+    } catch (error) {
+      throw new OrchestratorError(
+        "invalid_state",
+        `Invalid JSON in ${this.projectFile}`,
+        { cause: error },
+      );
+    }
     const result = ProjectRecordSchema.safeParse(parsed);
     if (!result.success) {
       throw new OrchestratorError(
@@ -245,14 +416,15 @@ export class ProjectStore {
   async update(
     change: (current: ProjectRecord) => ProjectRecord,
   ): Promise<ProjectRecord> {
-    this.assertOpen();
-    const current = await this.read();
-    const next = ProjectRecordSchema.parse({
-      ...change(structuredClone(current)),
-      updated_at: new Date().toISOString(),
+    return this.serializeMutation(async () => {
+      const current = await this.readProjectFile();
+      const next = ProjectRecordSchema.parse({
+        ...change(structuredClone(current)),
+        updated_at: new Date().toISOString(),
+      });
+      await writeJsonAtomic(this.projectFile, next);
+      return next;
     });
-    await writeJsonAtomic(this.projectFile, next);
-    return next;
   }
 
   async recordApproval(approval: Approval): Promise<ProjectRecord> {
@@ -267,23 +439,91 @@ export class ProjectStore {
   }
 
   async readRun(runId: string): Promise<RunState> {
-    const filePath = path.join(this.runDirectory(runId), "state.json");
-    const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    return RunStateSchema.parse(value);
+    this.assertOpen();
+    return this.readRunFile(IdentifierSchema.parse(runId));
   }
 
-  async writeRun(state: RunState): Promise<void> {
-    this.assertOpen();
+  private async readRunFile(runId: string): Promise<RunState> {
+    const filePath = path.join(this.runDirectory(runId), "state.json");
+    let source: string;
+    try {
+      source = await readFile(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new OrchestratorError("state_not_found", `Missing ${filePath}`, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(source);
+    } catch (error) {
+      throw new OrchestratorError(
+        "invalid_state",
+        `Invalid JSON in ${filePath}`,
+        { cause: error },
+      );
+    }
+    const result = RunStateSchema.safeParse(value);
+    if (!result.success) {
+      throw new OrchestratorError(
+        "invalid_state",
+        `Invalid ${filePath}: ${result.error.message}`,
+      );
+    }
+    return result.data;
+  }
+
+  async writeRun(state: RunStateInput): Promise<void> {
     const parsed = RunStateSchema.parse(state);
-    await writeJsonAtomic(
-      path.join(this.runDirectory(state.id), "state.json"),
-      parsed,
+    await this.serializeMutation(() =>
+      writeJsonAtomic(
+        path.join(this.runDirectory(parsed.id), "state.json"),
+        parsed,
+      ),
     );
   }
 
+  async updateRun(
+    runId: string,
+    change: (current: RunState) => RunState,
+  ): Promise<RunState> {
+    const parsedRunId = IdentifierSchema.parse(runId);
+    return this.serializeMutation(async () => {
+      const current = await this.readRunFile(parsedRunId);
+      const draft = structuredClone(current);
+      const changed = change(draft);
+      if (changed.id !== parsedRunId) {
+        throw new OrchestratorError(
+          "run_identity_conflict",
+          `Run update for '${parsedRunId}' returned '${changed.id}'`,
+        );
+      }
+      if (changed === draft) return current;
+      const next = RunStateSchema.parse({
+        ...changed,
+        updated_at: new Date().toISOString(),
+      });
+      await writeJsonAtomic(
+        path.join(this.runDirectory(parsedRunId), "state.json"),
+        next,
+      );
+      return next;
+    });
+  }
+
   async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     if (this.closed) return;
-    this.closed = true;
-    await this.releaseLock();
+    this.accepting = false;
+    this.closePromise = this.mutationTail
+      .then(() => this.releaseLock())
+      .finally(() => {
+        this.closed = true;
+      });
+    return this.closePromise;
   }
 }

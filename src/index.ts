@@ -16,6 +16,7 @@ export * from "./plan.js";
 export * from "./policy.js";
 export * from "./project.js";
 export * from "./report.js";
+export * from "./registry.js";
 export * from "./role.js";
 export * from "./seat.js";
 export * from "./session.js";

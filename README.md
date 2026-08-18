@@ -44,6 +44,8 @@ The host-side state and validation core is complete. The OpenShell adapter verif
 
 The first live Session path is also implemented. It creates an exact committed Git snapshot, builds a per-Session image from the pinned Pi 0.84.2 runtime, starts directly under the `read` policy, loads the sandbox client extension, and establishes an authenticated, epoch-bound Link that survives host reconnection. Logical model aliases resolve to exact OpenShell gateways and models; Pi calls only `inference.local`, and bounded completion events return through the Link.
 
+Run state now includes a durable Seat and Session registry. It serializes lifecycle mutations, retains contiguous Session history, atomically allocates monotonic replacement epochs, rejects stale identities, and preserves immutable OpenShell Sandbox provenance across host restarts.
+
 ## OpenShell
 
 Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:

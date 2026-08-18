@@ -10,6 +10,20 @@ import { loadRoles, type LoadedRole } from "./role.js";
 
 const execFileAsync = promisify(execFile);
 
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!name.startsWith("GIT_") && value !== undefined) {
+      environment[name] = value;
+    }
+  }
+  environment.GIT_CONFIG_GLOBAL = "/dev/null";
+  environment.GIT_CONFIG_NOSYSTEM = "1";
+  environment.GIT_TERMINAL_PROMPT = "0";
+  environment.LANG = "C.UTF-8";
+  return environment;
+}
+
 export interface LoadedSkill {
   readonly name: string;
   readonly path: string;
@@ -94,11 +108,16 @@ export async function gitOutput(
   args: readonly string[],
 ): Promise<string> {
   try {
-    const result = await execFileAsync("git", [...args], {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    const result = await execFileAsync(
+      "git",
+      ["-c", "core.fsmonitor=false", ...args],
+      {
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        env: gitEnvironment(),
+      },
+    );
     return result.stdout.trim();
   } catch (error) {
     throw new OrchestratorError(

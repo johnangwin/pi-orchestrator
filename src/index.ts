@@ -20,6 +20,7 @@ export * from "./model.js";
 export * from "./openshell.js";
 export * from "./patch.js";
 export * from "./plan.js";
+export * from "./planning.js";
 export * from "./policy.js";
 export * from "./projection.js";
 export * from "./project.js";

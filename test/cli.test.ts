@@ -29,6 +29,12 @@ async function orchestrator(args: readonly string[]): Promise<string> {
 }
 
 describe("host CLI", () => {
+  it("exposes the repository planning and answer commands", async () => {
+    const help = await orchestrator(["--help"]);
+    expect(help).toContain("plan [options] <goal>");
+    expect(help).toContain("answer [options] <planning>");
+  });
+
   it("validates, approves, and reports a fresh Plan", async () => {
     const project = await createFixtureProject();
     roots.push(project);
@@ -107,10 +113,12 @@ describe("host CLI", () => {
       ]),
     ) as {
       project: string;
+      planning: unknown[];
       approvals: Array<{ fresh: boolean }>;
       runs: Array<{ id: string; status: string }>;
     };
     expect(status.project).toBe("fixture");
+    expect(status.planning).toEqual([]);
     expect(status.approvals).toHaveLength(1);
     expect(status.approvals[0]?.fresh).toBe(true);
     expect(status.runs).toMatchObject([{ id: "fixture-run", status: "ready" }]);

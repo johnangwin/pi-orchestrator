@@ -53,6 +53,18 @@ An approval records:
 
 Approval freshness is computed against current authoritative inputs. Missing or stale approval prevents writable work.
 
+## Repository-aware planning
+
+Planning precedes Plan approval and therefore does not create an implementation Run. Host evidence is stored under `$ORCHESTRATOR_HOME/projects/<project-id>/planning/<planning-id>/` while the Project's single-writer lease is held. The planning identifier occupies the Link protocol's required `run` correlation field for its disposable model turn, but it does not identify a `RunState`, branch, worktree, Task graph, or approval.
+
+`orchestrator plan <goal>` requires a clean tracked and untracked checkout. It snapshots all tracked files from the exact current commit without `.git` or untracked content and starts a fresh Lead Session under the final `read` policy. The compiled Brief binds the goal, Project instructions, Role, Skills, source commit and digest, Session identity, and a strict output contract. Supporting Skill content that exceeds the initial context fraction is explicitly omitted rather than truncated.
+
+A questionnaire result is one JSON object with repository observations, real tracked-file anchors, assumptions, and at most five material questions. Every question has two to four unique options, an explanation of their main tradeoffs, one valid recommendation, and free-form support. The host rejects unknown anchors, malformed choices, extra prose, truncated output, or mismatched Session and model evidence.
+
+The immutable questionnaire record binds its request, goal, commit, source, Role, model route, read policy, Brief, Session, Sandbox, final response, and model-turn metadata. Only the final structured response is stored; the Session transcript remains disposable. Repeating the exact command reuses that record.
+
+`orchestrator answer <planning-id>` requires all question IDs and rejects extras. Each option selection or free-form response is stored as an individual self-digested Decision record bound to the questionnaire and question. Planning becomes `answered` only after every Decision exists and revalidates. An interrupted retry can reuse identical Decision files but cannot replace an accepted answer. A dirty checkout or changed commit makes the planning evidence stale.
+
 ## Task provenance
 
 Each runtime Task has fields for:

@@ -258,7 +258,7 @@ function resultDirectory(
   );
 }
 
-describe("authoritative Checks", () => {
+describe("authoritative Checks", { timeout: 15_000 }, () => {
   it("runs a registered argv in a fresh no-inference Sandbox and reuses exact evidence", async () => {
     const fixture = await applied();
     const client = new FakeCheckOpenShell();

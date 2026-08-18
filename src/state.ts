@@ -618,6 +618,14 @@ export class ProjectStore {
     return path.join(this.directory, "runs", IdentifierSchema.parse(runId));
   }
 
+  planningDirectory(planningId: string): string {
+    return path.join(
+      this.directory,
+      "planning",
+      IdentifierSchema.parse(planningId),
+    );
+  }
+
   async readRun(runId: string): Promise<RunState> {
     this.assertOpen();
     return this.readRunFile(IdentifierSchema.parse(runId));

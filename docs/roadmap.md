@@ -40,7 +40,7 @@
 
 ## Milestone 5: Stepout proving run
 
-- repository-aware planning and questionnaire
+- repository-aware planning and questionnaire (implementation complete; Stepout exercise pending)
 - architecture and quantitative consultation
 - all required Review Lenses
 - Handoff and terminated-Session recovery

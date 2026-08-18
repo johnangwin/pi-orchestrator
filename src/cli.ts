@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,8 +25,16 @@ import {
   type LocalConfig,
 } from "./local.js";
 import { OpenShellClient } from "./openshell.js";
+import {
+  answerPlanningQuestionnaire,
+  PlanningStore,
+  runPlanningQuestionnaire,
+  type PlanningQuestion,
+  type PlanningQuestionnaire,
+} from "./planning.js";
 import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
+import { resolveRoleModelRoute } from "./model.js";
 import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
 
@@ -71,6 +80,17 @@ interface CommitOptions extends CommonOptions {
   readonly run?: string;
   readonly subject?: string;
   readonly yes?: boolean;
+}
+
+interface PlanOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+  readonly id?: string;
+}
+
+interface AnswerOptions extends CommonOptions {
+  readonly answers?: string;
+  readonly home?: string;
 }
 
 async function optionalLocalConfig(
@@ -200,6 +220,110 @@ function formatCommitProposal(proposal: CommitProposal): string {
   ].join("\n");
 }
 
+function printQuestionnaire(
+  planningId: string,
+  status: string,
+  questionnaire: PlanningQuestionnaire,
+): void {
+  console.log(`Planning: ${planningId}`);
+  console.log(`Status: ${status}`);
+  console.log(`Repository: ${questionnaire.repository.summary}`);
+  if (questionnaire.questions.length === 0) {
+    console.log("Questions: none");
+    return;
+  }
+  console.log(`Questions: ${questionnaire.questions.length}`);
+  questionnaire.questions.forEach((question, index) => {
+    console.log(`\n${index + 1}. ${question.question}`);
+    console.log(`   Why: ${question.why}`);
+    for (const option of question.options) {
+      const recommended =
+        option.id === question.recommendation ? " (recommended)" : "";
+      console.log(
+        `   ${option.id}: ${option.label}${recommended} - ${option.tradeoff}`,
+      );
+    }
+    console.log("   Free-form input is accepted.");
+  });
+}
+
+async function answerFile(filePath: string): Promise<Record<string, string>> {
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(path.resolve(filePath), "utf8"));
+  } catch (error) {
+    throw new OrchestratorError(
+      "invalid_planning_answers",
+      `Cannot parse planning answers from ${path.resolve(filePath)}`,
+      { cause: error },
+    );
+  }
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new OrchestratorError(
+      "invalid_planning_answers",
+      "Planning answers must be a JSON object keyed by question ID",
+    );
+  }
+  const answers: Record<string, string> = {};
+  for (const [question, answer] of Object.entries(value)) {
+    IdentifierSchema.parse(question);
+    if (typeof answer !== "string") {
+      throw new OrchestratorError(
+        "invalid_planning_answers",
+        `Answer '${question}' must be a string`,
+      );
+    }
+    answers[question] = answer;
+  }
+  return answers;
+}
+
+function printQuestion(question: PlanningQuestion, index: number): void {
+  console.log(`\n${index + 1}. ${question.question}`);
+  console.log(`Why: ${question.why}`);
+  question.options.forEach((option, optionIndex) => {
+    const recommended =
+      option.id === question.recommendation ? " (recommended)" : "";
+    console.log(
+      `  ${optionIndex + 1}. ${option.label}${recommended}\n     ${option.tradeoff}`,
+    );
+  });
+}
+
+async function interactiveAnswers(
+  questionnaire: PlanningQuestionnaire,
+): Promise<Record<string, string>> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new OrchestratorError(
+      "answers_required",
+      "Human answers require a TTY or an explicit --answers JSON file",
+    );
+  }
+  const input = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const answers: Record<string, string> = {};
+  try {
+    for (const [index, question] of questionnaire.questions.entries()) {
+      printQuestion(question, index);
+      const raw = await input.question(
+        `Answer [${question.recommendation}; option number/ID or free-form]: `,
+      );
+      const selected = raw.trim() || question.recommendation;
+      const numeric = /^\d+$/.test(selected) ? Number(selected) : undefined;
+      const option =
+        numeric !== undefined
+          ? question.options[numeric - 1]
+          : question.options.find((candidate) => candidate.id === selected);
+      answers[question.id] = option?.id ?? selected;
+    }
+  } finally {
+    input.close();
+  }
+  return answers;
+}
+
 const program = new Command()
   .name("orchestrator")
   .description("Host control plane for isolated Pi development runs")
@@ -303,6 +427,151 @@ program
     const result = await initializeProject(directory, options.projectId);
     console.log(`Initialized ${result.root}`);
     for (const file of result.created) console.log(`  created ${file}`);
+  });
+
+program
+  .command("plan")
+  .description(
+    "inspect the exact repository in an isolated Session and draft a questionnaire",
+  )
+  .argument("<goal>", "change goal")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--id <id>", "stable planning identifier")
+  .option("--json", "emit JSON")
+  .action(async (goal: string, options: PlanOptions) => {
+    const project = await loadProject(options.project ?? process.cwd());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const role = project.roles.get("lead");
+    if (!role) {
+      throw new OrchestratorError(
+        "planning_role_not_found",
+        "Repository-aware planning requires the 'lead' Role",
+      );
+    }
+    const model = resolveRoleModelRoute(
+      project.config,
+      local,
+      role.definition.name,
+      role.definition.inference,
+    );
+    const client = new OpenShellClient({
+      command: local.openshell.command,
+      gateway: model.gateway,
+      workspace: local.openshell.workspace,
+      ...(local.openshell.required_version
+        ? { requiredVersion: local.openshell.required_version }
+        : {}),
+    });
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const result = await runPlanningQuestionnaire({
+        store,
+        project,
+        local,
+        client,
+        goal,
+        ...(options.id ? { planningId: options.id } : {}),
+      });
+      const output = {
+        id: result.state.id,
+        status: result.state.status,
+        goal: result.state.goal,
+        base_commit: result.state.base_commit,
+        source_digest: result.state.source_digest,
+        source_entries: result.state.source_entries,
+        attempt: result.request.attempt,
+        request_digest: result.request.request_digest,
+        questionnaire_digest: result.record.record_digest,
+        questionnaire: result.record.questionnaire,
+        reused: result.reused,
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        printQuestionnaire(
+          result.state.id,
+          result.state.status,
+          result.record.questionnaire,
+        );
+        if (result.state.status === "awaiting-answers") {
+          console.log(
+            `\nRecord answers with: orchestrator answer ${result.state.id}`,
+          );
+        }
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("answer")
+  .description("record human answers to a durable planning questionnaire")
+  .argument("<planning>", "planning identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--answers <path>", "JSON object keyed by question ID")
+  .option("--json", "emit JSON")
+  .action(async (planningId: string, options: AnswerOptions) => {
+    const project = await loadProject(options.project ?? process.cwd());
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const planning = new PlanningStore(store);
+      const state = await planning.get(planningId);
+      const questionnaire = (await planning.currentQuestionnaire(state.id))
+        .record;
+      if (options.json && !options.answers) {
+        throw new OrchestratorError(
+          "answers_required",
+          "JSON answer output requires an explicit --answers JSON file",
+        );
+      }
+      const answers = options.answers
+        ? await answerFile(options.answers)
+        : await interactiveAnswers(questionnaire.questionnaire);
+      const result = await answerPlanningQuestionnaire({
+        store,
+        project,
+        planningId: state.id,
+        answers,
+        acceptedBy: os.userInfo().username,
+      });
+      const output = {
+        id: result.state.id,
+        status: result.state.status,
+        questionnaire_digest: result.state.questionnaire_digest,
+        decisions: result.decisions.map((record) => ({
+          ...record.decision,
+          question: record.answer.question,
+          answer: record.answer,
+          record_digest: record.record_digest,
+        })),
+        reused: result.reused,
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(
+          `${result.reused ? "Reused" : "Recorded"} ${result.decisions.length} Decision${result.decisions.length === 1 ? "" : "s"} for ${result.state.id}`,
+        );
+      }
+    } finally {
+      await store.close();
+    }
   });
 
 program
@@ -531,7 +800,7 @@ program
 
 program
   .command("status")
-  .description("show durable Project approvals and Runs")
+  .description("show durable Project planning, approvals, and Runs")
   .option("--project <path>", "consumer Project path")
   .option("--home <path>", "runtime state root")
   .option("--json", "emit JSON")
@@ -545,6 +814,7 @@ program
     });
     try {
       const record = await store.read();
+      const planning = await new PlanningStore(store).list();
       const approvals = await Promise.all(
         Object.values(record.approvals).map(async (approval) => {
           try {
@@ -573,6 +843,15 @@ program
       const result = {
         project: record.id,
         root: record.root,
+        planning: planning.map((item) => ({
+          id: item.id,
+          goal: item.goal,
+          status: item.status,
+          base_commit: item.base_commit,
+          source_digest: item.source_digest,
+          attempts: item.attempts,
+          decisions: Object.keys(item.decisions).length,
+        })),
         approvals,
         runs: Object.values(record.runs),
       };
@@ -581,6 +860,10 @@ program
       } else {
         console.log(`Project: ${record.id}`);
         console.log(`Root: ${record.root}`);
+        console.log(`Planning: ${planning.length}`);
+        for (const item of planning) {
+          console.log(`  ${item.id}: ${item.status} (${item.goal})`);
+        }
         console.log(`Approvals: ${approvals.length}`);
         for (const approval of approvals) {
           console.log(

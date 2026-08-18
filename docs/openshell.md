@@ -21,6 +21,14 @@ Run `orchestrator doctor` before creating any Sandbox. The preflight requires:
 
 An upgrade is a deliberate compatibility change: update OpenShell, restart its gateway, run the disposable probe, and only then update the Project pin.
 
+Run the full isolation suite after preflight:
+
+```sh
+orchestrator canary
+```
+
+The command fails unless the version is pinned, all selected profiles pass, and every disposable Sandbox is removed. Use `--profile read` (or `write`/`check`) for a focused diagnostic run; the default is all three.
+
 ## macOS Docker callback
 
 The Docker Sandbox supervisor calls the host gateway through `host.openshell.internal`. On the tested macOS/Homebrew installation, that name resolves to an IPv4 Docker Desktop host address, while the package initially listened only on IPv6 loopback. The result was a Sandbox stuck in provisioning because its supervisor could not fetch policy.
@@ -46,7 +54,7 @@ Do not bind the gateway to a wildcard address. Do not add undocumented configura
 
 ## Disposable probe
 
-The probe image includes a real `iproute2` implementation and declares a non-root OCI user. Both are required by the Docker supervisor in the current baseline.
+The probe image pins its Debian base by digest, includes a real `iproute2` implementation, declares a numeric non-root OCI user, and contains the trusted canary script. These properties are required by the Docker supervisor and isolation checks in the current baseline.
 
 ```sh
 openshell sandbox create \
@@ -69,11 +77,27 @@ The 0.0.106 spike verified:
 - unapproved outbound HTTP is denied;
 - `forward service` exposes a sandbox-loopback service only on an explicitly selected host-loopback listener.
 
+## Policy profiles
+
+The base policies under `sandbox/policies/` share these rules:
+
+- Landlock is a hard requirement;
+- `/workspace/base` and `/workspace/input` are read-only;
+- `/sandbox`, `/home/sandbox`, `/tmp`, and terminal device paths are writable;
+- OpenShell token and client-key contents remain unreadable to the child process;
+- the network policy map is empty.
+
+The `read` profile makes `/workspace/project` read-only. The `write` and `check` profiles make it writable. Inference routes will be composed later for model-driven profiles; the Check profile will never receive inference access.
+
+The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
+
+The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
+
 OpenShell Sandbox names are limited to 19 characters in this release. Generated names must reserve room for stable Run/Seat identity without exceeding that limit.
 
 ## Link consequence
 
-Non-interactive `sandbox exec` buffers stdin until the input producer closes. A delayed-input test delivered all records to the remote command only after EOF, so it cannot carry an indefinitely open duplex `seatctl stream`.
+Non-interactive `sandbox exec` buffers stdin until the input producer closes. A delayed-input test delivered all records to the remote command only after EOF, so it cannot carry an indefinitely open duplex `seatctl stream`. The host adapter explicitly closes stdin for ordinary one-shot commands to avoid deadlock.
 
 The Link adapter will therefore use `openshell forward service`:
 

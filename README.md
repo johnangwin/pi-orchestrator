@@ -31,7 +31,7 @@ npm test
 npm run build
 ```
 
-The host-side state and validation core is complete. The OpenShell adapter now verifies an exact CLI version and an authenticated, version-matched gateway. The process, file-transfer, default-network, and loopback service-forwarding contracts have passed a disposable-sandbox spike; policy profiles and automated canaries remain in progress.
+The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
 
 ## OpenShell
 
@@ -42,9 +42,10 @@ brew update
 brew upgrade nvidia/openshell/openshell
 brew services restart openshell
 orchestrator doctor
+orchestrator canary
 ```
 
-`orchestrator doctor` fails closed when the CLI differs from `openshell.required_version`, the gateway is unavailable or unauthenticated, or the gateway and CLI versions differ. Update `.pi/orchestrator.local.yaml` deliberately after a new OpenShell version passes the integration probe; do not use `latest` as the configured version.
+`orchestrator doctor` fails closed when the CLI differs from `openshell.required_version`, the gateway is unavailable or unauthenticated, or the gateway and CLI versions differ. `orchestrator canary` then verifies the actual Sandbox profiles and removes every disposable Sandbox. Update `.pi/orchestrator.local.yaml` deliberately after a new OpenShell version passes both commands; do not use `latest` as the configured version.
 
 On macOS with the Docker driver, sandbox containers must be able to call the host gateway over IPv4. The proven loopback-only gateway setting is:
 
@@ -69,6 +70,7 @@ orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
 orchestrator status
 orchestrator doctor
+orchestrator canary
 ```
 
 Runtime state defaults to `~/.local/share/pi-orchestrator` and may be redirected with `ORCHESTRATOR_HOME` or the command-level `--home` option.

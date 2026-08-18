@@ -1,20 +1,27 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseLocalConfig } from "../src/local.js";
 import {
   OpenShellClient,
+  type ProcessHandle,
   type ProcessResult,
   type ProcessRunner,
 } from "../src/openshell.js";
 
+type StubResult = Omit<ProcessResult, "exitCode"> &
+  Partial<Pick<ProcessResult, "exitCode">>;
+
 function runner(
-  responses: Readonly<Record<string, ProcessResult>>,
+  responses: Readonly<Record<string, StubResult>>,
   calls: string[][] = [],
 ): ProcessRunner {
   return (_command, args) => {
     calls.push([...args]);
     const response = responses[args.join(" ")];
     if (!response) throw new Error(`Unexpected command: ${args.join(" ")}`);
-    return Promise.resolve(response);
+    return Promise.resolve({ exitCode: 0, ...response });
   };
 }
 
@@ -99,6 +106,227 @@ describe("OpenShell preflight", () => {
     await expect(client.preflight()).rejects.toMatchObject({
       code: "openshell_version_mismatch",
     });
+  });
+});
+
+const readySandbox = JSON.stringify({
+  annotations: {},
+  created_at: "2026-08-17 23:39:16",
+  current_policy_version: 1,
+  id: "43502221-db6b-49f2-a316-673792b3faae",
+  labels: {},
+  name: "pio-cny-read-001",
+  phase: "Ready",
+  policy: { version: 1 },
+  policy_source: "sandbox",
+  resource_version: 8,
+  revision: 1,
+  workspace: "default",
+});
+
+describe("OpenShell Sandbox lifecycle", () => {
+  it("closes child stdin so non-interactive exec can begin", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "openshell-runner-"));
+    const executable = path.join(root, "openshell-mock");
+    await writeFile(
+      executable,
+      "#!/bin/sh\ncat >/dev/null\nprintf finished\nexit 23\n",
+    );
+    await chmod(executable, 0o755);
+    try {
+      const client = new OpenShellClient({ command: executable });
+      await expect(
+        client.execSandbox("pio-cny-read-001", ["true"], {
+          timeoutMs: 500,
+        }),
+      ).resolves.toMatchObject({ stdout: "finished", exitCode: 23 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates, inspects, executes in, transfers to, and deletes a Sandbox", async () => {
+    const calls: string[][] = [];
+    const client = new OpenShellClient({
+      runner: runner(
+        {
+          "sandbox create --name pio-cny-read-001 --from /image --policy /read.yaml --no-auto-providers --no-tty --workspace default -- /usr/bin/true":
+            {
+              stdout: "created",
+              stderr: "",
+            },
+          "sandbox get pio-cny-read-001 --output json --workspace default": {
+            stdout: readySandbox,
+            stderr: "",
+          },
+          "sandbox exec --name pio-cny-read-001 --no-tty --timeout 2 --workspace default -- false":
+            {
+              stdout: "",
+              stderr: "denied",
+              exitCode: 23,
+            },
+          "sandbox upload pio-cny-read-001 /host/input /workspace/input/file --workspace default":
+            {
+              stdout: "uploaded",
+              stderr: "",
+            },
+          "sandbox download pio-cny-read-001 /sandbox/output/report /host/report --workspace default":
+            {
+              stdout: "downloaded",
+              stderr: "",
+            },
+          "sandbox delete pio-cny-read-001 --workspace default": {
+            stdout: "deleted",
+            stderr: "",
+          },
+        },
+        calls,
+      ),
+    });
+
+    await expect(
+      client.createSandbox({
+        name: "pio-cny-read-001",
+        from: "/image",
+        policyPath: "/read.yaml",
+      }),
+    ).resolves.toMatchObject({ phase: "Ready" });
+    await expect(
+      client.execSandbox("pio-cny-read-001", ["false"], {
+        timeoutMs: 1_001,
+      }),
+    ).resolves.toMatchObject({ exitCode: 23 });
+    await client.upload(
+      "pio-cny-read-001",
+      "/host/input",
+      "/workspace/input/file",
+    );
+    await client.download(
+      "pio-cny-read-001",
+      "/sandbox/output/report",
+      "/host/report",
+    );
+    await client.deleteSandbox("pio-cny-read-001");
+
+    expect(calls).toHaveLength(6);
+  });
+
+  it("rejects Sandbox names that OpenShell cannot represent", async () => {
+    const client = new OpenShellClient({ runner: runner({}) });
+    await expect(
+      client.getSandbox("this-name-is-over-nineteen-characters"),
+    ).rejects.toThrow("Too big");
+  });
+
+  it("polls provisioning Sandboxes until Ready", async () => {
+    let requests = 0;
+    let now = 0;
+    const client = new OpenShellClient({
+      now: () => now,
+      sleep: (milliseconds) => {
+        now += milliseconds;
+        return Promise.resolve();
+      },
+      runner: (_command, args) => {
+        expect(args.slice(0, 3)).toEqual([
+          "sandbox",
+          "get",
+          "pio-cny-read-001",
+        ]);
+        requests += 1;
+        return Promise.resolve({
+          stdout: readySandbox.replace(
+            '"phase":"Ready"',
+            `"phase":"${requests === 1 ? "Provisioning" : "Ready"}"`,
+          ),
+          stderr: "",
+          exitCode: 0,
+        });
+      },
+    });
+
+    await expect(
+      client.waitForSandbox("pio-cny-read-001", {
+        pollMs: 10,
+        timeoutMs: 100,
+      }),
+    ).resolves.toMatchObject({ phase: "Ready" });
+    expect(requests).toBe(2);
+  });
+
+  it("treats verified absence as idempotent deletion", async () => {
+    const client = new OpenShellClient({
+      runner: runner({
+        "sandbox delete pio-cny-read-001 --workspace default": {
+          stdout: "",
+          stderr: "sandbox not found",
+          exitCode: 1,
+        },
+        "sandbox list --output json --workspace default": {
+          stdout: "[]",
+          stderr: "",
+        },
+      }),
+    });
+
+    await expect(
+      client.deleteSandbox("pio-cny-read-001", { missingOk: true }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("binds service forwarding to host loopback", async () => {
+    let resolveCompletion!: (result: ProcessResult) => void;
+    const stdout = new Set<(chunk: string) => void>();
+    const stderr = new Set<(chunk: string) => void>();
+    const completion = new Promise<ProcessResult>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const handle: ProcessHandle = {
+      onStdout(listener) {
+        stdout.add(listener);
+        return () => stdout.delete(listener);
+      },
+      onStderr(listener) {
+        stderr.add(listener);
+        return () => stderr.delete(listener);
+      },
+      wait: () => completion,
+      terminate() {
+        resolveCompletion({
+          stdout: "",
+          stderr: "",
+          exitCode: 1,
+          signal: "SIGTERM",
+        });
+      },
+    };
+    let args: readonly string[] = [];
+    const client = new OpenShellClient({
+      starter: (_command, value) => {
+        args = value;
+        queueMicrotask(() => {
+          for (const listener of stdout) {
+            listener(
+              "Forwarding 127.0.0.1:43123 -> 127.0.0.1:19090 in sandbox pio-cny-read-001 via gRPC\n",
+            );
+          }
+        });
+        return handle;
+      },
+    });
+
+    const forward = await client.startServiceForward({
+      sandboxName: "pio-cny-read-001",
+      targetPort: 19_090,
+    });
+    expect(forward).toMatchObject({
+      localHost: "127.0.0.1",
+      localPort: 43_123,
+      targetHost: "127.0.0.1",
+      targetPort: 19_090,
+    });
+    expect(args).toContain("127.0.0.1:0");
+    await forward.stop();
   });
 });
 

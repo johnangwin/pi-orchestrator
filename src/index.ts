@@ -1,5 +1,6 @@
 export * from "./approval.js";
 export * from "./brief.js";
+export * from "./canary.js";
 export * from "./config.js";
 export * from "./digest.js";
 export * from "./error.js";
@@ -9,6 +10,7 @@ export * from "./local.js";
 export * from "./message.js";
 export * from "./openshell.js";
 export * from "./plan.js";
+export * from "./policy.js";
 export * from "./project.js";
 export * from "./report.js";
 export * from "./role.js";

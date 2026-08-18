@@ -14,9 +14,9 @@
 ## Milestone 2: OpenShell substrate
 
 - pinned versions and capability checks (complete)
-- source snapshot upload and Artifact download
-- read, write, and Check profiles
-- security canaries
+- source snapshot upload and Artifact download (typed transfer adapter complete; snapshot workflow pending)
+- read, write, and Check profiles (complete)
+- security canaries (complete for base profiles; rerun after every relevant upgrade)
 - Pi image and client extension
 - Link transport spike (complete; protocol implementation pending)
 

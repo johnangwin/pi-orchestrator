@@ -12,7 +12,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "sandbox"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -6,11 +6,13 @@ import path from "node:path";
 import process from "node:process";
 import { Command } from "commander";
 import { approvalFreshness, createApproval } from "./approval.js";
+import { runCanary } from "./canary.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { initializeProject } from "./init.js";
 import { loadLocalConfig, type LocalConfig } from "./local.js";
 import { OpenShellClient } from "./openshell.js";
+import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
 
@@ -24,13 +26,23 @@ interface ApproveOptions extends CommonOptions {
   readonly home?: string;
 }
 
-interface DoctorOptions {
+interface OpenShellOptions {
   readonly config?: string;
   readonly gateway?: string;
-  readonly json?: boolean;
   readonly openshell?: string;
   readonly requireVersion?: string;
   readonly workspace?: string;
+}
+
+interface DoctorOptions extends OpenShellOptions {
+  readonly json?: boolean;
+}
+
+interface CanaryCliOptions extends OpenShellOptions {
+  readonly image?: string;
+  readonly json?: boolean;
+  readonly policies?: string;
+  readonly profile?: string[];
 }
 
 async function optionalLocalConfig(
@@ -45,6 +57,32 @@ async function optionalLocalConfig(
     }
     throw error;
   }
+}
+
+async function configuredOpenShell(options: OpenShellOptions): Promise<{
+  readonly client: OpenShellClient;
+  readonly configPath: string;
+  readonly local: LocalConfig | undefined;
+  readonly requiredVersion: string | undefined;
+}> {
+  const configPath = path.resolve(
+    options.config ?? ".pi/orchestrator.local.yaml",
+  );
+  const local = await optionalLocalConfig(
+    configPath,
+    options.config !== undefined,
+  );
+  const command = options.openshell ?? local?.openshell.command;
+  const workspace = options.workspace ?? local?.openshell.workspace;
+  const requiredVersion =
+    options.requireVersion ?? local?.openshell.required_version;
+  const client = new OpenShellClient({
+    ...(command ? { command } : {}),
+    ...(options.gateway ? { gateway: options.gateway } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(requiredVersion ? { requiredVersion } : {}),
+  });
+  return { client, configPath, local, requiredVersion };
 }
 
 async function confirmation(
@@ -96,23 +134,8 @@ program
   .option("--require-version <version>", "required OpenShell version")
   .option("--json", "emit JSON")
   .action(async (options: DoctorOptions) => {
-    const configPath = path.resolve(
-      options.config ?? ".pi/orchestrator.local.yaml",
-    );
-    const local = await optionalLocalConfig(
-      configPath,
-      options.config !== undefined,
-    );
-    const command = options.openshell ?? local?.openshell.command;
-    const workspace = options.workspace ?? local?.openshell.workspace;
-    const requiredVersion =
-      options.requireVersion ?? local?.openshell.required_version;
-    const client = new OpenShellClient({
-      ...(command ? { command } : {}),
-      ...(options.gateway ? { gateway: options.gateway } : {}),
-      ...(workspace ? { workspace } : {}),
-      ...(requiredVersion ? { requiredVersion } : {}),
-    });
+    const { client, configPath, local, requiredVersion } =
+      await configuredOpenShell(options);
     const result = await client.preflight();
     const output = {
       ...result,
@@ -131,6 +154,64 @@ program
     console.log(
       `Gateway status: ${result.status.status}, ${result.status.authentication.status}`,
     );
+  });
+
+program
+  .command("canary")
+  .description("verify OpenShell Sandbox isolation with disposable profiles")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--openshell <path>", "OpenShell executable")
+  .option("--gateway <name>", "OpenShell gateway")
+  .option("--workspace <name>", "OpenShell workspace")
+  .option("--require-version <version>", "required OpenShell version")
+  .option("--image <source>", "probe image path or registry reference")
+  .option("--policies <directory>", "Sandbox policy directory")
+  .option("--profile <profile...>", "profiles to verify: read, write, check")
+  .option("--json", "emit JSON")
+  .action(async (options: CanaryCliOptions) => {
+    const { client, requiredVersion } = await configuredOpenShell(options);
+    if (requiredVersion === undefined) {
+      throw new OrchestratorError(
+        "openshell_version_unpinned",
+        "OpenShell canaries require openshell.required_version or --require-version",
+      );
+    }
+    const profiles: SandboxProfile[] | undefined = options.profile?.map(
+      (profile) => SandboxProfileSchema.parse(profile),
+    );
+    const image =
+      options.image &&
+      (path.isAbsolute(options.image) || options.image.startsWith("."))
+        ? path.resolve(options.image)
+        : options.image;
+    const result = await runCanary({
+      client,
+      ...(image ? { image } : {}),
+      ...(options.policies
+        ? { policyDirectory: path.resolve(options.policies) }
+        : {}),
+      ...(profiles ? { profiles } : {}),
+      projectRoot: process.cwd(),
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`OpenShell canary: ${result.passed ? "PASS" : "FAIL"}`);
+      for (const profile of result.profiles) {
+        const passed = profile.assertions.filter(
+          (assertion) => assertion.passed,
+        ).length;
+        console.log(
+          `  ${profile.profile}: ${profile.passed ? "PASS" : "FAIL"} (${passed}/${profile.assertions.length})`,
+        );
+        for (const assertion of profile.assertions) {
+          if (!assertion.passed) {
+            console.log(`    ${assertion.id}: ${assertion.detail}`);
+          }
+        }
+      }
+    }
+    if (!result.passed) process.exitCode = 1;
   });
 
 program

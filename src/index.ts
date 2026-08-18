@@ -1,4 +1,5 @@
 export * from "./approval.js";
+export * from "./artifact.js";
 export * from "./brief.js";
 export * from "./canary.js";
 export * from "./config.js";

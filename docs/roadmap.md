@@ -15,7 +15,7 @@
 
 - pinned versions and capability checks (complete)
 - deterministic Git source snapshots and read-only Session initialization (complete)
-- Artifact download (typed transfer adapter complete; Artifact validation pending)
+- Artifact download and fail-closed host validation (complete)
 - read, write, and Check profiles (complete)
 - security canaries (complete for base profiles; rerun after every relevant upgrade)
 - pinned Pi image and minimal client extension (complete for read-only Sessions)

@@ -104,6 +104,16 @@ The live test creates and deletes a disposable OpenShell workspace, provider, an
 PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
 ```
 
+## Artifact transfer
+
+Artifact descriptors are small Link records, while payloads are downloaded from the canonical `/sandbox/output/artifacts/<artifact-id>` path. The host checks the remote regular-file type, size, and digest before download, verifies the Sandbox UUID and workspace on both sides of the transfer, and independently validates the downloaded bytes against a trusted contract before atomic publication.
+
+The live test exercises the real OpenShell file-transfer path and removes its disposable Sandbox:
+
+```sh
+PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
+```
+
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
 Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. The host instead assembles a temporary derived-image context from the exact Git snapshot and starts the Sandbox under its final policy. See [ADR 0004](decisions/0004-session-snapshot.md).

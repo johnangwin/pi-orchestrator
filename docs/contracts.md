@@ -109,6 +109,20 @@ A source snapshot is produced from an exact Git commit and literal relative path
 
 Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
 
+## Artifacts
+
+Small Artifact descriptors travel through the Link; payload bytes do not. A descriptor binds an Artifact ID, kind, Run, optional Task, Seat, Session, epoch, canonical Sandbox path, normalized media type, versioned content schema, byte count, SHA-256 digest, and creation time.
+
+The only accepted remote path is derived from the validated Artifact ID:
+
+```text
+/sandbox/output/artifacts/<artifact-id>
+```
+
+The host selects the content contract and size limit. Before transfer it verifies the current Sandbox UUID, name, workspace, and ready state, then uses trusted Sandbox `stat` and `sha256sum` binaries to reject a non-regular, oversized, truncated, or changed remote file. It downloads only to a same-filesystem staging directory, verifies the source Sandbox again, independently checks the local file type, size, digest, and schema, and then writes the authoritative provenance record.
+
+The payload and record are changed to mode `0400`, flushed, and published together by atomic directory rename under the Run's `artifacts/` directory. Failed imports remove staging data. Retrying identical content and provenance is idempotent; reusing an Artifact ID with any different content or provenance is rejected. Stored content is revalidated on read and is never executed by the Orchestrator.
+
 ## Session identity
 
 A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.

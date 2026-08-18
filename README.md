@@ -35,9 +35,12 @@ PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
 
 # Disposable workspace plus local fake model; no remote inference or API key
 PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
+
+# Real Sandbox file export and host-side Artifact import
+PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 ```
 
-The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
+The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. Downloaded Artifacts are bound to exact Session and Sandbox provenance, independently verified, schema-checked, and atomically stored as non-executable files. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
 
 The first live Session path is also implemented. It creates an exact committed Git snapshot, builds a per-Session image from the pinned Pi 0.84.2 runtime, starts directly under the `read` policy, loads the sandbox client extension, and establishes an authenticated, epoch-bound Link that survives host reconnection. Logical model aliases resolve to exact OpenShell gateways and models; Pi calls only `inference.local`, and bounded completion events return through the Link.
 

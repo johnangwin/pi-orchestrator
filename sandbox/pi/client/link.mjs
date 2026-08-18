@@ -144,6 +144,25 @@ function validBrief(value) {
   );
 }
 
+function validInputs(value) {
+  return (
+    Array.isArray(value) &&
+    value.length <= 16 &&
+    value.every(
+      (input) =>
+        exactKeys(input, ["path", "byte_count", "digest"]) &&
+        /^\/workspace\/input\/[a-z0-9][a-z0-9._-]*$/.test(input.path) &&
+        Number.isSafeInteger(input.byte_count) &&
+        input.byte_count >= 0 &&
+        input.byte_count <= 32 * 1024 * 1024 &&
+        digestPattern.test(input.digest),
+    ) &&
+    new Set(value.map((input) => input.path)).size === value.length &&
+    value.reduce((total, input) => total + input.byte_count, 0) <=
+      64 * 1024 * 1024
+  );
+}
+
 function parseConfig(value) {
   if (
     !exactKeys(
@@ -156,7 +175,7 @@ function parseConfig(value) {
         "client_version",
         "pi_version",
       ],
-      ["source_digest", "policy_digest", "profile", "model", "brief"],
+      ["source_digest", "policy_digest", "profile", "model", "brief", "inputs"],
     ) ||
     value.version !== 1 ||
     !validIdentity(value.identity) ||
@@ -178,7 +197,8 @@ function parseConfig(value) {
       !digestPattern.test(value.policy_digest)) ||
     (value.model === undefined) !== (value.brief === undefined) ||
     (value.model !== undefined && !validModel(value.model)) ||
-    (value.brief !== undefined && !validBrief(value.brief))
+    (value.brief !== undefined && !validBrief(value.brief)) ||
+    (value.inputs !== undefined && !validInputs(value.inputs))
   ) {
     throw new Error("Invalid Orchestrator client configuration");
   }

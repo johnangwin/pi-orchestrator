@@ -27,7 +27,7 @@ import {
   type SessionRuntime,
 } from "../src/reconcile.js";
 import { SeatRegistry } from "../src/registry.js";
-import { PiClientConfigSchema } from "../src/seat.js";
+import { PI_CLIENT_VERSION, PiClientConfigSchema } from "../src/seat.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 import { loadSandboxPolicy } from "../src/policy.js";
@@ -513,7 +513,7 @@ describe("Session lifecycle reconciliation", () => {
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port },
-      client_version: "0.2.0",
+      client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,

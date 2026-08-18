@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   cp,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -14,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { CompiledBrief } from "./brief.js";
-import { canonicalJson, digestParts } from "./digest.js";
+import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { HostLink, TcpLinkTransport } from "./link.js";
 import { VersionSchema } from "./local.js";
@@ -41,7 +42,7 @@ import {
 import { verifySourceSnapshot, type SourceSnapshot } from "./snapshot.js";
 
 export const PI_RUNTIME_VERSION = "0.84.2";
-export const PI_CLIENT_VERSION = "0.2.0";
+export const PI_CLIENT_VERSION = "0.2.1";
 export const PI_LINK_PORT = 41_727;
 
 export const PiSessionModelSchema = z
@@ -71,6 +72,45 @@ const PiSessionBriefSchema = z
   })
   .strict();
 
+const SessionInputNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/)
+  .refine(
+    (name) => !["brief.md", "session.json", "snapshot.json"].includes(name),
+    "is reserved",
+  );
+
+const PiSessionInputSchema = z
+  .object({
+    path: z.string().regex(/^\/workspace\/input\/[a-z0-9][a-z0-9._-]*$/),
+    byte_count: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(32 * 1024 * 1024),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+export type PiSessionInput = z.infer<typeof PiSessionInputSchema>;
+
+export interface SessionInput {
+  readonly name: string;
+  readonly content: string | Uint8Array;
+  readonly digest: Digest;
+}
+
+export interface WorkspaceSessionSource {
+  readonly archivePath: string;
+  readonly manifestPath: string;
+  readonly sourceDigest: Digest;
+  verify(copy: {
+    readonly archivePath: string;
+    readonly manifestPath: string;
+  }): Promise<Digest>;
+}
+
 export const PiClientConfigSchema = z
   .object({
     version: z.literal(1),
@@ -95,6 +135,7 @@ export const PiClientConfigSchema = z
       .optional(),
     model: PiSessionModelSchema.optional(),
     brief: PiSessionBriefSchema.optional(),
+    inputs: z.array(PiSessionInputSchema).max(16).default([]),
   })
   .strict()
   .refine(
@@ -132,10 +173,9 @@ export type ResumeWriteSessionOpenShell = ResumeReadSessionOpenShell;
 
 type ReadSessionCleanupOpenShell = Pick<OpenShellClient, "deleteSandbox">;
 
-export interface StartReadSessionOptions {
+interface StartSessionOptions {
   readonly client: ReadSessionOpenShell;
   readonly identity: SessionIdentity;
-  readonly snapshot: SourceSnapshot;
   readonly imageContext?: string;
   readonly policyDirectory?: string;
   readonly sandboxName?: string;
@@ -146,9 +186,25 @@ export interface StartReadSessionOptions {
   readonly turnTimeoutMs?: number;
   readonly model?: ResolvedModelRoute;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
+  readonly inputs?: readonly SessionInput[];
 }
 
-export type StartWriteSessionOptions = StartReadSessionOptions;
+export type StartReadSessionOptions = StartSessionOptions &
+  (
+    | {
+        readonly snapshot: SourceSnapshot;
+        readonly workspaceSource?: never;
+      }
+    | {
+        readonly snapshot?: never;
+        readonly workspaceSource: WorkspaceSessionSource;
+      }
+  );
+
+export type StartWriteSessionOptions = StartSessionOptions & {
+  readonly snapshot: SourceSnapshot;
+  readonly workspaceSource?: never;
+};
 
 export interface ResumeReadSessionOptions {
   readonly client: ResumeReadSessionOpenShell;
@@ -180,6 +236,7 @@ export interface ReadSessionInfo {
   readonly model?: ResolvedModelRoute;
   readonly inference?: OpenShellInferenceRoute;
   readonly briefDigest?: string;
+  readonly inputs: readonly PiSessionInput[];
 }
 
 export type WriteSessionInfo = ReadSessionInfo;
@@ -194,12 +251,127 @@ export function bundledPiImageContext(): string {
   return bundledPath("pi");
 }
 
+export function bundledPiPolicyDirectory(): string {
+  return bundledPath("policies");
+}
+
+type VerifiedSessionSource =
+  | {
+      readonly kind: "snapshot";
+      readonly archivePath: string;
+      readonly manifestPath: string;
+      readonly manifest: SourceSnapshot["manifest"];
+      readonly sourceDigest: string;
+    }
+  | {
+      readonly kind: "workspace";
+      readonly archivePath: string;
+      readonly manifestPath: string;
+      readonly verify: WorkspaceSessionSource["verify"];
+      readonly sourceDigest: string;
+    };
+
+interface ValidatedSessionInput {
+  readonly name: string;
+  readonly bytes: Buffer;
+  readonly config: PiSessionInput;
+}
+
+function validateSessionInputs(
+  values: readonly SessionInput[] = [],
+): ValidatedSessionInput[] {
+  if (values.length > 16) {
+    throw new OrchestratorError(
+      "invalid_session_input",
+      "A Session may receive at most 16 additional immutable inputs",
+    );
+  }
+  const names = new Set<string>();
+  let totalBytes = 0;
+  return values.map((value) => {
+    const name = SessionInputNameSchema.parse(value.name);
+    if (names.has(name)) {
+      throw new OrchestratorError(
+        "invalid_session_input",
+        `Session input '${name}' is duplicated`,
+      );
+    }
+    names.add(name);
+    const bytes =
+      typeof value.content === "string"
+        ? Buffer.from(value.content, "utf8")
+        : Buffer.from(value.content);
+    totalBytes += bytes.byteLength;
+    if (bytes.byteLength > 32 * 1024 * 1024 || totalBytes > 64 * 1024 * 1024) {
+      throw new OrchestratorError(
+        "session_input_too_large",
+        "Session immutable inputs exceed their byte limit",
+      );
+    }
+    if (sha256(bytes) !== value.digest) {
+      throw new OrchestratorError(
+        "invalid_session_input_digest",
+        `Session input '${name}' does not match its digest`,
+      );
+    }
+    return {
+      name,
+      bytes,
+      config: PiSessionInputSchema.parse({
+        path: `/workspace/input/${name}`,
+        byte_count: bytes.byteLength,
+        digest: value.digest,
+      }),
+    };
+  });
+}
+
+async function verifiedSessionSource(
+  options: StartReadSessionOptions,
+  profile: AgentSessionProfile,
+): Promise<VerifiedSessionSource> {
+  if (options.workspaceSource) {
+    if (profile !== "read") {
+      throw new OrchestratorError(
+        "invalid_session_source",
+        "A reconstructed Run source may only initialize a read Session",
+      );
+    }
+    const sourceDigest = await options.workspaceSource.verify({
+      archivePath: options.workspaceSource.archivePath,
+      manifestPath: options.workspaceSource.manifestPath,
+    });
+    if (sourceDigest !== options.workspaceSource.sourceDigest) {
+      throw new OrchestratorError(
+        "invalid_session_source",
+        "Reconstructed Run source verification returned another digest",
+      );
+    }
+    return {
+      kind: "workspace",
+      archivePath: options.workspaceSource.archivePath,
+      manifestPath: options.workspaceSource.manifestPath,
+      verify: options.workspaceSource.verify.bind(options.workspaceSource),
+      sourceDigest,
+    };
+  }
+  const manifest = await verifySourceSnapshot(options.snapshot);
+  return {
+    kind: "snapshot",
+    archivePath: options.snapshot.archivePath,
+    manifestPath: options.snapshot.manifestPath,
+    manifest,
+    sourceDigest: manifest.source_digest,
+  };
+}
+
 async function createSessionImageContext(options: {
   readonly image: string;
-  readonly snapshot: SourceSnapshot;
+  readonly source: VerifiedSessionSource;
   readonly config: PiClientConfig;
   readonly profile: AgentSessionProfile;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
+  readonly inputs: readonly ValidatedSessionInput[];
 }): Promise<string> {
   const image = path.resolve(options.image);
   const imageState = await stat(image).catch((error: unknown) => {
@@ -225,16 +397,29 @@ async function createSessionImageContext(options: {
         recursive: true,
       });
     }
-    await cp(options.snapshot.archivePath, path.join(directory, "source.tar"));
+    await cp(options.source.archivePath, path.join(directory, "source.tar"));
     await cp(
-      options.snapshot.manifestPath,
+      options.source.manifestPath,
       path.join(directory, "snapshot.json"),
     );
-    await verifySourceSnapshot({
-      archivePath: path.join(directory, "source.tar"),
-      manifestPath: path.join(directory, "snapshot.json"),
-      manifest: options.snapshot.manifest,
-    });
+    if (options.source.kind === "snapshot") {
+      await verifySourceSnapshot({
+        archivePath: path.join(directory, "source.tar"),
+        manifestPath: path.join(directory, "snapshot.json"),
+        manifest: options.source.manifest,
+      });
+    } else {
+      const digest = await options.source.verify({
+        archivePath: path.join(directory, "source.tar"),
+        manifestPath: path.join(directory, "snapshot.json"),
+      });
+      if (digest !== options.source.sourceDigest) {
+        throw new OrchestratorError(
+          "invalid_session_source",
+          "Staged reconstructed Run source has another digest",
+        );
+      }
+    }
     await writeFile(
       path.join(directory, "session.json"),
       `${JSON.stringify(options.config, null, 2)}\n`,
@@ -246,15 +431,43 @@ async function createSessionImageContext(options: {
         mode: 0o600,
       });
     }
+    const extraInputDirectory = path.join(directory, "extra-inputs");
+    if (options.inputs.length > 0) {
+      await mkdir(extraInputDirectory, { mode: 0o700 });
+    }
+    for (const input of options.inputs) {
+      const stagedPath = path.join(extraInputDirectory, input.name);
+      await writeFile(stagedPath, input.bytes, {
+        mode: 0o600,
+      });
+      if (sha256(await readFile(stagedPath)) !== input.config.digest) {
+        throw new OrchestratorError(
+          "invalid_session_input_digest",
+          `Staged Session input '${input.name}' changed during image preparation`,
+        );
+      }
+    }
 
     const dockerfilePath = path.join(directory, "Dockerfile");
     const dockerfile = await readFile(dockerfilePath, "utf8");
-    const inputFiles = options.brief
-      ? "snapshot.json session.json brief.md"
-      : "snapshot.json session.json";
-    const immutableInputs = options.brief
-      ? "/workspace/input/snapshot.json /workspace/input/session.json /workspace/input/brief.md"
-      : "/workspace/input/snapshot.json /workspace/input/session.json";
+    const coreInputNames = [
+      "snapshot.json",
+      "session.json",
+      ...(options.brief ? ["brief.md"] : []),
+    ];
+    const inputFiles = coreInputNames.join(" ");
+    const extraInputCopies = options.inputs
+      .map(
+        (input) =>
+          `COPY --chown=0:0 extra-inputs/${input.name} /workspace/input/${input.name}`,
+      )
+      .join("\n");
+    const immutableInputs = [
+      ...coreInputNames,
+      ...options.inputs.map((input) => input.name),
+    ]
+      .map((name) => `/workspace/input/${name}`)
+      .join(" ");
     const sourceLayers =
       options.profile === "write"
         ? `ADD --chown=0:0 source.tar /workspace/base/
@@ -266,10 +479,11 @@ RUN chown -R 10001:10001 /workspace/project`
       dockerfilePath,
       `${dockerfile.trimEnd()}
 
-# Session inputs come only from the trusted Git snapshot context.
+# Session inputs come only from the verified host source context.
 USER root
 ${sourceLayers}
 COPY --chown=0:0 ${inputFiles} /workspace/input/
+${extraInputCopies}
 RUN chmod 0444 ${immutableInputs}
 USER 10001:10001
 WORKDIR /sandbox
@@ -287,15 +501,28 @@ function generatedSandboxName(profile: AgentSessionProfile): string {
   return `pio-${profile === "read" ? "r" : "w"}-${randomBytes(4).toString("hex")}`;
 }
 
+function immutableInputVerification(
+  hasBrief: boolean,
+  inputs: readonly PiSessionInput[],
+): string {
+  return `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${hasBrief ? " && test -r /workspace/input/brief.md" : ""}${inputs
+    .map(
+      (input) =>
+        ` && test -r ${input.path} && test "$(stat -c %s ${input.path})" -eq ${input.byte_count} && test "$(sha256sum ${input.path} | cut -d ' ' -f 1)" = "${input.digest.slice("sha256:".length)}"`,
+    )
+    .join("")}`;
+}
+
 function boundaryVerification(
   profile: AgentSessionProfile,
   hasBrief: boolean,
+  inputs: readonly PiSessionInput[],
 ): string {
-  const inputs = `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${hasBrief ? " && test -r /workspace/input/brief.md" : ""}`;
+  const inputChecks = immutableInputVerification(hasBrief, inputs);
   if (profile === "write") {
-    return `${inputs} && test -n "$(find /workspace/base -mindepth 1 -print -quit)" && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/base/.git && test ! -e /workspace/project/.git && ! touch /workspace/base/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe && probe_dir=$(find /workspace/project -mindepth 1 -type d -print -quit) && touch "\${probe_dir:-/workspace/project}/.orchestrator-write-probe" && rm "\${probe_dir:-/workspace/project}/.orchestrator-write-probe"`;
+    return `${inputChecks} && test -n "$(find /workspace/base -mindepth 1 -print -quit)" && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/base/.git && test ! -e /workspace/project/.git && ! touch /workspace/base/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe && probe_dir=$(find /workspace/project -mindepth 1 -type d -print -quit) && touch "\${probe_dir:-/workspace/project}/.orchestrator-write-probe" && rm "\${probe_dir:-/workspace/project}/.orchestrator-write-probe"`;
   }
-  return `${inputs} && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe`;
+  return `${inputChecks} && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/project/.git && ! touch /workspace/project/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe`;
 }
 
 async function requireSuccess(
@@ -687,6 +914,18 @@ async function resumeSession(
       "Recovered Session Brief does not match the expected digest",
     );
   }
+  await requireSuccess(
+    "immutable Session input verification",
+    options.client.execSandbox(
+      expectedSandbox.name,
+      [
+        "/bin/sh",
+        "-c",
+        immutableInputVerification(config.brief !== undefined, config.inputs),
+      ],
+      { timeoutMs: 10_000 },
+    ),
+  );
   if (model && !options.client.getInferenceRoute) {
     throw new OrchestratorError(
       "openshell_inference_unavailable",
@@ -750,6 +989,7 @@ async function resumeSession(
         ...(model ? { model } : {}),
         ...(inference ? { inference } : {}),
         ...(config.brief ? { briefDigest: config.brief.digest } : {}),
+        inputs: config.inputs,
       },
       config.token,
       startupTimeoutMs,
@@ -778,7 +1018,8 @@ async function startSession(
   options: StartReadSessionOptions,
   profile: AgentSessionProfile,
 ): Promise<ReadSession> {
-  const snapshotManifest = await verifySourceSnapshot(options.snapshot);
+  const source = await verifiedSessionSource(options, profile);
+  const inputs = validateSessionInputs(options.inputs);
   const identity = SessionIdentitySchema.parse(options.identity);
   const piVersion = VersionSchema.parse(
     options.piVersion ?? PI_RUNTIME_VERSION,
@@ -859,8 +1100,9 @@ async function startSession(
     client_version: clientVersion,
     pi_version: piVersion,
     profile,
-    source_digest: snapshotManifest.source_digest,
+    source_digest: source.sourceDigest,
     policy_digest: policy.digest,
+    inputs: inputs.map((input) => input.config),
     ...(model
       ? {
           model: {
@@ -881,9 +1123,10 @@ async function startSession(
   const sandboxName = options.sandboxName ?? generatedSandboxName(profile);
   const imageContext = await createSessionImageContext({
     image,
-    snapshot: options.snapshot,
+    source,
     config,
     profile,
+    inputs,
     ...(options.brief ? { brief: options.brief } : {}),
   });
 
@@ -905,7 +1148,11 @@ async function startSession(
       `${profile} boundary verification`,
       options.client.execSandbox(
         sandboxName,
-        ["/bin/sh", "-c", boundaryVerification(profile, !!options.brief)],
+        [
+          "/bin/sh",
+          "-c",
+          boundaryVerification(profile, !!options.brief, config.inputs),
+        ],
         { timeoutMs: 10_000 },
       ),
     );
@@ -944,7 +1191,7 @@ async function startSession(
       {
         sandbox,
         identity,
-        sourceDigest: snapshotManifest.source_digest,
+        sourceDigest: source.sourceDigest,
         profile,
         policyDigest: policy.digest,
         readPolicyDigest: policy.digest,
@@ -954,6 +1201,7 @@ async function startSession(
         ...(model ? { model } : {}),
         ...(inference ? { inference } : {}),
         ...(options.brief ? { briefDigest: options.brief.digest } : {}),
+        inputs: config.inputs,
       },
       token,
       startupTimeoutMs,

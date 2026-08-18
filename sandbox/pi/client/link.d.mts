@@ -35,6 +35,13 @@ export interface ClientConfig {
         readonly digest: string;
       }
     | undefined;
+  readonly inputs?:
+    | readonly {
+        readonly path: string;
+        readonly byte_count: number;
+        readonly digest: string;
+      }[]
+    | undefined;
 }
 
 export interface ClientMessage {

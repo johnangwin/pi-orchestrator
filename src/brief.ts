@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { IdentifierSchema } from "./config.js";
+import {
+  IdentifierSchema,
+  ReviewLensSchema,
+  type ReviewLens,
+} from "./config.js";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import type { LoadedPlan, PlanTask, SourceAnchor } from "./plan.js";
 import type { LoadedSkill } from "./project.js";
@@ -36,8 +40,27 @@ export interface BriefInput {
   readonly outputContract: string;
   readonly sourceAnchors: readonly SourceAnchor[];
   readonly sourceDigests: Readonly<Record<string, Digest>>;
+  readonly review?: BriefReviewContext;
   readonly contextLimitTokens: number;
   readonly initialFraction?: number;
+}
+
+export interface BriefReviewCheck {
+  readonly check: string;
+  readonly verdict: "pass";
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly exitCode: number;
+  readonly recordDigest: Digest;
+}
+
+export interface BriefReviewContext {
+  readonly lens: ReviewLens;
+  readonly diff: {
+    readonly path: "/workspace/input/review.patch";
+    readonly digest: Digest;
+  };
+  readonly checks: readonly BriefReviewCheck[];
 }
 
 export interface BriefBinding {
@@ -46,6 +69,7 @@ export interface BriefBinding {
   readonly taskDigest: Digest;
   readonly decisionsDigest: Digest;
   readonly sourceDigests: Readonly<Record<string, Digest>>;
+  readonly reviewDigest?: Digest;
   readonly identity: BriefIdentity;
 }
 
@@ -112,6 +136,14 @@ export function compileBrief(input: BriefInput): CompiledBrief {
     ),
     section("Source Digests", canonicalJson(input.sourceDigests)),
   ];
+  if (input.review) {
+    required.push(
+      section(
+        "Review Evidence",
+        `Lens: ${ReviewLensSchema.parse(input.review.lens)}\n\nChecks:\n${canonicalJson(input.review.checks)}\n\nCurrent diff: ${input.review.diff.path}\nDiff content digest: ${input.review.diff.digest}`,
+      ),
+    );
+  }
 
   let content = `# Session Brief\n\n${required.join("\n")}`;
   const includedSkills: string[] = [];
@@ -145,6 +177,13 @@ export function compileBrief(input: BriefInput): CompiledBrief {
       ["decisions", canonicalJson(input.decisions)],
     ]),
     sourceDigests: { ...input.sourceDigests },
+    ...(input.review
+      ? {
+          reviewDigest: digestParts("pi-orchestrator/review-context/v1", [
+            ["review", canonicalJson(input.review)],
+          ]),
+        }
+      : {}),
     identity: { ...input.identity },
   };
 
@@ -174,6 +213,9 @@ export function briefStaleReasons(
     canonicalJson(current.sourceDigests)
   ) {
     reasons.push("source digest changed");
+  }
+  if (previous.reviewDigest !== current.reviewDigest) {
+    reasons.push("Review evidence changed");
   }
   if (canonicalJson(previous.identity) !== canonicalJson(current.identity)) {
     reasons.push("Session identity or epoch changed");

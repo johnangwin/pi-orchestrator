@@ -23,6 +23,7 @@ export * from "./policy.js";
 export * from "./projection.js";
 export * from "./project.js";
 export * from "./report.js";
+export * from "./review.js";
 export * from "./registry.js";
 export * from "./reconcile.js";
 export * from "./role.js";

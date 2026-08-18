@@ -117,6 +117,8 @@ A source snapshot is produced from an exact Git commit and literal relative path
 
 Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
 
+A Session may also receive a bounded set of named immutable input files. Names are safe basenames, content is SHA-256 verified before and after private staging, metadata is recorded in immutable Session configuration, and startup proves every file readable under `/workspace/input` while the directory remains non-writable. This carries large frozen evidence such as a Review patch without injecting it into the initial model context.
+
 An implementation Session uses the same mechanism under the final `write` profile. The verified archive is expanded into both a root-owned `/workspace/base` and Sandbox-user-owned `/workspace/project`; neither contains Git metadata. Startup must prove that base and input reject writes and that project accepts them. Immutable Session configuration binds the profile to the Sandbox policy and Pi tool set. A missing profile is interpreted only as `read` for recovery compatibility.
 
 The image OCI working directory remains `/sandbox` because OpenShell file download is workspace-confined. The Pi daemon separately fixes the model process working directory at `/workspace/project`.
@@ -176,6 +178,24 @@ The registered process runs only after source verification. Its Sandbox must be 
 A completed job atomically publishes immutable `stdout.log`, `stderr.log`, and `record.json`. The record binds command exit, time, exact inputs, Sandbox identity, OpenShell versions and gateway, log sizes and digests, intent digest, and its own domain-separated digest. Stored records and logs are revalidated on every read. An exact completed retry reuses that evidence and can finish an interrupted Gate update without another Sandbox.
 
 The Task Gate records the intent digest as `pending`, then the record digest as `pass` or `fail`. Nonzero command exit is authoritative failed evidence and moves the Task to `rework`. Passing evidence leaves the Task `checking` until all required Check Gates pass, then moves it to `reviewing`. Infrastructure failure is not converted into a command verdict.
+
+## Authoritative Reviews
+
+A Review may start only after every registered Task Check has an exact passing Gate and immutable record for the current Plan, input commit, Task source, reconstructed source, and host diff. The host reconstructs and verifies that complete source again, then initializes a fresh `read` Session from it. The Pi launcher accepts this package only for read Sessions, verifies it both before and after private image-context staging, and exposes no base tree, host checkout, or Git metadata.
+
+Review model routing is selected by Lens. `spec`, `architecture`, and `quality` use the Reviewer's default logical alias; `quant` uses its configured Quant override when present. The selected concrete route must satisfy the Role locality policy and the OpenShell client's exact version and gateway checks.
+
+The Review Brief is bound to a fresh Run, Seat, Session, and epoch. It includes Project instructions, the read-only Reviewer Role, Task, approved Plan, host-supplied Decisions, selected Skills, changed-path anchors, a digest-bound pointer to the immutable current patch at `/workspace/input/review.patch`, passing Check metadata, and exact digests. It includes no dependency Report, Implementer transcript, hidden reasoning, prior Reviewer result, or claim that the implementation is correct. A Review-context digest makes any Lens, diff, or Check-evidence change stale.
+
+The host stores an immutable intent under `reviews/<task>/<lens>/<job>/intent.json` before inference. It binds the Review round, all frozen evidence, Role and Brief, model route, Session and Sandbox, read-policy digest, runtime versions, and request Message. The corresponding Gate holds the intent digest while pending. Review request Messages are fully Session-bound and use the normal host Mailbox lifecycle.
+
+The model must return one bounded JSON object. Allowed verdicts are `pass`, `rework`, and `blocked`; prose does not alter state. A passing object has no blocking finding. A non-passing object must give each finding's location, concrete failure scenario, evidence, and required correction. Truncation, malformed JSON, contradictory content, or a Message/model binding mismatch is an execution failure, not a verdict.
+
+After inference, the host rechecks approval, Project and Plan bytes, Run worktree contents, Check Gates and immutable records, Role, policy, and current Session. It then renders a Markdown Report and atomically publishes it with a self-digested JSON record under the intent directory. Both files become mode `0400`; their sizes, content digests, record digest, and intent binding are checked on every read.
+
+The Lens Gate stores the Review record digest as `pass` or `fail`. A passing Lens leaves the Task `reviewing` for remaining Lenses and human commit. `rework` moves the Task to `rework`; `blocked` moves it to `blocked`. One Review round covers all Lenses over one diff. Invalid output and infrastructure retry replace the Session epoch without incrementing that round.
+
+An exact completed Gate may reuse only a current immutable result. If result publication succeeded but Gate publication was interrupted, retry resolves the pending intent, validates its result against current evidence, removes any still-active bound Review Sandbox, records the Session stopped, and completes the Gate without another model call. Missing or modified source, Check, intent, Report, record, Role, policy, model, or Plan evidence fails closed.
 
 ## Session identity
 

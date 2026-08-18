@@ -19,8 +19,22 @@ import {
   type ArtifactOpenShell,
   type ImportedArtifact,
 } from "../src/artifact.js";
+import {
+  CheckSourceManifestSchema,
+  runCheck,
+  type CheckImage,
+  type CheckOpenShell,
+  type CheckRecord,
+} from "../src/check.js";
 import { sha256 } from "../src/digest.js";
-import { type OpenShellSandbox } from "../src/openshell.js";
+import { OrchestratorError } from "../src/error.js";
+import {
+  type CreateSandboxOptions,
+  type OpenShellInferenceRoute,
+  type OpenShellPreflight,
+  type OpenShellSandbox,
+  type ProcessResult,
+} from "../src/openshell.js";
 import { importPatchArtifact, type VerifiedPatch } from "../src/patch.js";
 import { catalogFromConfig, loadPlan, type PlanTask } from "../src/plan.js";
 import { loadProject, type Project } from "../src/project.js";
@@ -95,6 +109,145 @@ export interface AppliedFixture {
   readonly worktree: string;
   readonly patch: ImportedArtifact<VerifiedPatch>;
   dispose(): Promise<void>;
+}
+
+const fixtureCheckImageDigest = sha256("fixture Check image");
+export const fixtureCheckImage: CheckImage = {
+  source: `fixture-check-image@${fixtureCheckImageDigest}`,
+  digest: fixtureCheckImageDigest,
+};
+
+class PassingCheckOpenShell implements CheckOpenShell {
+  private active: OpenShellSandbox | undefined;
+  private marker: { readonly job: string; readonly token: string } | undefined;
+  private readonly uploads = new Map<string, Buffer>();
+
+  preflight(): Promise<OpenShellPreflight> {
+    return Promise.resolve({
+      command: "openshell",
+      requiredVersion: "0.0.106",
+      installedVersion: "0.0.106",
+      versionMatches: true,
+      status: {
+        authentication: { provider: "fixture", status: "authenticated" },
+        gateway: "checks",
+        server: "https://openshell.example.test",
+        status: "connected",
+        version: "0.0.106",
+      },
+    });
+  }
+
+  getInferenceRoute(): Promise<OpenShellInferenceRoute> {
+    return Promise.reject(
+      new OrchestratorError(
+        "openshell_inference_unconfigured",
+        "No inference route is configured",
+      ),
+    );
+  }
+
+  listSandboxes(): Promise<OpenShellSandbox[]> {
+    return Promise.resolve(this.active ? [this.active] : []);
+  }
+
+  createSandbox(options: CreateSandboxOptions): Promise<OpenShellSandbox> {
+    const [, action, job, token] = options.command ?? [];
+    if (action === "init" && job && token) this.marker = { job, token };
+    this.active = {
+      ...implementationSandbox,
+      id: "f6a44f4e-8ceb-4fa2-b57e-dcf87cc6f87f",
+      labels: { ...options.labels },
+      name: options.name,
+      workspace: "checks",
+    };
+    return Promise.resolve(this.active);
+  }
+
+  waitForSandbox(): Promise<OpenShellSandbox> {
+    if (!this.active) throw new Error("No active Check Sandbox");
+    return Promise.resolve(this.active);
+  }
+
+  deleteSandbox(): Promise<void> {
+    this.active = undefined;
+    return Promise.resolve();
+  }
+
+  async upload(
+    _sandbox: string,
+    localPath: string,
+    sandboxPath: string,
+  ): Promise<void> {
+    this.uploads.set(sandboxPath, await readFile(localPath));
+  }
+
+  execSandbox(
+    _sandbox: string,
+    command: readonly string[],
+  ): Promise<ProcessResult> {
+    if (command[0] !== "/usr/local/bin/orchestrator-prepare-check") {
+      return Promise.resolve({
+        stdout: "fixture Check passed\n",
+        stderr: "",
+        exitCode: 0,
+      });
+    }
+    const [, action, job, token] = command;
+    if (
+      !this.marker ||
+      this.marker.job !== job ||
+      this.marker.token !== token
+    ) {
+      return Promise.resolve({
+        stdout: "",
+        stderr: "identity mismatch\n",
+        exitCode: 1,
+      });
+    }
+    if (action === "verify") {
+      return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+    }
+    const source = this.uploads.get("/sandbox/input/source.json");
+    if (action !== "source" || !source) {
+      return Promise.resolve({
+        stdout: "",
+        stderr: "source missing\n",
+        exitCode: 1,
+      });
+    }
+    const manifest = CheckSourceManifestSchema.parse(
+      JSON.parse(source.toString("utf8")) as unknown,
+    );
+    return Promise.resolve({
+      stdout: `${manifest.source_digest}\n`,
+      stderr: "",
+      exitCode: 0,
+    });
+  }
+}
+
+export async function passFixtureChecks(
+  fixture: AppliedFixture,
+): Promise<CheckRecord[]> {
+  const client = new PassingCheckOpenShell();
+  const records: CheckRecord[] = [];
+  for (const check of fixture.task.checks) {
+    const result = await runCheck({
+      store: fixture.store,
+      project: fixture.project,
+      plan: fixture.plan,
+      runId: fixture.runId,
+      taskId: fixture.task.id,
+      checkId: check,
+      client,
+      image: fixtureCheckImage,
+      token: () => "a".repeat(64),
+      now: () => new Date("2026-08-18T16:00:00.000Z"),
+    });
+    records.push(result.record);
+  }
+  return records;
 }
 
 export async function createAppliedFixture(

@@ -2,7 +2,10 @@ import { readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { digestParts } from "../src/digest.js";
+import { loadPreparedPatch } from "../src/apply.js";
+import { ArtifactStore } from "../src/artifact.js";
+import { createCheckSource } from "../src/check.js";
+import { digestParts, sha256 } from "../src/digest.js";
 import { MessageSchema } from "../src/message.js";
 import type {
   OpenShellForward,
@@ -11,6 +14,7 @@ import type {
   ProcessResult,
 } from "../src/openshell.js";
 import {
+  PI_CLIENT_VERSION,
   PiClientConfigSchema,
   resumeReadSession,
   resumeWriteSession,
@@ -23,6 +27,7 @@ import { loadSandboxPolicy } from "../src/policy.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
 import { commitFixture, createFixtureProject } from "./fixture.js";
+import { createAppliedFixture } from "./applied-fixture.js";
 
 const roots: string[] = [];
 
@@ -270,6 +275,168 @@ describe("read Session bootstrap", () => {
     }
   });
 
+  it("initializes a read Session from an exact reconstructed Run source", async () => {
+    const fixture = await createAppliedFixture();
+    const run = await fixture.store.readRun(fixture.runId);
+    const task = run.tasks[fixture.task.id]!;
+    const imported = await loadPreparedPatch({
+      store: new ArtifactStore(fixture.store.runDirectory(fixture.runId)),
+      projectRoot: fixture.project.root,
+      application: task.patch_application!,
+    });
+    const source = await createCheckSource({
+      projectRoot: fixture.project.root,
+      inputCommit: task.input_commit!,
+      taskSourceDigest: task.output_source_digest!,
+      diffDigest: task.diff_digest!,
+      patch: imported.value,
+    });
+    const port = await availablePort();
+    let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
+    let manifest: unknown;
+    let dockerfile = "";
+    let stagedPatch = "";
+    let boundary = "";
+    let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
+    const client: ReadSessionOpenShell = {
+      preflight: () => Promise.resolve(preflight),
+      async createSandbox(options) {
+        config = PiClientConfigSchema.parse(
+          JSON.parse(
+            await readFile(path.join(options.from, "session.json"), "utf8"),
+          ) as unknown,
+        );
+        manifest = JSON.parse(
+          await readFile(path.join(options.from, "snapshot.json"), "utf8"),
+        ) as unknown;
+        dockerfile = await readFile(
+          path.join(options.from, "Dockerfile"),
+          "utf8",
+        );
+        stagedPatch = await readFile(
+          path.join(options.from, "extra-inputs", "review.patch"),
+          "utf8",
+        );
+        return sandbox(1);
+      },
+      waitForSandbox: () => Promise.resolve(sandbox(1)),
+      execSandbox: (_name, command) => {
+        if (command[0] === "/bin/sh") boundary = command[2] ?? "";
+        return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+      },
+      async startServiceForward(): Promise<OpenShellForward> {
+        if (!config) throw new Error("Session config was not staged");
+        server = await startLinkServer({ config, deliver() {} });
+        return {
+          sandboxName: "pio-read-test",
+          localHost: "127.0.0.1",
+          localPort: port,
+          targetHost: "127.0.0.1",
+          targetPort: port,
+          closed: Promise.resolve({ stdout: "", stderr: "", exitCode: 0 }),
+          stop: async () => server?.close(),
+        };
+      },
+      deleteSandbox: () => Promise.resolve(),
+    };
+
+    let session: Awaited<ReturnType<typeof startReadSession>> | undefined;
+    try {
+      session = await startReadSession({
+        client,
+        identity: {
+          run: fixture.runId,
+          seat: "review-spec",
+          session: "review-session",
+          epoch: 1,
+        },
+        workspaceSource: source,
+        inputs: [
+          {
+            name: "review.patch",
+            content: imported.value.patch,
+            digest: sha256(imported.value.patch),
+          },
+        ],
+        linkPort: port,
+        sandboxName: "pio-read-test",
+      });
+      expect(session.info.sourceDigest).toBe(source.manifest.source_digest);
+      expect(config?.source_digest).toBe(source.manifest.source_digest);
+      expect(config?.inputs).toEqual([
+        {
+          path: "/workspace/input/review.patch",
+          byte_count: imported.value.patch.byteLength,
+          digest: sha256(imported.value.patch),
+        },
+      ]);
+      expect(manifest).toEqual(source.manifest);
+      expect(stagedPatch).toBe(imported.value.patch.toString("utf8"));
+      expect(dockerfile).toContain(
+        "ADD --chown=10001:10001 source.tar /workspace/project/",
+      );
+      expect(dockerfile).not.toContain("/workspace/base/");
+      expect(dockerfile).toContain(
+        "COPY --chown=0:0 extra-inputs/review.patch /workspace/input/review.patch",
+      );
+      expect(boundary).toContain("test -r /workspace/input/review.patch");
+    } finally {
+      if (session) await session.stop();
+      else await server?.close();
+      await source.dispose();
+      await fixture.dispose();
+    }
+  });
+
+  it("rejects a changed immutable input before OpenShell mutation", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const snapshot = await createSourceSnapshot({
+      projectRoot: root,
+      commit,
+      paths: ["src"],
+    });
+    let touchedOpenShell = false;
+    const unexpected = async (): Promise<never> => {
+      touchedOpenShell = true;
+      throw new Error("OpenShell must not be called");
+    };
+    const client: ReadSessionOpenShell = {
+      preflight: unexpected,
+      createSandbox: unexpected,
+      waitForSandbox: unexpected,
+      execSandbox: unexpected,
+      startServiceForward: unexpected,
+      deleteSandbox: unexpected,
+    };
+
+    try {
+      await expect(
+        startReadSession({
+          client,
+          identity: {
+            run: "run-one",
+            seat: "review-spec",
+            session: "review-session",
+            epoch: 1,
+          },
+          snapshot,
+          inputs: [
+            {
+              name: "review.patch",
+              content: "changed",
+              digest: sha256("expected"),
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ code: "invalid_session_input_digest" });
+      expect(touchedOpenShell).toBe(false);
+    } finally {
+      await snapshot.dispose();
+    }
+  });
+
   it("recovers a Link from immutable Sandbox input without deleting the Sandbox", async () => {
     const identity = {
       run: "run-one",
@@ -287,7 +454,7 @@ describe("read Session bootstrap", () => {
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port },
-      client_version: "0.2.0",
+      client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,
@@ -305,6 +472,10 @@ describe("read Session bootstrap", () => {
       preflight: () => Promise.resolve(preflight),
       getSandbox: () => Promise.resolve(sandbox(1)),
       execSandbox(_name, command) {
+        if (command[0] !== "/bin/cat") {
+          expect(command[0]).toBe("/bin/sh");
+          return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+        }
         expect(command).toEqual(["/bin/cat", "/workspace/input/session.json"]);
         return Promise.resolve({
           stdout: JSON.stringify(config),
@@ -440,7 +611,7 @@ describe("read Session bootstrap", () => {
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port: 41_727 },
-      client_version: "0.2.0",
+      client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
       profile: "read",
       source_digest: `sha256:${"1".repeat(64)}`,

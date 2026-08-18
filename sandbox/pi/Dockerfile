@@ -1,7 +1,7 @@
 FROM docker.io/library/node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
 
 ARG PI_VERSION=0.84.2
-ARG CLIENT_VERSION=0.2.0
+ARG CLIENT_VERSION=0.2.1
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates git iproute2 procps tar util-linux \

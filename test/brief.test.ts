@@ -103,6 +103,41 @@ describe("Brief compilation", () => {
     ]);
   });
 
+  it("binds Review evidence by immutable diff reference instead of embedding it", async () => {
+    const input = await briefInput();
+    const review = {
+      lens: "spec" as const,
+      diff: {
+        path: "/workspace/input/review.patch" as const,
+        digest: sha256("large frozen diff"),
+      },
+      checks: [
+        {
+          check: "project-test",
+          verdict: "pass" as const,
+          argv: ["node", "--test"],
+          cwd: ".",
+          exitCode: 0,
+          recordDigest: sha256("Check record"),
+        },
+      ],
+    };
+    const previous = compileBrief({ ...input, review });
+    const current = compileBrief({
+      ...input,
+      review: {
+        ...review,
+        diff: { ...review.diff, digest: sha256("changed diff") },
+      },
+    });
+
+    expect(previous.content).toContain("/workspace/input/review.patch");
+    expect(previous.content).not.toContain("large frozen diff");
+    expect(briefStaleReasons(previous.binding, current.binding)).toEqual([
+      "Review evidence changed",
+    ]);
+  });
+
   it("records explicit omissions instead of silently truncating context", async () => {
     const input = await briefInput();
     const brief = compileBrief({ ...input, contextLimitTokens: 100 });

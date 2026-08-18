@@ -1,8 +1,10 @@
 import { z } from "zod";
 import {
   ModelAliasSchema,
+  ReviewLensSchema,
   type ModelAlias,
   type ProjectConfig,
+  type ReviewLens,
 } from "./config.js";
 import { OrchestratorError } from "./error.js";
 import {
@@ -73,6 +75,44 @@ export function resolveRoleModelRoute(
     throw new OrchestratorError(
       "model_locality_denied",
       `Role '${role}' requires ${inference} inference but alias '${alias}' is ${route.locality}`,
+    );
+  }
+  return route;
+}
+
+export function reviewModelAlias(
+  project: ProjectConfig,
+  lens: ReviewLens,
+): ModelAlias {
+  const parsedLens = ReviewLensSchema.parse(lens);
+  const configured = project.models.reviewer;
+  const alias =
+    typeof configured === "string"
+      ? configured
+      : parsedLens === "quant"
+        ? (configured?.quant ?? configured?.default)
+        : configured?.default;
+  if (!alias) {
+    throw new OrchestratorError(
+      "model_route_not_found",
+      `Reviewer Lens '${parsedLens}' has no logical model route`,
+    );
+  }
+  return alias;
+}
+
+export function resolveReviewModelRoute(
+  project: ProjectConfig,
+  local: LocalConfig,
+  lens: ReviewLens,
+  inference?: "local" | "prefer-local" | "remote",
+): ResolvedModelRoute {
+  const alias = reviewModelAlias(project, lens);
+  const route = resolveModelRoute(local, alias);
+  if (!localityAllowed(inference, route.locality)) {
+    throw new OrchestratorError(
+      "model_locality_denied",
+      `Reviewer Lens '${lens}' requires ${inference} inference but alias '${alias}' is ${route.locality}`,
     );
   }
   return route;

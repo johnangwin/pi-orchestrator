@@ -9,6 +9,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -119,6 +120,11 @@ export interface CheckSource {
   readonly archivePath: string;
   readonly manifestPath: string;
   readonly manifest: CheckSourceManifest;
+  readonly sourceDigest: Digest;
+  verify(copy: {
+    readonly archivePath: string;
+    readonly manifestPath: string;
+  }): Promise<Digest>;
   dispose(): Promise<void>;
 }
 
@@ -526,6 +532,14 @@ export async function createCheckSource(options: {
       archivePath,
       manifestPath,
       manifest,
+      sourceDigest: manifest.source_digest as Digest,
+      async verify(copy) {
+        const verified = await verifyCheckSource(
+          { ...copy, manifest },
+          temporaryRoot,
+        );
+        return verified.source_digest as Digest;
+      },
       dispose: () => rm(directory, { recursive: true, force: true }),
     };
   } finally {
@@ -944,6 +958,54 @@ export class CheckStore {
       }
       throw error;
     }
+  }
+
+  async findResultByDigest(
+    task: string,
+    check: string,
+    digest: string,
+  ): Promise<CheckRecord | undefined> {
+    const expectedTask = IdentifierSchema.parse(task);
+    const expectedCheck = IdentifierSchema.parse(check);
+    const expectedDigest = DigestSchema.parse(digest);
+    const directory = path.join(this.directory, expectedTask, expectedCheck);
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+
+    let found: CheckRecord | undefined;
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (entry.name.startsWith(".")) continue;
+      if (
+        !entry.isDirectory() ||
+        !CheckJobIdSchema.safeParse(entry.name).success
+      ) {
+        throw new OrchestratorError(
+          "check_store_corrupt",
+          `Unexpected Check store entry '${path.join(directory, entry.name)}'`,
+        );
+      }
+      const record = await this.getResult(
+        expectedTask,
+        expectedCheck,
+        entry.name,
+      );
+      if (!record || record.record_digest !== expectedDigest) continue;
+      if (found) {
+        throw new OrchestratorError(
+          "check_store_corrupt",
+          `Check evidence digest '${expectedDigest}' is duplicated`,
+        );
+      }
+      found = record;
+    }
+    return found;
   }
 
   async putResult(options: {

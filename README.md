@@ -43,6 +43,9 @@ PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 # Writable implementation Session, Patch export, transfer, and host replay
 PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
 
+# Complete source reconstruction and fresh no-inference Check Sandbox
+PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
+
 # Read-only cmux version and capability probe; run from a cmux terminal
 PI_ORCHESTRATOR_LIVE_CMUX=1 npm test -- test/cmux.live.test.ts
 ```
@@ -62,6 +65,8 @@ Visible Session lifecycle is now recoverable across host restarts. Run state dur
 An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
 
 Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. The host then validates every changed path against approved Task scope and protected Project patterns, durably prepares the operation, applies it only to the exact isolated Run worktree, and independently verifies the resulting path, content, mode, source, and diff digests. A retry can reconstruct the verified Patch from durable state and its stored Artifact; unexpected worktree content always blocks without repair.
+
+Authoritative Checks now rebuild the complete patched Project, verify it independently on the host and in a fresh no-inference OpenShell Sandbox, and execute only registered argv arrays. Durable intents make abandoned-Sandbox cleanup retriable; immutable logs and records bind the result to exact Plan, source, diff, command, timeout, image, policy, Sandbox, and OpenShell identities. A failed command moves the Task to rework, while all required passes advance it to fresh Review.
 
 ## OpenShell
 

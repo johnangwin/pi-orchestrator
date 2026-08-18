@@ -183,6 +183,7 @@ export interface CreateSandboxOptions {
   readonly name: string;
   readonly from: string;
   readonly policyPath: string;
+  readonly labels?: Readonly<Record<string, string>>;
   readonly command?: readonly string[];
   readonly timeoutMs?: number;
 }
@@ -495,6 +496,20 @@ export class OpenShellClient {
     options: CreateSandboxOptions,
   ): Promise<OpenShellSandbox> {
     const name = OpenShellSandboxNameSchema.parse(options.name);
+    const labels = z
+      .record(
+        z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/),
+        z
+          .string()
+          .min(1)
+          .max(63)
+          .refine((value) => !value.includes("\0")),
+      )
+      .parse(options.labels ?? {});
     const command = options.command ?? ["/usr/bin/true"];
     if (command.length === 0) {
       throw new OrchestratorError(
@@ -512,6 +527,9 @@ export class OpenShellClient {
         options.from,
         "--policy",
         options.policyPath,
+        ...Object.entries(labels)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .flatMap(([key, value]) => ["--label", `${key}=${value}`]),
         "--no-auto-providers",
         "--no-tty",
         ...this.globalArgs(),

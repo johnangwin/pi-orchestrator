@@ -124,6 +124,19 @@ The full live path is opt-in:
 PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
 ```
 
+## Authoritative Checks
+
+The Check runner rebuilds the complete patched Project from the approved base commit and verified Patch Artifact, uploads a digest-bound archive, and requires the trusted image helper to reproduce the complete source tree before execution. OCI images require digest references; local image contexts and validated policy bytes are copied into private staging and reverified before OpenShell consumes them. It launches the registered argv directly under the final `check` policy. The Sandbox contains no Pi runtime and must be deleted before the host publishes immutable logs and Gate evidence.
+
+The selected OpenShell gateway and workspace must have no inference route. Confirm this explicitly before the live test:
+
+```sh
+openshell inference get --workspace default
+PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
+```
+
+The test builds the pinned baseline Check image, transfers a real source package, runs a discovered Node test, records the exact evidence, and verifies Sandbox cleanup. A consumer Project with another toolchain should supply its own pinned Check image without adding Pi, inference, credentials, or network access.
+
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
 Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. The host instead assembles a temporary derived-image context from the exact Git snapshot and starts the Sandbox under its final policy. See [ADR 0004](decisions/0004-session-snapshot.md).

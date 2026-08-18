@@ -205,7 +205,7 @@ describe("OpenShell Sandbox lifecycle", () => {
     const client = new OpenShellClient({
       runner: runner(
         {
-          "sandbox create --name pio-cny-read-001 --from /image --policy /read.yaml --no-auto-providers --no-tty --workspace default -- /usr/bin/true":
+          "sandbox create --name pio-cny-read-001 --from /image --policy /read.yaml --label purpose=test --no-auto-providers --no-tty --workspace default -- /usr/bin/true":
             {
               stdout: "created",
               stderr: "",
@@ -249,6 +249,7 @@ describe("OpenShell Sandbox lifecycle", () => {
         name: "pio-cny-read-001",
         from: "/image",
         policyPath: "/read.yaml",
+        labels: { purpose: "test" },
       }),
     ).resolves.toMatchObject({ phase: "Ready" });
     await expect(
@@ -280,6 +281,18 @@ describe("OpenShell Sandbox lifecycle", () => {
     const client = new OpenShellClient({ runner: runner({}) });
     await expect(
       client.getSandbox("this-name-is-over-nineteen-characters"),
+    ).rejects.toThrow("Too big");
+  });
+
+  it("rejects labels that OpenShell cannot represent", async () => {
+    const client = new OpenShellClient({ runner: runner({}) });
+    await expect(
+      client.createSandbox({
+        name: "pio-check-one",
+        from: "/image",
+        policyPath: "/check.yaml",
+        labels: { ownership: "x".repeat(64) },
+      }),
     ).rejects.toThrow("Too big");
   });
 

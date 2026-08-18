@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import { OrchestratorError } from "./error.js";
@@ -38,10 +39,32 @@ const ModelRouteSchema = z.union([
     .strict(),
 ]);
 
+const CheckArgumentSchema = z
+  .string()
+  .min(1)
+  .max(16_384)
+  .refine((value) => !value.includes("\0"), "must not contain NUL");
+
+const CheckWorkingDirectorySchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .refine((value) => !value.includes("\0"), "must not contain NUL")
+  .refine((value) => !value.includes("\\"), "must use POSIX separators")
+  .refine((value) => !path.posix.isAbsolute(value), "must be relative")
+  .refine(
+    (value) => path.posix.normalize(value) === value,
+    "must be normalized",
+  )
+  .refine(
+    (value) => value !== ".." && !value.startsWith("../"),
+    "must remain inside the Project",
+  );
+
 export const CheckDefinitionSchema = z
   .object({
-    argv: z.array(z.string().min(1)).min(1),
-    cwd: z.string().min(1).optional(),
+    argv: z.array(CheckArgumentSchema).min(1).max(256),
+    cwd: CheckWorkingDirectorySchema.optional(),
   })
   .strict();
 

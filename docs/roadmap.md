@@ -34,7 +34,7 @@
 - isolated Run worktree (complete)
 - implementation snapshot and patch import (complete)
 - scope, protected-path validation, and durable host patch application (complete)
-- fresh deterministic Check
+- fresh deterministic Check (complete)
 - fresh Review
 - human commit
 

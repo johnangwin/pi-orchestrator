@@ -83,6 +83,29 @@ checks: {}
       resolveRoleModelRoute(project, local, "lead", "remote"),
     ).toThrow("requires remote inference");
   });
+
+  it("rejects Check working directories that can escape the Project", () => {
+    expect(() =>
+      parseProjectConfig(`version: 1
+project: { id: fixture }
+roles: [lead]
+models: { lead: plan }
+context:
+  initial_fraction: 0.25
+  warn_fraction: 0.6
+  handoff_fraction: 0.75
+  stop_fraction: 0.85
+attempts: { implementation: 3, review: 2, consultation_hops: 2 }
+git: { branch_prefix: orchestrator/, commit: human, push: disabled, merge: disabled }
+network: { default: none }
+protected: []
+checks:
+  project-test:
+    argv: [node, --test]
+    cwd: ../outside
+`),
+    ).toThrow("must remain inside the Project");
+  });
 });
 
 describe("Pi model route", () => {

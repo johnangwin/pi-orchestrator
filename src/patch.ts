@@ -345,7 +345,9 @@ async function hashFile(filePath: string): Promise<{
   }
 }
 
-async function workspaceEntries(root: string): Promise<WorkspaceEntry[]> {
+export async function inspectWorkspaceEntries(
+  root: string,
+): Promise<WorkspaceEntry[]> {
   const rootState = await lstat(root).catch((error: unknown) => {
     throw new OrchestratorError(
       "invalid_patch_workspace",
@@ -660,7 +662,7 @@ async function replayPatch(options: {
       ["-xf", options.snapshot.archivePath, "-C", project],
       directory,
     );
-    const baseEntries = await workspaceEntries(base);
+    const baseEntries = await inspectWorkspaceEntries(base);
     if (workspaceTreeDigest(baseEntries) !== options.bundle.base_tree_digest) {
       throw new OrchestratorError(
         "patch_base_mismatch",
@@ -679,8 +681,8 @@ async function replayPatch(options: {
     await command("git", applyArgs, project);
 
     const [baseAfter, resultEntries] = await Promise.all([
-      workspaceEntries(base),
-      workspaceEntries(project),
+      inspectWorkspaceEntries(base),
+      inspectWorkspaceEntries(project),
     ]);
     if (canonicalJson(baseAfter) !== canonicalJson(baseEntries)) {
       throw new OrchestratorError(

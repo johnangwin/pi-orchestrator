@@ -161,6 +161,22 @@ Before Git mutation, Run state records a `prepared` application bound to the Art
 
 Retry loads the immutable stored Artifact, recreates its exact source snapshot from the durable commit and path selection, and repeats Patch validation. A prepared worktree may be clean or exactly applied; an applied worktree must remain exact. Any other dirty state, conflicting Patch, changed branch or `HEAD`, missing Artifact, or digest mismatch blocks without reset, clean, stash, or repair.
 
+## Authoritative Checks
+
+Only registered Check definitions may satisfy a Gate. A definition is a bounded argument array plus an optional normalized relative POSIX working directory. The host invokes the array directly, never through a shell. The execution timeout is also an explicit Check input.
+
+The host reconstructs a complete source tree from the Task input commit and its immutable applied Patch. This differs from the potentially scope-limited implementation snapshot: authoritative verification receives the full tracked Project at the base commit with the exact verified changes applied. Its manifest binds the input commit, Task source digest, host diff digest, complete path/content/mode tree, archive digest, and a separate Check-source digest. Neither the package nor the Sandbox contains `.git`. The host verifies a fresh extraction, and the Check image helper repeats archive and complete-tree verification after upload.
+
+Before external mutation, the host atomically publishes an intent under `checks/<task>/<check>/<job>/intent.json`. The job ID and Sandbox name derive from a domain-separated binding of Run, Task, Check, Plan, input commit, source and diff digests, argv, working directory, timeout, image digest, and policy digest. The intent also contains a random durable ownership token. OpenShell labels bind the Sandbox record to the job and a 128-bit token fingerprint; an internal marker binds the full token. A Ready abandoned Sandbox requires both proofs before deletion. An Error Sandbox that never reached marker initialization may be removed only when its trusted control-plane labels match the durable intent.
+
+Authoritative execution requires an exactly pinned, version-matched OpenShell client and gateway. The selected gateway/workspace must report no inference route. An image must be an OCI digest reference whose suffix equals its recorded digest or a canonical absolute local context whose complete tree matches its domain-separated digest. A local context is copied to private staging and verified again; validated policy bytes are also copied to private staging. OpenShell therefore consumes the bytes named by the intent rather than mutable caller paths. The fresh `check` Sandbox uses a separate pinned image with no Pi process, default-deny network, no credentials, no host state, and no host checkout. Project-specific images may add a required compiler or toolchain while preserving those properties.
+
+The registered process runs only after source verification. Its Sandbox must be successfully deleted before evidence is accepted. The host then revalidates the exact Run worktree, current Plan files, registered Check definition, and approval. Any drift or cleanup failure leaves the intent pending and publishes no result.
+
+A completed job atomically publishes immutable `stdout.log`, `stderr.log`, and `record.json`. The record binds command exit, time, exact inputs, Sandbox identity, OpenShell versions and gateway, log sizes and digests, intent digest, and its own domain-separated digest. Stored records and logs are revalidated on every read. An exact completed retry reuses that evidence and can finish an interrupted Gate update without another Sandbox.
+
+The Task Gate records the intent digest as `pending`, then the record digest as `pass` or `fail`. Nonzero command exit is authoritative failed evidence and moves the Task to `rework`. Passing evidence leaves the Task `checking` until all required Check Gates pass, then moves it to `reviewing`. Infrastructure failure is not converted into a command verdict.
+
 ## Session identity
 
 A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.

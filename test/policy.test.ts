@@ -34,6 +34,19 @@ describe("Sandbox policies", () => {
     expect(dockerfile).not.toContain(":latest");
   });
 
+  it("pins a separate Check image without Pi", async () => {
+    const dockerfile = await readFile(
+      path.resolve("sandbox", "check", "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(
+      /^FROM docker\.io\/library\/node:22\.19\.0-bookworm-slim@sha256:[a-f0-9]{64}$/m,
+    );
+    expect(dockerfile).toContain("USER 10001:10001");
+    expect(dockerfile).not.toContain("pi-coding-agent");
+    expect(dockerfile).not.toContain(":latest");
+  });
+
   for (const profile of ["read", "write", "check"] as const) {
     it(`validates the committed ${profile} profile`, async () => {
       const loaded = await loadSandboxPolicy(

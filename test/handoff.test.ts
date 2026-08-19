@@ -16,6 +16,7 @@ import {
   type RunHandoffOptions,
 } from "../src/handoff.js";
 import type { ResolvedModelRoute } from "../src/model.js";
+import { MetricStore } from "../src/metric.js";
 import type { OpenShellPreflight, OpenShellSandbox } from "../src/openshell.js";
 import { catalogFromConfig, loadPlan } from "../src/plan.js";
 import { loadProject } from "../src/project.js";
@@ -269,6 +270,49 @@ function options(
 }
 
 describe("Handoff lifecycle", () => {
+  it("records host-validated context pressure as a Run metric", async () => {
+    const context = await fixture();
+    const calls = { value: 0 };
+    try {
+      const pressure = {
+        tokens: 98_304,
+        context_window: 131_072,
+        fraction: 0.75,
+        percent: 75,
+        level: "handoff" as const,
+        mutating_phase_allowed: true,
+      };
+      await runHandoff({
+        ...options(
+          context,
+          launcher({
+            sourceDigest: context.sourceDigest,
+            policyDigest: context.policyDigest,
+            calls,
+          }),
+        ),
+        trigger: "context-pressure",
+        pressure,
+      });
+      await expect(
+        new MetricStore(
+          context.store.runDirectory("run-one"),
+          "run-one",
+        ).list(),
+      ).resolves.toMatchObject([
+        {
+          metric: {
+            kind: "context-pressure",
+            identity: context.expected,
+            pressure,
+          },
+        },
+      ]);
+    } finally {
+      await context.store.close();
+    }
+  });
+
   it("recovers a terminated Session from a durable checkpoint without its transcript", async () => {
     const context = await fixture("failed");
     const calls = { value: 0 };
@@ -316,12 +360,16 @@ describe("Handoff lifecycle", () => {
       });
       expect(calls.value).toBe(1);
 
-      const persisted = await new HandoffStore(
+      const handoffStore = new HandoffStore(
         context.store.runDirectory("run-one"),
-      ).get("implementer", result.intent.id);
+      );
+      const persisted = await handoffStore.get("implementer", result.intent.id);
       expect(persisted?.result?.result_digest).toBe(
         result.result.result_digest,
       );
+      await expect(handoffStore.list()).resolves.toMatchObject([
+        { intent: { id: result.intent.id }, result: result.result },
+      ]);
       expect(
         await readFile(
           path.join(

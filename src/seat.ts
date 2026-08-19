@@ -25,6 +25,7 @@ import { formatUnknownError, OrchestratorError } from "./error.js";
 import { HostLink, TcpLinkTransport, type LinkEventFrame } from "./link.js";
 import { VersionSchema } from "./local.js";
 import type { Message } from "./message.js";
+import type { SessionMetricRecorder } from "./metric.js";
 import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import type {
   OpenShellClient,
@@ -194,6 +195,9 @@ interface StartSessionOptions {
   readonly model?: ResolvedModelRoute;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
   readonly inputs?: readonly SessionInput[];
+  readonly metrics?: SessionMetricRecorder;
+  readonly task?: string;
+  readonly now?: () => Date;
 }
 
 export type StartReadSessionOptions = StartSessionOptions &
@@ -225,6 +229,9 @@ export interface ResumeReadSessionOptions {
   readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly briefDigest?: string;
+  readonly metrics?: SessionMetricRecorder;
+  readonly task?: string;
+  readonly now?: () => Date;
 }
 
 export type ResumeWriteSessionOptions = ResumeReadSessionOptions;
@@ -612,6 +619,9 @@ export class ReadSession {
     private readonly token: string,
     private readonly startupTimeoutMs: number,
     private readonly turnTimeoutMs: number,
+    private readonly metrics: SessionMetricRecorder | undefined,
+    private readonly task: string | undefined,
+    private readonly now: () => Date,
   ) {
     this.info = info;
   }
@@ -620,19 +630,34 @@ export class ReadSession {
     return this.info.identity;
   }
 
-  ping(): Promise<string> {
-    return this.link.ping();
+  async ping(): Promise<string> {
+    try {
+      return await this.link.ping();
+    } catch (error) {
+      await this.recordLinkFailure("ping", error);
+      throw error;
+    }
   }
 
-  deliver(message: Message): Promise<"queued" | "duplicate"> {
-    return this.link.deliver(message);
+  async deliver(message: Message): Promise<"queued" | "duplicate"> {
+    try {
+      return await this.link.deliver(message);
+    } catch (error) {
+      await this.recordLinkFailure("deliver", error);
+      throw error;
+    }
   }
 
-  waitForEvent(
+  async waitForEvent(
     predicate: (frame: LinkEventFrame) => boolean,
     timeoutMs?: number,
   ): Promise<LinkEventFrame> {
-    return this.link.waitForEvent(predicate, timeoutMs);
+    try {
+      return await this.link.waitForEvent(predicate, timeoutMs);
+    } catch (error) {
+      await this.recordLinkFailure("receive", error);
+      throw error;
+    }
   }
 
   async run(
@@ -652,27 +677,64 @@ export class ReadSession {
       );
     }
     this.running = true;
+    const startedAt = this.now();
     try {
-      await this.link.deliver(message);
-      const frame = await this.link.waitForEvent((candidate) => {
+      try {
+        await this.link.deliver(message);
+        const frame = await this.link.waitForEvent((candidate) => {
+          if (
+            !["turn-completed", "turn-failed"].includes(candidate.payload.event)
+          )
+            return false;
+          const ids = candidate.payload.data.message_ids;
+          return Array.isArray(ids) && ids.includes(message.id);
+        }, timeoutMs);
+        if (frame.payload.event === "turn-failed") {
+          const failure = ModelTurnFailureSchema.parse(frame.payload.data);
+          this.assertTurnBinding(message.id, failure);
+          throw new OrchestratorError(
+            "model_turn_failed",
+            `Pi model turn for Message '${message.id}' failed: ${failure.error}`,
+          );
+        }
+        const result = ModelTurnResultSchema.parse(frame.payload.data);
+        this.assertTurnBinding(message.id, result);
+        await this.metrics
+          ?.recordModelTurn({
+            identity: this.identity,
+            ...(this.task ? { task: this.task } : {}),
+            model: this.info.model,
+            messageIds: result.message_ids,
+            outcome: "success",
+            startedAt,
+            endedAt: this.now(),
+            usage: result.usage,
+          })
+          .catch(() => undefined);
+        return result;
+      } catch (error) {
+        const endedAt = this.now();
+        await this.metrics
+          ?.recordModelTurn({
+            identity: this.identity,
+            ...(this.task ? { task: this.task } : {}),
+            model: this.info.model,
+            messageIds: [message.id],
+            outcome: "failure",
+            startedAt,
+            endedAt,
+            error,
+          })
+          .catch(() => undefined);
         if (
-          !["turn-completed", "turn-failed"].includes(candidate.payload.event)
-        )
-          return false;
-        const ids = candidate.payload.data.message_ids;
-        return Array.isArray(ids) && ids.includes(message.id);
-      }, timeoutMs);
-      if (frame.payload.event === "turn-failed") {
-        const failure = ModelTurnFailureSchema.parse(frame.payload.data);
-        this.assertTurnBinding(message.id, failure);
-        throw new OrchestratorError(
-          "model_turn_failed",
-          `Pi model turn for Message '${message.id}' failed: ${failure.error}`,
-        );
+          error instanceof OrchestratorError &&
+          (error.code.startsWith("link_") ||
+            error.code === "session_startup_timeout")
+        ) {
+          await this.recordLinkFailure("turn", error, endedAt);
+        }
+        throw error;
       }
-      const result = ModelTurnResultSchema.parse(frame.payload.data);
-      this.assertTurnBinding(message.id, result);
-      return result;
     } finally {
       this.running = false;
     }
@@ -705,15 +767,37 @@ export class ReadSession {
         "Cannot reconnect a released Session",
       );
     }
-    await this.link.close();
-    this.link = await connectWithRetry({
-      forward: this.forward,
-      identity: this.info.identity,
-      token: this.token,
-      piVersion: this.info.piVersion,
-      clientVersion: this.info.clientVersion,
-      timeoutMs: this.startupTimeoutMs,
-    });
+    try {
+      await this.link.close();
+      this.link = await connectWithRetry({
+        forward: this.forward,
+        identity: this.info.identity,
+        token: this.token,
+        piVersion: this.info.piVersion,
+        clientVersion: this.info.clientVersion,
+        timeoutMs: this.startupTimeoutMs,
+      });
+    } catch (error) {
+      await this.recordLinkFailure("reconnect", error);
+      throw error;
+    }
+  }
+
+  private async recordLinkFailure(
+    operation: Parameters<
+      SessionMetricRecorder["recordLinkFailure"]
+    >[0]["operation"],
+    error: unknown,
+    occurredAt = this.now(),
+  ): Promise<void> {
+    await this.metrics
+      ?.recordLinkFailure({
+        identity: this.identity,
+        operation,
+        occurredAt,
+        error,
+      })
+      .catch(() => undefined);
   }
 
   private async releaseHandles(): Promise<string[]> {
@@ -812,6 +896,7 @@ async function resumeSession(
   options: ResumeReadSessionOptions,
   profile: AgentSessionProfile,
 ): Promise<ReadSession> {
+  const now = options.now ?? (() => new Date());
   const identity = SessionIdentitySchema.parse(options.identity);
   const expectedSandbox = SessionSandboxSchema.parse(options.sandbox);
   const piVersion = VersionSchema.parse(
@@ -1023,8 +1108,19 @@ async function resumeSession(
       config.token,
       startupTimeoutMs,
       turnTimeoutMs,
+      options.metrics,
+      options.task,
+      now,
     );
   } catch (error) {
+    await options.metrics
+      ?.recordLinkFailure({
+        identity,
+        operation: "connect",
+        occurredAt: now(),
+        error,
+      })
+      .catch(() => undefined);
     await link?.close().catch(() => undefined);
     await forward?.stop().catch(() => undefined);
     throw error;
@@ -1047,6 +1143,7 @@ async function startSession(
   options: StartReadSessionOptions,
   profile: AgentSessionProfile,
 ): Promise<ReadSession> {
+  const now = options.now ?? (() => new Date());
   const source = await verifiedSessionSource(options, profile);
   const inputs = validateSessionInputs(options.inputs);
   const identity = SessionIdentitySchema.parse(options.identity);
@@ -1166,6 +1263,7 @@ async function startSession(
   let sandbox: OpenShellSandbox | undefined;
   let forward: OpenShellForward | undefined;
   let link: HostLink | undefined;
+  const startupStartedAt = now();
   try {
     sandbox = await options.client.createSandbox({
       name: sandboxName,
@@ -1217,7 +1315,7 @@ async function startSession(
         "A model-routed Session requires Link event delivery",
       );
     }
-    return new ReadSession(
+    const runtime = new ReadSession(
       options.client,
       forward,
       link,
@@ -1240,8 +1338,31 @@ async function startSession(
       token,
       startupTimeoutMs,
       turnTimeoutMs,
+      options.metrics,
+      options.task,
+      now,
     );
+    await options.metrics?.recordSandboxStartup({
+      identity,
+      profile,
+      ...(model ? { model } : {}),
+      outcome: "success",
+      startedAt: startupStartedAt,
+      endedAt: now(),
+    });
+    return runtime;
   } catch (error) {
+    await options.metrics
+      ?.recordSandboxStartup({
+        identity,
+        profile,
+        ...(model ? { model } : {}),
+        outcome: "failure",
+        startedAt: startupStartedAt,
+        endedAt: now(),
+        error,
+      })
+      .catch(() => undefined);
     const cleanupFailures: string[] = [];
     await link?.close().catch((cleanupError: unknown) => {
       cleanupFailures.push(`Link: ${formatUnknownError(cleanupError)}`);

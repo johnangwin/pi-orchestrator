@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { IdentifierSchema } from "./config.js";
@@ -105,11 +105,57 @@ export class ReportStore {
   }
 
   async get(id: string): Promise<Report> {
-    IdentifierSchema.parse(id);
-    return ReportSchema.parse(
+    const expected = IdentifierSchema.parse(id);
+    const report = ReportSchema.parse(
       JSON.parse(
-        await readFile(path.join(this.directory, `${id}.json`), "utf8"),
+        await readFile(path.join(this.directory, `${expected}.json`), "utf8"),
       ) as unknown,
+    );
+    if (
+      report.id !== expected ||
+      sha256(report.content) !== (report.content_digest as Digest)
+    ) {
+      throw new OrchestratorError(
+        "invalid_report_store",
+        `Report '${expected}' has invalid identity or content`,
+      );
+    }
+    return report;
+  }
+
+  async list(): Promise<Report[]> {
+    let entries;
+    try {
+      entries = await readdir(this.directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const reports: Report[] = [];
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (entry.name.startsWith(".")) continue;
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        throw new OrchestratorError(
+          "invalid_report_store",
+          `Unexpected Report store entry '${path.join(this.directory, entry.name)}'`,
+        );
+      }
+      const id = entry.name.slice(0, -".json".length);
+      const report = await this.get(id);
+      if (entry.name !== `${report.id}.json`) {
+        throw new OrchestratorError(
+          "invalid_report_store",
+          `Report file '${entry.name}' does not match Report '${report.id}'`,
+        );
+      }
+      reports.push(report);
+    }
+    return reports.sort(
+      (left, right) =>
+        left.created_at.localeCompare(right.created_at) ||
+        left.id.localeCompare(right.id),
     );
   }
 }

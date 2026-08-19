@@ -2,6 +2,7 @@ import { z } from "zod";
 import { IdentifierSchema, type ContextThresholds } from "./config.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { MailboxRouter, type MailboxLink } from "./mailbox.js";
+import { MetricStore, type SessionMetricRecorder } from "./metric.js";
 import type { ResolvedModelRoute } from "./model.js";
 import type { OpenShellClient, OpenShellSandbox } from "./openshell.js";
 import { ProjectionRegistry, type ProjectionInspection } from "./projection.js";
@@ -85,6 +86,8 @@ export interface RecoverSessionOptions {
   readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly briefDigest?: string;
+  readonly metrics?: SessionMetricRecorder;
+  readonly task?: string;
 }
 
 export interface ReplaceSessionOptions {
@@ -142,7 +145,7 @@ export class SessionReconciler {
   readonly mailbox: MailboxRouter;
 
   constructor(
-    store: LifecycleStore,
+    private readonly store: LifecycleStore,
     runId: string,
     private readonly openshell: SessionLifecycleOpenShell,
     readonly projection: ProjectionRegistry,
@@ -398,6 +401,10 @@ export class SessionReconciler {
       ...(options.context ? { context: options.context } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.briefDigest ? { briefDigest: options.briefDigest } : {}),
+      metrics:
+        options.metrics ??
+        new MetricStore(this.store.runDirectory(this.runId), this.runId),
+      ...(options.task ? { task: options.task } : {}),
     });
     try {
       await this.mailbox.attach(recovered);

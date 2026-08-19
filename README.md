@@ -67,6 +67,8 @@ Visible Session lifecycle is now recoverable across host restarts. Run state dur
 
 Context-aware Handoff now completes the disposable-Session lifecycle. Pi emits host-verifiable pressure observations from the configured 60/75/85 percent thresholds and requests replacement on the Handoff crossing; an operator can also use `/orchestrate handoff [reason]`. The host freezes a structured checkpoint Report, compiles a fresh epoch-bound Brief, persists the intent before teardown, and activates the replacement through the existing reconciler. Interrupted launch resumes from that evidence, and a terminated predecessor can be replaced without its transcript while retaining its original failure record.
 
+Project-agnostic Run metrics and reporting are now implemented. The host stores digest-validated observations for model turns, Sandbox startup, Link failure, Message delivery, context pressure, and explicit human interventions, then combines them with authoritative Run, Task, Session, Check, Review, Handoff, Report, Commit, Message, and approval evidence. `orchestrator metrics <run>` produces a current summary; `orchestrator report <run>` atomically publishes immutable JSON and Markdown snapshots under host Run state. Reports contain no transcript data, distinguish unpriced model turns from configured cost estimates, and reserve project-specific retrospective conclusions for the proving run.
+
 An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
 
 Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. The host then validates every changed path against approved Task scope and protected Project patterns, durably prepares the operation, applies it only to the exact isolated Run worktree, and independently verifies the resulting path, content, mode, source, and diff digests. A retry can reconstruct the verified Patch from durable state and its stored Artifact; unexpected worktree content always blocks without repair.
@@ -129,6 +131,8 @@ orchestrator approve strategy-boundary
 orchestrator start strategy-boundary
 orchestrator review strategy-id
 orchestrator commit strategy-id
+orchestrator metrics strategy-boundary-r1
+orchestrator report strategy-boundary-r1
 orchestrator status
 orchestrator doctor
 orchestrator canary
@@ -137,6 +141,8 @@ orchestrator canary
 Runtime state defaults to `~/.local/share/pi-orchestrator` and may be redirected with `ORCHESTRATOR_HOME` or the command-level `--home` option.
 
 `orchestrator start` uses `worktrees.root` from `.pi/orchestrator.local.yaml`, falling back to `<orchestrator-home>/worktrees` when that file is absent. The default Run ID is `<plan-id>-r<revision>`; pass `--run <id>` when a different stable identity is required.
+
+Model cost estimates are optional machine-local configuration. Add a `pricing` object to a model route with `input_per_million`, `output_per_million`, `cache_read_per_million`, and `cache_write_per_million` USD rates. Without an exact configured rate, the turn remains visible and is reported as unpriced rather than assigned an assumed cost.
 
 See [Core Contracts](docs/contracts.md) for the structured formats and digest rules introduced by the standalone implementation.
 See [cmux Integration](docs/cmux.md) for the control-socket and recovery contract.

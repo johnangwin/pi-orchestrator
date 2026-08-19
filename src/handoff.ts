@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+} from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { compileBrief, type BriefInput, type CompiledBrief } from "./brief.js";
@@ -10,6 +17,7 @@ import {
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import type { LinkEventFrame } from "./link.js";
+import { MetricStore, type SessionMetricRecorder } from "./metric.js";
 import { ResolvedModelRouteSchema } from "./model.js";
 import { SourceAnchorSchema } from "./plan.js";
 import type { ProjectionRegistry } from "./projection.js";
@@ -696,6 +704,62 @@ export class HandoffStore {
     }
   }
 
+  async list(): Promise<StoredHandoff[]> {
+    let seatEntries;
+    try {
+      seatEntries = await readdir(this.directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const handoffs: StoredHandoff[] = [];
+    for (const seatEntry of seatEntries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (seatEntry.name.startsWith(".")) continue;
+      if (
+        !seatEntry.isDirectory() ||
+        !IdentifierSchema.safeParse(seatEntry.name).success
+      ) {
+        throw new OrchestratorError(
+          "handoff_store_corrupt",
+          `Unexpected Handoff Seat entry '${path.join(this.directory, seatEntry.name)}'`,
+        );
+      }
+      const seatDirectory = path.join(this.directory, seatEntry.name);
+      const operationEntries = await readdir(seatDirectory, {
+        withFileTypes: true,
+      });
+      for (const operationEntry of operationEntries.sort((left, right) =>
+        left.name.localeCompare(right.name),
+      )) {
+        if (operationEntry.name.startsWith(".")) continue;
+        if (
+          !operationEntry.isDirectory() ||
+          !HandoffIdSchema.safeParse(operationEntry.name).success
+        ) {
+          throw new OrchestratorError(
+            "handoff_store_corrupt",
+            `Unexpected Handoff operation entry '${path.join(seatDirectory, operationEntry.name)}'`,
+          );
+        }
+        const handoff = await this.get(seatEntry.name, operationEntry.name);
+        if (!handoff) {
+          throw new OrchestratorError(
+            "handoff_store_corrupt",
+            `Handoff '${operationEntry.name}' has no durable intent`,
+          );
+        }
+        handoffs.push(handoff);
+      }
+    }
+    return handoffs.sort(
+      (left, right) =>
+        left.intent.created_at.localeCompare(right.intent.created_at) ||
+        left.intent.id.localeCompare(right.intent.id),
+    );
+  }
+
   async complete(requested: HandoffResult): Promise<HandoffResult> {
     const result = validateResult(requested);
     const stored = await this.get(result.seat, result.id);
@@ -777,6 +841,8 @@ export interface HandoffSession extends SessionRuntime {
 export type HandoffSessionLauncher = (input: {
   readonly identity: SessionIdentity;
   readonly brief: CompiledBrief;
+  readonly metrics: SessionMetricRecorder;
+  readonly task?: string;
 }) => Promise<HandoffSession>;
 
 export type HandoffBriefCompiler = (input: {
@@ -1103,6 +1169,10 @@ export async function runHandoff(
   });
   const handoffs = new HandoffStore(options.store.runDirectory(expected.run));
   const reports = new ReportStore(options.store.runDirectory(expected.run));
+  const metrics = new MetricStore(
+    options.store.runDirectory(expected.run),
+    expected.run,
+  );
   let stored = await handoffs.get(expected.seat, identifiers.id);
   let report: Report;
   let brief: CompiledBrief;
@@ -1180,6 +1250,14 @@ export async function runHandoff(
     stored = await handoffs.prepare(intent, brief);
   }
 
+  if (stored.intent.pressure) {
+    await metrics.recordContextPressure({
+      identity: stored.intent.from,
+      pressure: stored.intent.pressure,
+      observedAt: new Date(stored.intent.created_at),
+    });
+  }
+
   if (stored.result) {
     const run = await options.store.readRun(expected.run);
     requireCompletedState(
@@ -1232,6 +1310,9 @@ export async function runHandoff(
         context: launch.context,
         piVersion: launch.pi_version,
         clientVersion: launch.client_version,
+        ...(stored.intent.checkpoint.task
+          ? { task: stored.intent.checkpoint.task }
+          : {}),
         ...(options.policyDirectory
           ? { policyDirectory: options.policyDirectory }
           : {}),
@@ -1254,6 +1335,10 @@ export async function runHandoff(
     const launched = await options.launchSession({
       identity: to,
       brief: stored.brief,
+      metrics,
+      ...(stored.intent.checkpoint.task
+        ? { task: stored.intent.checkpoint.task }
+        : {}),
     });
     try {
       requireRuntimeBinding(launched, stored.intent);

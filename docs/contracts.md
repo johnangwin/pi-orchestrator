@@ -267,6 +267,18 @@ The operation ID and replacement Session ID are deterministic for an exact reque
 
 If a replacement Sandbox is later lost, recovery is a new Handoff from that current epoch, using Reports, source and patch state, and an operator- or host-produced checkpoint. It advances the same Seat to another epoch and never depends on terminal scrollback or the terminated Pi transcript.
 
+## Metrics and Run reports
+
+Metrics are measurements, not workflow authority. The host may store immutable observations for model turns, Sandbox startup, Link failure, Message delivery, context pressure, and explicit human interventions. Every observation has a content-derived identifier and digest, identifies its Run, and binds a Session identity whenever the measurement concerns a Session. Report generation rejects observations for missing or stale Session epochs, unknown Tasks, mismatched model aliases, or Messages with another target or creation time.
+
+Model usage is normalized into input, output, cache-read, cache-write, and total token counts while retaining a digest of the raw provider usage object. Cost is estimated only when the exact model route contains machine-local USD rates per million tokens. A report exposes priced and unpriced turn counts separately; absent pricing never implies zero cost. The declared `local`, `prefer-local`, or `remote` route locality is frozen with each model-turn observation.
+
+A Run metrics snapshot combines validated observations with current Run, Task, and Session state plus every validated Check, Review, Handoff, Report, Commit, Message, and exact Plan approval record. It records wall-clock and aggregate durations, attempts, Review rounds and blocking findings, Handoffs, context pressure, model locality and usage, Sandbox startup, Link failures, Message latency, and human-control actions. Reviews created before observation instrumentation contribute their already-durable model usage without being counted twice when an observation also exists.
+
+The snapshot binds the canonical Run state and a sorted evidence-set digest, then receives its own domain-separated digest. `orchestrator metrics <run>` renders the current snapshot without changing workflow state. `orchestrator report <run>` atomically publishes that snapshot as immutable `report.json` and deterministic `report.md` files under `metrics/reports/<report>/`. Publishing the same snapshot is idempotent; modified JSON, Markdown, evidence, or digests are rejected.
+
+The generated retrospective section states only that human conclusions remain pending. A report cannot satisfy a Gate, declare the proving run successful, or manufacture project-specific retrospective answers. No observation or report contains a Pi transcript.
+
 ## OpenShell lifecycle
 
 The OpenShell adapter validates Sandbox names before launch, disables automatic credential providers, observes remote exit codes without treating expected denial as an infrastructure error, and parses `get` and `list` responses into versioned host types. Creation is followed by an authoritative `get`; JSON output is not requested from `sandbox create` because OpenShell 0.0.106 forbids combining it with an initial command.

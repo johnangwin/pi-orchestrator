@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -36,6 +36,8 @@ describe("host CLI", () => {
     expect(help).toContain("consult [options] <planning>");
     expect(help).toContain("draft [options] <planning>");
     expect(help).toContain("review [options] <task>");
+    expect(help).toContain("metrics [options] <run>");
+    expect(help).toContain("report [options] <run>");
   });
 
   it("validates, approves, and reports a fresh Plan", async () => {
@@ -188,5 +190,51 @@ describe("host CLI", () => {
     expect(status.approvals).toHaveLength(1);
     expect(status.approvals[0]?.fresh).toBe(true);
     expect(status.runs).toMatchObject([{ id: "fixture-run", status: "ready" }]);
+
+    const metrics = JSON.parse(
+      await orchestrator([
+        "metrics",
+        "fixture-run",
+        "--project",
+        project,
+        "--home",
+        home,
+        "--json",
+      ]),
+    ) as {
+      run: { id: string; status: string };
+      tasks: { total: number };
+      human_interventions: { by_action: { approval: number } };
+      metrics_digest: string;
+    };
+    expect(metrics).toMatchObject({
+      run: { id: "fixture-run", status: "ready" },
+      tasks: { total: 1 },
+      human_interventions: { by_action: { approval: 1 } },
+    });
+    expect(metrics.metrics_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+    const report = JSON.parse(
+      await orchestrator([
+        "report",
+        "fixture-run",
+        "--project",
+        project,
+        "--home",
+        home,
+        "--json",
+      ]),
+    ) as {
+      created: boolean;
+      markdown_path: string;
+      report: { run: string; metrics_digest: string };
+    };
+    expect(report).toMatchObject({
+      created: true,
+      report: { run: "fixture-run" },
+    });
+    expect(await readFile(report.markdown_path, "utf8")).toContain(
+      "# Run Report: fixture-run",
+    );
   });
 });

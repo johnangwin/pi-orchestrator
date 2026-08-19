@@ -52,6 +52,17 @@ export type PiModelApi = z.infer<typeof PiModelApiSchema>;
 export const ModelLocalitySchema = z.enum(["local", "prefer-local", "remote"]);
 export type ModelLocality = z.infer<typeof ModelLocalitySchema>;
 
+export const ModelPricingSchema = z
+  .object({
+    currency: z.literal("USD").default("USD"),
+    input_per_million: z.number().finite().nonnegative(),
+    output_per_million: z.number().finite().nonnegative(),
+    cache_read_per_million: z.number().finite().nonnegative().default(0),
+    cache_write_per_million: z.number().finite().nonnegative().default(0),
+  })
+  .strict();
+export type ModelPricing = z.infer<typeof ModelPricingSchema>;
+
 export const LocalModelRouteSchema = z
   .object({
     gateway: z.string().min(1),
@@ -61,6 +72,7 @@ export const LocalModelRouteSchema = z
     context_window: z.number().int().positive(),
     max_tokens: z.number().int().positive(),
     reasoning: z.boolean().default(false),
+    pricing: ModelPricingSchema.optional(),
   })
   .strict()
   .refine((route) => route.max_tokens <= route.context_window, {

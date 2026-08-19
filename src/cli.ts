@@ -39,6 +39,11 @@ import { resolveReviewModelRoute, resolveRoleModelRoute } from "./model.js";
 import { runRequiredReviews } from "./review.js";
 import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
+import {
+  collectRunMetrics,
+  formatRunMetrics,
+  RunReportStore,
+} from "./summary.js";
 import { runPlanSynthesis } from "./synthesis.js";
 
 interface CommonOptions {
@@ -109,6 +114,10 @@ interface ConsultOptions extends CommonOptions {
 
 interface DraftOptions extends CommonOptions {
   readonly config?: string;
+  readonly home?: string;
+}
+
+interface RunOutputOptions extends CommonOptions {
   readonly home?: string;
 }
 
@@ -1122,6 +1131,81 @@ program
         console.log(
           `${result.recovered ? "Recovered" : "Committed"} Task ${taskId} as ${output.commit}`,
         );
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("metrics")
+  .description("summarize validated durable metrics for a Run")
+  .argument("<run>", "Run identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: RunOutputOptions) => {
+    const runId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const metrics = await collectRunMetrics({ store, runId });
+      console.log(
+        options.json
+          ? JSON.stringify(metrics, null, 2)
+          : formatRunMetrics(metrics),
+      );
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("report")
+  .description("publish immutable JSON and Markdown reports for a Run")
+  .argument("<run>", "Run identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: RunOutputOptions) => {
+    const runId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const store = await ProjectStore.open({
+      home: path.resolve(options.home ?? defaultOrchestratorHome()),
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const metrics = await collectRunMetrics({ store, runId });
+      const published = await new RunReportStore(
+        store.runDirectory(runId),
+        runId,
+      ).publish(metrics);
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              created: published.created,
+              directory: published.directory,
+              json_path: published.jsonPath,
+              markdown_path: published.markdownPath,
+              report: published.record,
+            },
+            null,
+            2,
+          ),
+        );
+      } else {
+        console.log(
+          `${published.created ? "Published" : "Reused"} Run report ${published.record.id}`,
+        );
+        console.log(`JSON: ${published.jsonPath}`);
+        console.log(`Markdown: ${published.markdownPath}`);
+        console.log(`\n${published.markdown}`);
       }
     } finally {
       await store.close();

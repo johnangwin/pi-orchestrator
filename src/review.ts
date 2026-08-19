@@ -37,6 +37,7 @@ import { formatUnknownError, OrchestratorError } from "./error.js";
 import { GitCommitSchema } from "./git.js";
 import type { LocalConfig } from "./local.js";
 import { Mailbox, MessageSchema, type MessageLifecycle } from "./message.js";
+import { MetricStore } from "./metric.js";
 import {
   ResolvedModelRouteSchema,
   resolveReviewModelRoute,
@@ -670,6 +671,76 @@ export class ReviewStore {
       found = record;
     }
     return found;
+  }
+
+  async listResults(): Promise<ReviewRecord[]> {
+    let taskEntries;
+    try {
+      taskEntries = await readdir(this.directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const records: ReviewRecord[] = [];
+    for (const taskEntry of taskEntries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (taskEntry.name.startsWith(".")) continue;
+      if (
+        !taskEntry.isDirectory() ||
+        !IdentifierSchema.safeParse(taskEntry.name).success
+      ) {
+        throw new OrchestratorError(
+          "review_store_corrupt",
+          `Unexpected Review Task entry '${path.join(this.directory, taskEntry.name)}'`,
+        );
+      }
+      const taskDirectory = path.join(this.directory, taskEntry.name);
+      const lensEntries = await readdir(taskDirectory, {
+        withFileTypes: true,
+      });
+      for (const lensEntry of lensEntries.sort((left, right) =>
+        left.name.localeCompare(right.name),
+      )) {
+        if (lensEntry.name.startsWith(".")) continue;
+        const parsedLens = ReviewLensSchema.safeParse(lensEntry.name);
+        if (!lensEntry.isDirectory() || !parsedLens.success) {
+          throw new OrchestratorError(
+            "review_store_corrupt",
+            `Unexpected Review Lens entry '${path.join(taskDirectory, lensEntry.name)}'`,
+          );
+        }
+        const lensDirectory = path.join(taskDirectory, lensEntry.name);
+        const jobEntries = await readdir(lensDirectory, {
+          withFileTypes: true,
+        });
+        for (const jobEntry of jobEntries.sort((left, right) =>
+          left.name.localeCompare(right.name),
+        )) {
+          if (jobEntry.name.startsWith(".")) continue;
+          if (
+            !jobEntry.isDirectory() ||
+            !ReviewJobIdSchema.safeParse(jobEntry.name).success
+          ) {
+            throw new OrchestratorError(
+              "review_store_corrupt",
+              `Unexpected Review job entry '${path.join(lensDirectory, jobEntry.name)}'`,
+            );
+          }
+          const record = await this.getResult(
+            taskEntry.name,
+            parsedLens.data,
+            jobEntry.name,
+          );
+          if (record) records.push(record);
+        }
+      }
+    }
+    return records.sort(
+      (left, right) =>
+        left.started_at.localeCompare(right.started_at) ||
+        left.id.localeCompare(right.id),
+    );
   }
 
   async findIntentByDigest(
@@ -1628,6 +1699,10 @@ export async function runReview(
     requireSourceChecks(source, checks);
     const reviews = new ReviewStore(options.store.runDirectory(initialRun.id));
     const mailbox = new Mailbox(options.store.runDirectory(initialRun.id));
+    const metrics = new MetricStore(
+      options.store.runDirectory(initialRun.id),
+      initialRun.id,
+    );
     const registry = new SeatRegistry(options.store, initialRun.id, now);
     const existingGate = taskState.gates[gateKey(lens)];
     if (
@@ -1838,6 +1913,9 @@ export async function runReview(
         brief,
         context: current.project.config.context,
         inputs: [patchInput],
+        metrics,
+        task: task.id,
+        now,
         policyDirectory,
         ...(options.imageContext ? { imageContext: options.imageContext } : {}),
         ...(options.startupTimeoutMs

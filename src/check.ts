@@ -1016,6 +1016,78 @@ export class CheckStore {
     return found;
   }
 
+  async listResults(): Promise<CheckRecord[]> {
+    let taskEntries;
+    try {
+      taskEntries = await readdir(this.directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const records: CheckRecord[] = [];
+    for (const taskEntry of taskEntries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (taskEntry.name.startsWith(".")) continue;
+      if (
+        !taskEntry.isDirectory() ||
+        !IdentifierSchema.safeParse(taskEntry.name).success
+      ) {
+        throw new OrchestratorError(
+          "check_store_corrupt",
+          `Unexpected Check Task entry '${path.join(this.directory, taskEntry.name)}'`,
+        );
+      }
+      const taskDirectory = path.join(this.directory, taskEntry.name);
+      const checkEntries = await readdir(taskDirectory, {
+        withFileTypes: true,
+      });
+      for (const checkEntry of checkEntries.sort((left, right) =>
+        left.name.localeCompare(right.name),
+      )) {
+        if (checkEntry.name.startsWith(".")) continue;
+        if (
+          !checkEntry.isDirectory() ||
+          !IdentifierSchema.safeParse(checkEntry.name).success
+        ) {
+          throw new OrchestratorError(
+            "check_store_corrupt",
+            `Unexpected Check entry '${path.join(taskDirectory, checkEntry.name)}'`,
+          );
+        }
+        const jobDirectory = path.join(taskDirectory, checkEntry.name);
+        const jobEntries = await readdir(jobDirectory, {
+          withFileTypes: true,
+        });
+        for (const jobEntry of jobEntries.sort((left, right) =>
+          left.name.localeCompare(right.name),
+        )) {
+          if (jobEntry.name.startsWith(".")) continue;
+          if (
+            !jobEntry.isDirectory() ||
+            !CheckJobIdSchema.safeParse(jobEntry.name).success
+          ) {
+            throw new OrchestratorError(
+              "check_store_corrupt",
+              `Unexpected Check job entry '${path.join(jobDirectory, jobEntry.name)}'`,
+            );
+          }
+          const record = await this.getResult(
+            taskEntry.name,
+            checkEntry.name,
+            jobEntry.name,
+          );
+          if (record) records.push(record);
+        }
+      }
+    }
+    return records.sort(
+      (left, right) =>
+        left.started_at.localeCompare(right.started_at) ||
+        left.id.localeCompare(right.id),
+    );
+  }
+
   async putResult(options: {
     readonly intent: CheckIntent;
     readonly record: CheckRecord;

@@ -571,6 +571,52 @@ export class CommitStore {
     return found;
   }
 
+  async listResults(): Promise<CommitRecord[]> {
+    let taskEntries;
+    try {
+      taskEntries = await readdir(this.directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const records: CommitRecord[] = [];
+    for (const taskEntry of taskEntries.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (taskEntry.name.startsWith(".")) continue;
+      if (
+        !taskEntry.isDirectory() ||
+        !IdentifierSchema.safeParse(taskEntry.name).success
+      ) {
+        throw new OrchestratorError(
+          "commit_store_corrupt",
+          `Unexpected Commit Task entry '${path.join(this.directory, taskEntry.name)}'`,
+        );
+      }
+      for (const jobEntry of (await this.entries(taskEntry.name)).sort(
+        (left, right) => left.name.localeCompare(right.name),
+      )) {
+        if (jobEntry.name.startsWith(".")) continue;
+        if (
+          !jobEntry.isDirectory() ||
+          !CommitJobIdSchema.safeParse(jobEntry.name).success
+        ) {
+          throw new OrchestratorError(
+            "commit_store_corrupt",
+            `Unexpected Commit job entry '${path.join(this.directory, taskEntry.name, jobEntry.name)}'`,
+          );
+        }
+        const record = await this.getResult(taskEntry.name, jobEntry.name);
+        if (record) records.push(record);
+      }
+    }
+    return records.sort(
+      (left, right) =>
+        left.recorded_at.localeCompare(right.recorded_at) ||
+        left.id.localeCompare(right.id),
+    );
+  }
+
   async putResult(
     intent: CommitIntent,
     requested: CommitRecord,

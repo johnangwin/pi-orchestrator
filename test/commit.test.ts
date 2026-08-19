@@ -226,10 +226,13 @@ describe("human-authorized Task commit", { timeout: 15_000 }, () => {
       "complete",
     );
 
-    const stored = await new CommitStore(
-      fixture.store.runDirectory(fixture.runId),
-    ).findResultByDigest(fixture.task.id, first.record.record_digest);
+    const commits = new CommitStore(fixture.store.runDirectory(fixture.runId));
+    const stored = await commits.findResultByDigest(
+      fixture.task.id,
+      first.record.record_digest,
+    );
     expect(stored).toEqual(first.record);
+    await expect(commits.listResults()).resolves.toEqual([first.record]);
   });
 
   it("recovers when Git succeeds before Commit evidence is published", async () => {

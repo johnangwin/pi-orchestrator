@@ -7,6 +7,7 @@ import {
   type Message,
   type StoredMessage,
 } from "./message.js";
+import { MetricStore } from "./metric.js";
 import { SeatRegistry } from "./registry.js";
 import {
   sameSessionIdentity,
@@ -34,6 +35,11 @@ export interface MailboxLink {
 export interface MailboxDelivery {
   readonly stored: StoredMessage;
   readonly acknowledgement: MailboxAcknowledgement | null;
+}
+
+export interface MailboxRouterOptions {
+  readonly metrics?: Pick<MetricStore, "recordMessageDelivery">;
+  readonly now?: () => Date;
 }
 
 function terminal(session: SessionRecord): boolean {
@@ -74,16 +80,23 @@ export class MailboxRouter {
   readonly runId: string;
   readonly mailbox: Mailbox;
   private readonly registry: SeatRegistry;
+  private readonly metrics: Pick<MetricStore, "recordMessageDelivery">;
+  private readonly now: () => Date;
   private readonly links = new Map<string, MailboxLink>();
   private operationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly store: MailboxProjectStore,
     runId: string,
+    options: MailboxRouterOptions = {},
   ) {
     this.runId = IdentifierSchema.parse(runId);
     this.mailbox = new Mailbox(store.runDirectory(this.runId));
     this.registry = new SeatRegistry(store, this.runId);
+    this.metrics =
+      options.metrics ??
+      new MetricStore(store.runDirectory(this.runId), this.runId);
+    this.now = options.now ?? (() => new Date());
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -298,6 +311,14 @@ export class MailboxRouter {
       this.removeLink(link);
       throw error;
     }
+    const acknowledgedAt = this.now();
+    await this.metrics.recordMessageDelivery({
+      identity,
+      message: stored.message.id,
+      acknowledgement,
+      messageCreatedAt: new Date(stored.message.created_at),
+      acknowledgedAt,
+    });
     const queued = await this.mailbox.move(
       stored.message.id,
       "pending",

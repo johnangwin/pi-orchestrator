@@ -45,4 +45,5 @@
 - independent criticism and Lead Plan synthesis (implementation complete; Stepout exercise pending)
 - all required Review Lenses (implementation complete; Stepout exercise pending)
 - Handoff and terminated-Session recovery (implementation complete; Stepout exercise pending)
-- metrics and retrospective
+- project-agnostic Run metrics and reporting (implementation complete; Stepout exercise pending)
+- Stepout proving-run retrospective (pending)

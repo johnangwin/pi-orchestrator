@@ -9,6 +9,7 @@ import {
   type MailboxLink,
 } from "../src/mailbox.js";
 import { MessageSchema, type Message } from "../src/message.js";
+import { MetricStore } from "../src/metric.js";
 import { SeatRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
@@ -99,7 +100,9 @@ describe("durable Mailbox routing", () => {
     const { store, registry, identity } = await setup();
     try {
       const delivered: Message[] = [];
-      const router = new MailboxRouter(store, "run-one");
+      const router = new MailboxRouter(store, "run-one", {
+        now: () => new Date("2026-08-18T12:01:02.000Z"),
+      });
       await expect(
         router.attach(
           link(identity, (value) => {
@@ -122,6 +125,18 @@ describe("durable Mailbox routing", () => {
       expect(delivered).toEqual([result.stored.message]);
       expect(await router.mailbox.list("answered")).toEqual([]);
       expect((await registry.get("lead")).session?.status).toBe("active");
+      await expect(
+        new MetricStore(store.runDirectory("run-one"), "run-one").list(),
+      ).resolves.toMatchObject([
+        {
+          metric: {
+            kind: "message-delivery",
+            message: "msg-one",
+            acknowledgement: "queued",
+            latency_ms: 2_000,
+          },
+        },
+      ]);
     } finally {
       await store.close();
     }

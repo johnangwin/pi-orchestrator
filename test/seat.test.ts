@@ -1,5 +1,6 @@
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPreparedPatch } from "../src/apply.js";
@@ -7,6 +8,7 @@ import { ArtifactStore } from "../src/artifact.js";
 import { createCheckSource } from "../src/check.js";
 import { digestParts, sha256 } from "../src/digest.js";
 import { MessageSchema } from "../src/message.js";
+import { MetricStore } from "../src/metric.js";
 import type {
   OpenShellForward,
   OpenShellPreflight,
@@ -787,6 +789,11 @@ describe("read Session bootstrap", () => {
     };
 
     let session: Awaited<ReturnType<typeof startReadSession>> | undefined;
+    const metricRoot = await mkdtemp(
+      path.join(os.tmpdir(), "pi-seat-metrics-"),
+    );
+    roots.push(metricRoot);
+    const metrics = new MetricStore(metricRoot, "run-one");
     try {
       session = await startReadSession({
         client,
@@ -801,6 +808,7 @@ describe("read Session bootstrap", () => {
         brief,
         linkPort: port,
         sandboxName: "pio-read-test",
+        metrics,
       });
       expect(session.info.model).toEqual(model);
       expect(session.info.briefDigest).toBe(brief.digest);
@@ -822,6 +830,10 @@ describe("read Session bootstrap", () => {
         model_alias: "fast",
         text: "bounded result",
       });
+      expect((await metrics.list()).map((item) => item.metric.kind)).toEqual([
+        "sandbox-startup",
+        "model-turn",
+      ]);
     } finally {
       await session?.stop();
       await snapshot.dispose();

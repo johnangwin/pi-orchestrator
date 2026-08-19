@@ -262,6 +262,13 @@ models:
     context_window: 200000
     max_tokens: 16384
     reasoning: true
+    # Optional host-side USD estimates per million tokens:
+    # pricing:
+    #   currency: USD
+    #   input_per_million: 0
+    #   output_per_million: 0
+    #   cache_read_per_million: 0
+    #   cache_write_per_million: 0
 
   code:
     gateway: code

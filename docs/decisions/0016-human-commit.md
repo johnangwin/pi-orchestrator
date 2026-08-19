@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0028](0028-candidate-gates.md)
 
 ## Context
 

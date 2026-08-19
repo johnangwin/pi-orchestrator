@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0024](0024-pi-first-supervisor.md)
 
 ## Context
 

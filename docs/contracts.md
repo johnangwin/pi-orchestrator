@@ -1,111 +1,600 @@
 # Core Contracts
 
-This document records implementation details that the v0.2 draft left implicit. They are versioned contracts, not serialization conveniences.
+- **Contract version:** 2
+- **Architecture:** Pi Orchestrator v0.3
+- **Implementation status:** Migration in progress; see [Roadmap](roadmap.md)
 
-## Project identity
+These are the authoritative public contracts for v0.3. They describe durable concepts and authority boundaries, not a promise that every internal record is stored as one JSON object. The filesystem remains the version-zero State Store implementation.
 
-`.agents/orchestrator.yaml` contains a stable committed Project ID:
+## 1. Compatibility and authority
+
+The v0.3 runtime reads and writes schema version 2. An unfinished version-one Run or planning operation is rejected with an explicit unsupported-state diagnostic. It is not migrated, resumed, or mutated automatically.
+
+Only the trusted host Supervisor may:
+
+- mutate authoritative Project, planning, Run, Task, Agent, Session, Gate, or Mailbox state;
+- create, bind, or delete OpenShell Sandboxes;
+- create or mutate cmux projections;
+- grant a Write Lease;
+- publish a Plan;
+- operate host Git;
+- accept Check or Review evidence;
+- record human approval, a waiver, discard, or commit.
+
+A Pi extension or model may make a typed request. Its output is untrusted input until the Supervisor validates it against current durable state. A transcript, pane, Sandbox-local file, or model assertion is never authoritative.
+
+The defining continuity invariant remains:
+
+> No Session transcript is a required dependency of another Session.
+
+## 2. Identifiers and encoding
+
+Identifiers are lowercase ASCII strings matching:
+
+```text
+^[a-z0-9][a-z0-9-]{0,62}$
+```
+
+Project, Plan, Run, Task, Agent, Session, Message, Report, Check job, Review, Handoff, Change Set, Candidate, and Artifact IDs are stable within their owning namespace. A Session generation is a positive integer. Reusing an ID for different content or provenance is rejected.
+
+Timestamps are UTC RFC 3339 strings with second or finer precision. Git object IDs are full lowercase hexadecimal IDs returned by the repository's object format. Content digests use:
+
+```text
+sha256:<64 lowercase hexadecimal characters>
+```
+
+Structured digest input uses canonical UTF-8 JSON:
+
+- object keys are lexicographically sorted;
+- arrays retain semantic order;
+- numbers are finite JSON numbers;
+- absent optional fields are omitted rather than encoded as `undefined`;
+- no insignificant whitespace is emitted.
+
+`digestParts(domain, parts)` hashes a length-framed byte stream. The domain, each part name, and each part value are independently prefixed by an unsigned 64-bit big-endian byte length. Unless a section states otherwise, a self-digested record hashes canonical JSON of every field except its own digest under one `record` part.
+
+## 3. Project configuration
+
+Committed `.agents/orchestrator.yaml` uses version 2:
 
 ```yaml
-version: 1
+version: 2
 
 project:
-  id: stepout
+  id: price-calculator
+
+roles:
+  - lead
+  - researcher
+  - planner
+  - implementer
+  - reviewer
+
+routing:
+  roles:
+    lead:
+      default: frontier-lead
+      allowed:
+        - frontier-lead
+        - local-reasoning
+      remote: allowed
+
+    implementer:
+      default: local-code
+      allowed:
+        - local-code
+      remote: denied
+
+    reviewer:
+      default: independent-review
+      allowed:
+        - independent-review
+        - quant-reasoner
+      focuses:
+        quant: quant-reasoner
+      remote: allowed
+
+context:
+  initial_fraction: 0.25
+  warn_fraction: 0.60
+  handoff_fraction: 0.75
+  stop_fraction: 0.85
+
+attempts:
+  implementation: 3
+  review: 2
+  consultation_hops: 2
+
+git:
+  branch_prefix: orchestrator/
+  commit: human
+  push: disabled
+  merge: disabled
+
+network:
+  default: none
+
+protected:
+  - AGENTS.md
+  - .agents/**
+  - .pi/**
+  - .github/**
+  - docs/plans/**
+  - "**/.env*"
+  - "**/*secret*"
+
+restricted_paths:
+  - .env
+  - secrets/**
+
+checks:
+  test:
+    argv:
+      - node
+      - --test
 ```
 
-Runtime state is stored under `$ORCHESTRATOR_HOME/projects/<project-id>/`. A runtime Project ID is bound to one canonical host checkout path. A conflicting checkout cannot silently take over its state.
+The Project file contains policy and logical Model Profile names. It contains no provider credential, host path, gateway address, or concrete machine identity.
 
-## Plan identity
+`protected` prevents an implementation result. `restricted_paths` prevents Sandbox visibility and mutation. Machine-local restrictions are additive and cannot remove committed restrictions. Task scope never overrides either list.
 
-`tasks.yaml` carries the Plan ID and revision explicitly:
+Unknown fields fail validation. Duplicate Role, Model Profile, Check, or path-policy entries fail validation. Fractions are finite, ordered, and within zero and one. Attempt counts and hop limits are bounded positive integers.
+
+## 4. Machine-local configuration
+
+Ignored `.pi/orchestrator.local.yaml` uses version 2:
 
 ```yaml
-version: 1
+version: 2
 
-plan:
-  id: strategy-boundary
-  revision: 1
+openshell:
+  gateways:
+    frontier: openshell-frontier
+    local: openshell-local
+    review: openshell-review
+    check: openshell-check
 
-tasks: []
+  images:
+    pi: pi-orchestrator-pi@sha256:<digest>
+    check: pi-orchestrator-check@sha256:<digest>
+
+  policies:
+    read: sandbox/policies/read.yaml
+    write: sandbox/policies/write.yaml
+    check: sandbox/policies/check.yaml
+
+  direct_mounts:
+    acknowledged: true
+    allowed_worktree_roots:
+      - ~/.local/share/pi-orchestrator/worktrees
+    sentinel_path: ~/.local/share/pi-orchestrator/mount-sentinel
+
+models:
+  frontier-lead:
+    gateway: frontier
+    pi_model: gpt-5.6-sol
+    api: openai-responses
+    locality: remote
+    context_window: 200000
+    max_tokens: 32000
+
+  local-code:
+    gateway: local
+    pi_model: qwen-local-code
+    api: openai-completions
+    locality: local
+    context_window: 131072
+    max_tokens: 16384
+
+cmux:
+  command: cmux
+  workspace_prefix: orchestrator
+
+worktrees:
+  root: ~/.local/share/pi-orchestrator/worktrees
 ```
 
-The Plan directory name MUST equal `plan.id`. A material revision increments `plan.revision`.
+Model Profile names are Project-defined identifiers, not a fixed enum. Every referenced profile resolves to one exact gateway, concrete model, API shape, locality, context window, and output limit. Optional reasoning and token-pricing metadata becomes part of the resolved route when present.
 
-## Plan digest
+The selected gateway's observed OpenShell identity and active inference route must match the resolved route before Session creation. A missing profile, route mismatch, policy mismatch, remote profile for a local-only Role, or unapproved local-to-remote change fails closed. There is no implicit provider, gateway, model, or locality fallback.
 
-The Plan digest is SHA-256 with domain separation and length framing over the raw bytes of:
+The file may contain operator paths and non-secret routing metadata. Production secrets are forbidden. Provider credentials remain in the OpenShell gateway.
 
-1. `plan.md`
-2. `tasks.yaml`
+## 5. Role contract
 
-The domain is `pi-orchestrator/plan/v1`. Names and contents are each prefixed by an unsigned 64-bit big-endian byte length. Therefore any byte change to either file invalidates approval, including comments or formatting.
+One `.agents/roles/<role>.md` defines one Role. Its YAML frontmatter uses:
 
-## Approval
+```yaml
+---
+version: 2
+name: implementer
+description: Implement one approved Task.
+skills:
+  - development
+lifetime: task
+needs:
+  - task
+  - plan
+  - decisions
+  - dependencies
+  - scope
+  - checks
 
-An approval records:
+permissions:
+  source: read
+  write_lease: task
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+    - write
+    - edit
+  actions:
+    - message
+    - consult
+    - report
+    - handoff
+    - block
+    - finish
+---
+```
 
-- Plan ID
-- Plan revision
-- Plan digest
-- base commit
-- approving local user
-- timestamp
+Allowed lifetimes are `run`, `design`, `task`, `review`, and `query`. Source permission is `none` or `read`. Write Lease permission is `never` or `task`. Pi tools and actions come from closed registries; unknown values fail validation. Omitted authority is denied.
 
-Approval freshness is computed against current authoritative inputs. Missing or stale approval prevents writable work.
+Role files do not contain `model`, `access`, or `sandbox`. Skills and the Markdown body guide behavior but cannot grant authority.
 
-## Repository-aware planning
+The permission ceiling is the intersection of:
 
-Planning precedes Plan approval and therefore does not create an implementation Run. Host evidence is stored under `$ORCHESTRATOR_HOME/projects/<project-id>/planning/<planning-id>/` while the Project's single-writer lease is held. The planning identifier occupies the Link protocol's required `run` correlation field for its disposable model turn, but it does not identify a `RunState`, branch, worktree, Task graph, or approval.
+```text
+hard host ceiling
+machine-local policy
+Role permissions
+Task or Review assignment
+current Run state
+```
 
-`orchestrator plan <goal>` requires a clean tracked and untracked checkout. It snapshots all tracked files from the exact current commit without `.git` or untracked content and starts a fresh Lead Session under the final `read` policy. The compiled Brief binds the goal, Project instructions, Role, Skills, source commit and digest, Session identity, and a strict output contract. Supporting Skill content that exceeds the initial context fraction is explicitly omitted rather than truncated.
+The static intersection excluding current Run state is frozen as `permission_ceiling_digest`. Dynamic state is re-evaluated for every request. A permission expansion requires trusted human approval and a new Session generation.
 
-A questionnaire result is one JSON object with repository observations, real tracked-file anchors, assumptions, and at most five material questions. Every question has two to four unique options, an explanation of their main tradeoffs, one valid recommendation, and free-form support. The host rejects unknown anchors, malformed choices, extra prose, truncated output, or mismatched Session and model evidence.
+## 6. Plan and Task contract
 
-The immutable questionnaire record binds its request, goal, commit, source, Role, model route, read policy, Brief, Session, Sandbox, final response, and model-turn metadata. Only the final structured response is stored; the Session transcript remains disposable. Repeating the exact command reuses that record.
+Plans remain committed Project knowledge:
 
-`orchestrator answer <planning-id>` requires all question IDs and rejects extras. Each option selection or free-form response is stored as an individual self-digested Decision record bound to the questionnaire and question. Planning becomes `answered` only after every Decision exists and revalidates. An interrupted retry can reuse identical Decision files but cannot replace an accepted answer. A dirty checkout or changed commit makes the planning evidence stale.
+```text
+docs/plans/<plan-id>/plan.md
+docs/plans/<plan-id>/tasks.yaml
+```
 
-`orchestrator consult <planning-id>` requires that answered state and revalidates the same clean commit, full tracked-source manifest, questionnaire, and Decision records. It runs fresh read-only Architect and Quant Sessions through their independently resolved Role routes. Both Briefs contain the exact goal, questionnaire, Decisions, source identity, Role, Skills, and output contract; neither contains a transcript or the other consultation's result.
+`plan.md` contains:
 
-Architecture must return current constraints, one conservative alternative, one target alternative, a recommendation, risks, real source anchors, and unresolved questions. Quant must return applicability, evidence, definitions and units, assumptions, analyses, risks, required verification, real source anchors, and unresolved questions. `applicability: none` still requires evidence and at least one verification action. Unknown anchors, malformed output, truncation, route drift, policy drift, or source drift fail closed.
+```text
+Context
+Goal
+Non-goals
+Current structure
+Proposed direction
+Architecture
+Quantitative implications
+Risks
+Open questions
+```
 
-Planning state records monotonic attempts plus current request, evidence-record, and Report digests separately for `architecture` and `quant`. The first attempt moves planning to `consulting`; only two validated Reports move it to `consulted`. Requests, Briefs, raw final structured responses, model-turn evidence, Sandbox provenance, and rendered consultation Reports are immutable host files. Exact completed work is reused, an output stored before state publication is adopted, and a failed Role advances to a fresh Session attempt without changing the other Role's Report.
+`tasks.yaml` uses version 2:
 
-`orchestrator draft <planning-id>` first revalidates both frozen consultation Reports, then runs a fresh independent critic through the `reviewer` Role and its default review route. The critic receives the questionnaire, Decisions, Architecture and Quant Reports, exact source identity, and a strict structured output contract. It receives no planning transcript or future Lead output. Its verdict is `accept` only when it has no blocking findings; every blocking finding has a stable identifier, source evidence, and required correction.
+```yaml
+version: 2
 
-After the critic Report is frozen, a fresh Lead Session receives the same durable planning inputs plus that Report and the configured Role and Check catalog. It emits one structured Plan candidate. The host validates the exact required `plan.md` sections, Plan ID and revision, Task graph, Roles, Checks, source scopes, acceptance criteria, and Review Lenses. Every Task must require Spec, Architecture, and Quality Reviews; material Quant consultation also requires a Quant Review. Lead output must resolve every blocking critic finding exactly once.
+plan:
+  id: discount-support
+  revision: 1
 
-Critique and synthesis use separate monotonic attempts and transition planning through `criticizing`, `criticized`, `synthesizing`, and `drafted`. A failed stage gets a fresh Session while completed upstream Reports remain frozen. Requests, Briefs, structured responses, model-turn evidence, Sandbox provenance, Reports, and a self-digested draft manifest are immutable. The manifest binds the resulting Plan digest and exact source, questionnaire, consultation, critique, and file digests.
+tasks:
+  - id: discount-calculation
+    title: Add integer percentage discounts
+    role: implementer
+    depends: []
+    goal: Apply a validated percentage discount to integer-cent prices.
+    write_paths:
+      - src
+      - test
+    scope:
+      - src/**
+      - test/**
+    non_goals:
+      - Add floating-point currency calculations.
+    acceptance:
+      - Existing price calculations remain unchanged without a discount.
+    checks:
+      - test
+    reviews:
+      - spec
+      - architecture
+      - quality
+      - quant
+```
 
-Validated drafts are staged under `$ORCHESTRATOR_HOME/projects/<project-id>/planning/<planning-id>/draft/<plan-id>/`. They remain outside the Project and are not approved automatically. `draft` never mutates the repository, creates a Run, or satisfies a human Gate. Repeating the command revalidates and reuses exact completed evidence; changed source, policy, Role, route, Brief, record, Report, or draft bytes fail closed.
+Plan IDs equal their directory name. Task IDs are stable and descriptive. Dependencies form an acyclic graph. Roles, Skills, Checks, Review Focuses, and Model Profile policy must resolve. Every Task requires Spec, Architecture, and Quality Reviews; Quant is required when accepted planning evidence declares material quantitative impact.
 
-## Task provenance
+`write_paths` are canonical literal repository-relative paths. They must be covered by semantic `scope`, must not overlap protected or restricted paths, and must not contain traversal, glob syntax, empty segments, or absolute paths. `scope` is the post-work outcome boundary, not mount authority.
 
-Each runtime Task has fields for:
+The Plan digest uses domain `pi-orchestrator/plan/v2` and ordered raw-byte parts:
 
-- `input_commit`
-- `input_source_digest`
-- `output_source_digest`
-- `diff_digest`
+```text
+plan.md       exact plan.md bytes
+tasks.yaml    exact tasks.yaml bytes
+```
 
-The Run remains bound to its originally approved base commit. After a Task is committed, its commit becomes the input commit of the next writable Task. Checks and Reviews will bind to the individual Task transition rather than the accumulated Run diff.
+Any byte change invalidates approval.
 
-## Atomic state
+## 7. Planning and Plan publication
 
-Authoritative JSON replacement uses this sequence:
+Planning starts from a clean exact commit and one clean detached planning worktree outside the primary checkout. Planning Agents receive the same worktree read-only with Git metadata and restricted paths masked. Planning output remains an immutable host Artifact until publication.
 
-1. create a same-directory temporary file with exclusive creation;
-2. write complete JSON;
-3. flush the file;
-4. run any schema-specific validation before calling the writer;
-5. rename over the destination;
-6. flush the parent directory.
+Questionnaires, Decisions, independent Architecture and Quant consultations, criticism, and Lead synthesis retain the v0.2 evidence and transcript-isolation rules. Every result binds the exact planning commit, Workspace manifest, Role, permission ceiling, Model Profile, resolved route, policy, image, Brief, Session identity, and upstream durable records.
 
-A per-Project advisory lease prevents concurrent host writers. A future long-running host service will hold this lease while CLI clients communicate through its local control socket.
+Publication creates or recovers the reserved Run branch and worktree from the planning commit, writes only validated Plan files, and presents the exact Plan, Git diff, one-line subject, and proposal digest in a transient trusted cmux pane. One human confirmation may authorize both the Plan commit and approval only when both bind to identical bytes.
 
-## Messages
+Approval records:
 
-One immutable JSON file represents one Message. Its containing directory is its delivery state:
+```text
+Plan ID and revision
+Plan digest
+planning commit
+published Plan commit
+publication proposal and intent digests
+approving local user
+confirmation timestamp
+permission-policy digest
+routing-policy digest
+```
+
+An already committed human Plan may omit publication evidence but must satisfy every other validation and approval binding. A material Plan, permission, routing-egress, Task-scope, or write-root change pauses affected work and requires fresh approval.
+
+## 8. State Store and atomicity
+
+Runtime state remains outside the Project and is never mounted into a Sandbox:
+
+```text
+$ORCHESTRATOR_HOME/projects/<project-id>/
+  project.json
+  planning/<planning-id>/
+  runs/<run-id>/
+    state.json
+    events.jsonl
+    messages/<lifecycle>/
+    briefs/
+    reports/
+    checks/
+    reviews/
+    decisions/
+    handoffs/
+    changes/
+    candidates/
+    commits/
+    metrics/
+    artifacts/
+```
+
+One Supervisor owns a per-Project advisory lock and host-local control socket. CLI clients never edit state files directly.
+
+Authoritative JSON replacement uses:
+
+1. same-directory temporary file with exclusive creation;
+2. complete write;
+3. file flush;
+4. schema and invariant validation;
+5. atomic rename over the target;
+6. parent-directory flush.
+
+Immutable records publish through same-filesystem staging and atomic rename. Lifecycle movement uses atomic rename between sibling directories. `events.jsonl` is append-only audit data and is not required to reconstruct current state.
+
+## 9. Run, Workspace, and Task state
+
+Run states are:
+
+```text
+ready
+active
+paused
+blocked
+complete
+stopped
+```
+
+Task states are:
+
+```text
+pending
+ready
+active
+checking
+reviewing
+rework
+blocked
+accepted
+skipped
+cancelled
+```
+
+Gate states are:
+
+```text
+pending
+pass
+fail
+stale
+waived
+```
+
+A Run owns one branch and linked worktree outside the primary checkout. The Workspace record contains:
+
+```text
+canonical path
+full branch ref
+repository common-directory identity
+approved base commit
+current HEAD
+phase: stable | mutating | candidate
+monotonic generation
+current manifest digest
+current host-diff digest
+active Write Lease ID, if any
+current Candidate ID, if any
+```
+
+The Project checkout, Run Workspace, and worktree root are canonicalized with symlink-aware containment checks. The Supervisor never resets, cleans, stashes, removes, rehomes, or adopts unexpected content.
+
+Task runtime state contains its input commit and Workspace generation, implementation and Review attempts, assigned Agent, Change Set IDs, Candidate ID, required Gate records, output commit, and blocker. A Task may enter `checking` only with a frozen Candidate and may become `accepted` only through a passing human Commit Gate.
+
+## 10. Workspace manifests and direct projection
+
+A stable Workspace manifest includes every bounded entry below the Run worktree except `.git`, including tracked, untracked, and ignored entries. The walker uses `lstat`, does not traverse symlinks, and sorts paths by raw UTF-8 byte order.
+
+Each entry records:
+
+```text
+relative path
+type: directory | regular | executable | symlink
+byte count
+content SHA-256 for regular and executable files
+link-target bytes and SHA-256 for symlinks
+```
+
+Special files, invalid UTF-8 paths, traversal, unsafe symlinks, unexpected multiple hard links, changing reads, excessive entries, or excessive bytes fail closed. Git status is collected separately with a scrubbed NUL-delimited porcelain command. The host validates the linked-worktree `.git` entry and common directory but never includes Git metadata in source digests.
+
+Every model Sandbox mount table must prove:
+
+```text
+Run Workspace                 /workspace/project     read-only
+current Task write roots      same nested paths      read-write only for Lease holder
+.git mask                     nested path            opaque and read-only
+restricted-path masks         nested paths           opaque and read-only or absent
+Session home and output       private paths          read-write
+```
+
+The root mount is never writable. Nested write mounts exist only for one current Write Lease. Read-only Agents may observe a mutating Workspace, but no source-bound durable conclusion is accepted until the next stable generation.
+
+Direct mounts require explicit machine-local acknowledgement, an allowed canonical worktree root, a dedicated local gateway, and a passing canary for the exact OpenShell, driver, image, and policy versions. Missing enforcement prevents Session launch.
+
+## 11. Agents, Sessions, and Sandboxes
+
+Agent states are:
+
+```text
+dormant
+active
+waiting
+blocked
+stopped
+```
+
+Session states are:
+
+```text
+starting
+active
+disconnected
+waiting
+stopped
+failed
+```
+
+An Agent record contains:
+
+```text
+Agent ID
+Role
+selected Model Profile
+status
+assigned Task or Review
+current Session ID and generation
+Mailbox counts
+cmux pane binding, if any
+```
+
+A Session record contains:
+
+```text
+Run, Agent, Session, and generation
+predecessor and replacement reason, when applicable
+status, timestamps, and terminal reason
+permission-ceiling digest
+selected Model Profile
+resolved-route digest and exact route metadata
+Brief digest
+source Workspace generation and digest
+policy, image, Pi, client, OpenShell, and mount-table digests
+Sandbox UUID, name, workspace, and gateway identity
+Connection and cmux bindings, when active
+```
+
+A dormant Agent has generation zero and no Session. Its first Session is generation one. Session history is contiguous, only the current Session may be nonterminal, and Sandbox provenance binds once. Starting or replacing a Session requires a caller-selected stable Session ID so an identical retry is idempotent and a competing stale request fails.
+
+Every child process receives an allowlisted environment. Host home, state, Git metadata, OpenShell control authority, Docker socket, SSH agent, cloud or production credentials, and unrelated API keys are absent. Inference uses only the selected gateway's `inference.local` route and proxy configuration without exposing provider credentials.
+
+## 12. Write Lease, Change Set, and Candidate
+
+Only one Write Lease may exist in a Run. Its immutable record contains:
+
+```text
+Run, Plan, and Task identity
+Agent, Session, and generation
+Workspace generation and baseline manifest digest
+literal write roots
+semantic scope and protected/restricted policy digests
+permission-ceiling and resolved-route digests
+policy, image, Sandbox, gateway, and exact mount-table digests
+creation and expiry timestamps
+status: preparing | active | releasing | released | blocked
+```
+
+The lease is durable before any writable Sandbox exists. It becomes active only after the Supervisor verifies Sandbox provenance and the actual mount table. It cannot release until the writable Sandbox and mounts are absent.
+
+A Change Set compares two stable complete manifests and contains:
+
+```text
+Run, Task, Agent, Session, and generation
+Write Lease ID and digest
+baseline and result Workspace generations and manifest digests
+sorted additions, modifications, deletions, mode changes, and symlink changes
+host-diff digest
+scope and path-policy results
+creation timestamp
+```
+
+Every changed path must be within both a literal write root and semantic Task scope and outside protected and restricted paths. The Change Set, not filesystem ownership or model prose, attributes writes to an Agent. An exact accepted Change Set advances the Workspace generation once.
+
+A Candidate freezes the aggregate Task result and contains:
+
+```text
+Run, Plan, Task, and approval digests
+Task input commit and Workspace generation
+complete Workspace manifest and host-diff digests
+ordered Change Set IDs and digests
+sorted changed paths and resulting modes and content digests
+permission, routing, image, policy, and mount provenance
+freeze timestamp
+status: frozen | stale | accepted | discarded
+```
+
+Candidate freeze requires a stable Workspace, no active Write Lease, no write-capable Sandbox, exact current approval, and a revalidated manifest and diff. Any source, Plan, policy, route, or relevant configuration change marks it and its Gates stale.
+
+## 13. Briefs, Decisions, Reports, and Handoffs
+
+A Brief is compiled from authoritative Project instructions, Role, permission ceiling, selected Skills, Task or Review assignment, relevant Plan sections, accepted Decisions, dependency Reports, source anchors, Workspace and Candidate identity, output contract, Model Profile, route, and Session identity.
+
+It excludes transcripts, hidden reasoning, unrelated Task output, abandoned alternatives, stale evidence, and other Review findings. Required constraints are never silently truncated. Supporting material beyond the context budget is replaced by explicit omissions and source anchors.
+
+A Brief becomes stale when any bound Plan, Decision, Role, permission, route, Session generation, Workspace generation, source digest, Candidate, dependency Report, policy, image, or output contract changes.
+
+A Decision is immutable accepted structured input scoped to Project, Run, or Task. A Report is immutable structured output with conclusions, evidence, source anchors, risks, and downstream requirements. Reports do not summarize transcripts and cannot satisfy Gates by prose alone.
+
+A Handoff contains completed work, current state, blockers, next action, source anchors, Task, Workspace generation, relevant Change Sets or Candidate, Report references, and exact digests. It is stored before replacement. The successor receives a fresh Brief plus the Handoff, never the predecessor transcript. An ordinary Handoff retains the Agent's Model Profile; an approved profile change requires a new route binding and Session generation.
+
+## 14. Messages and Connections
+
+One immutable file represents one Message. Its directory is authoritative delivery state:
 
 ```text
 pending
@@ -115,216 +604,151 @@ expired
 superseded
 ```
 
-Lifecycle changes use same-filesystem rename. Retrying the same Message ID and content is idempotent. Reusing an ID for different content is rejected. Reads fail closed if a filename disagrees with its Message ID or one ID appears in multiple lifecycle directories.
-
-A caller may initially address a Message to a Seat. Before the first durable write, the host resolves that Seat through authoritative Run state and adds the current Session ID and epoch. A Message with only one of those identity fields is invalid. Once stored, that complete target is immutable; Session replacement does not silently retarget an old pending Message.
-
-The host serializes Mailbox delivery for the current implementation. It writes the bound Message to `pending` before using a live Link, verifies that the Link identity is still current, and sends the exact stored content. A `queued` acknowledgement means the Pi client accepted the Message for injection. A `duplicate` acknowledgement means the same client already accepted the identical Message during an earlier attempt. Either acknowledgement atomically advances `pending` to `queued`; neither advances it to `answered`.
-
-Transport failure removes the live Link, records the current Session as `disconnected`, and leaves the Message `pending`. Attaching a replacement transport for the same Session identity moves the Session back to `active` and redelivers its pending Messages in deterministic creation order. The Pi client deduplicates the stable IDs, so recovery after acknowledgement loss does not inject a Message twice. The host validates the current identity again after acknowledgement so an epoch change cannot satisfy delivery state for a stale Session.
-
-Session replacement first makes the old epoch terminal, preventing any new Message from binding to it. Pending Messages already bound to that epoch move atomically to `superseded` before the replacement epoch becomes current. Queued Messages remain durable evidence that the old Pi client accepted delivery; they are not silently retargeted.
-
-## Briefs
-
-Brief compilation is deterministic. Required constraints are never silently truncated. Supporting Skill content that cannot fit the initial budget is replaced by an explicit omission naming its source path. Brief freshness binds Plan, Role, Task, Decisions, source digests, Session identity, and Seat epoch.
-
-## Link transport
-
-The host core depends only on the `LinkTransport` interface. The selected OpenShell implementation uses a host-loopback TCP service forward to a sandbox-loopback Pi client endpoint. The underlying OpenShell 0.0.106 transport has passed execution, file-transfer, network-denial, and loopback-forwarding probes.
-
-Link records are strict LF-delimited JSON capped at 64 KiB. Every record carries the Run, Seat, Session, and epoch. A 256-bit per-Session token authenticates the initial handshake; it does not authorize workflow state changes. The client rejects stale identities and deduplicates stable Message IDs across host reconnections.
-
-The initial protocol implements `hello`, `ready`, `ping`, `pong`, `deliver`, `ack`, `event`, and `error`. The host serializes exchanges until a later dispatcher provides correlation-safe concurrency.
-
-## Source snapshots
-
-A source snapshot is produced from an exact Git commit and literal relative paths. Snapshot Git commands strip ambient `GIT_*` variables, disable system and global configuration and filesystem monitors, and reject any clean filter affecting a selected path before `git archive` can execute it. The archive excludes untracked files and `.git`; unsupported tree entries fail closed. Its manifest records the selected paths, tracked entries, archive byte count, archive SHA-256 digest, and a domain-separated source digest. The launcher revalidates the manifest and copied archive immediately before image construction.
-
-Read-only Session inputs are added to a temporary derived-image build context. This is required because OpenShell upload honors the active Landlock policy and OpenShell 0.0.106 cannot revoke a writable path through a live policy update. The Sandbox starts directly with the final `read` profile, and the temporary context is deleted after creation.
-
-A Session may also receive a bounded set of named immutable input files. Names are safe basenames, content is SHA-256 verified before and after private staging, metadata is recorded in immutable Session configuration, and startup proves every file readable under `/workspace/input` while the directory remains non-writable. This carries large frozen evidence such as a Review patch without injecting it into the initial model context.
-
-An implementation Session uses the same mechanism under the final `write` profile. The verified archive is expanded into both a root-owned `/workspace/base` and Sandbox-user-owned `/workspace/project`; neither contains Git metadata. Startup must prove that base and input reject writes and that project accepts them. Immutable Session configuration binds the profile to the Sandbox policy and Pi tool set. A missing profile is interpreted only as `read` for recovery compatibility.
-
-The image OCI working directory remains `/sandbox` because OpenShell file download is workspace-confined. The Pi daemon separately fixes the model process working directory at `/workspace/project`.
-
-## Run worktrees
-
-A Run starts only from a fresh approval whose Plan ID, revision, Plan digest, and base commit match the current Project. The default Run ID is `<plan-id>-r<revision>`. Its branch is the committed `git.branch_prefix` plus the Run ID, and its host worktree path is `<worktrees.root>/<project-id>/<run-id>` after machine-local home expansion and canonical path resolution. A relative configured root resolves from the consumer Project root; a relative command-line override resolves from the caller's working directory.
-
-The consumer Project must currently be the Git top-level. The worktree root and resulting Run path must be isolated from that trusted checkout. Containment is checked against a symlink-aware prospective path before directory creation, then checked again after creation. Invalid configuration cannot create files in the trusted checkout.
-
-Run creation records the exact Project, Plan, base commit, branch, and worktree path in `state.json` before invoking `git worktree add`. The Project Run index is updated after the Run file, so interruption before index publication is recoverable by retry. A registered index entry without its Run state fails closed.
-
-The Git adapter uses NUL-delimited porcelain output and argument arrays. It disables Project hooks during worktree creation and verifies the repository common directory, canonical path, full branch ref, exact `HEAD`, and clean tracked and untracked status. A retry may adopt an already registered exact worktree or a reserved branch left at the exact base commit. A branch at another commit, a branch checked out elsewhere, an unregistered path, a missing registered path, another repository, detached `HEAD`, or any dirty content blocks.
-
-The Orchestrator never resets, cleans, stashes, removes, or rehomes unexpected worktree content. A linked host worktree contains host Git metadata and is never mounted into a model-driven Sandbox; later implementation snapshots are exported without `.git`.
-
-## Artifacts
-
-Small Artifact descriptors travel through the Link; payload bytes do not. A descriptor binds an Artifact ID, kind, Run, optional Task, Seat, Session, epoch, canonical Sandbox path, normalized media type, versioned content schema, byte count, SHA-256 digest, and creation time.
-
-The only accepted remote path is derived from the validated Artifact ID:
+A Message contains:
 
 ```text
-/sandbox/output/artifacts/<artifact-id>
+version and stable ID
+Run
+sender Agent or host identity
+target Agent, Session, and generation
+type and priority
+optional reply-to ID
+small structured body
+Artifact and source references
+creation timestamp
 ```
 
-The host selects the content contract and size limit. Before transfer it verifies the current Sandbox UUID, name, workspace, and ready state, then uses trusted Sandbox `stat` and `sha256sum` binaries to reject a non-regular, oversized, truncated, or changed remote file. It downloads only to a same-filesystem staging directory, verifies the source Sandbox again, independently checks the local file type, size, digest, and schema, and then writes the authoritative provenance record.
+Before the first write, the Supervisor resolves an Agent or Role target to the exact current Session and generation. A partially bound Session target is invalid. Replacement never silently retargets an already stored Message.
 
-The payload and record are changed to mode `0400`, flushed, and published together by atomic directory rename under the Run's `artifacts/` directory. Failed imports remove staging data. Retrying identical content and provenance is idempotent; reusing an Artifact ID with any different content or provenance is rejected. Stored content is revalidated on read and is never executed by the Orchestrator.
+The host records `pending` before delivery. `queued` means the current Pi client acknowledged acceptance for injection; it does not mean the requested work completed. Link loss leaves pending Messages durable. Duplicate IDs with identical content are acknowledged without reinjection; different content is rejected. Pending Messages for a retired generation become `superseded`.
 
-## Implementation patches
+A live Connection is transport, not state. Every frame carries complete identity and a per-Session handshake token. The Supervisor validates every event against current durable state before mutation. Direct Agent-to-Agent sockets, shared mailbox volumes, and peer Sandbox discovery are forbidden.
 
-`orchestrator implement <task>` resolves one unambiguous approved Run and accepts only a `ready` Task, or an unapplied `rework` Task. It resolves the Task Role through the machine-local model map, allocates the stable `implementer` Seat and a fresh Session epoch, compiles an exact source-bound Brief, and starts a `write` Session over the Task input commit. Dependency continuity is supplied through durable implementation Reports rather than Session transcripts.
+## 15. Checks and Reviews
 
-The Implementer edits only `/workspace/project` and returns one bounded structured result. The host renders that result into the required implementation Report sections; the exact Patch manifest supplies the authoritative changed-file list. Malformed or truncated output is an execution failure. Before the model turn, the host binds the request through the durable Mailbox; after the turn it exports and imports the Patch through the normal Artifact boundary described below.
+Plans reference trusted Check IDs, never arbitrary shell strings. Each authoritative Check:
 
-The pinned Sandbox exporter requires immutable `write`-profile Session configuration, compares `/workspace/base` and `/workspace/project`, and emits one binary-capable JSON Patch Artifact. It rejects `.git`, unsafe or non-UTF-8 paths, special files, changing files, more than 100,000 entries, a patch over 32 MiB, or a complete Artifact over 64 MiB. Git runs without system/global configuration, external diff commands, text conversion, or rename inference.
+- uses one fresh Check Sandbox;
+- mounts the frozen Candidate read-only;
+- uses private writable build and cache scratch;
+- contains no Pi, inference route, credentials, Git metadata, or general network;
+- executes the registered argv directly without a host shell;
+- is deleted before its result becomes authoritative.
 
-The Patch bundle binds the source snapshot digest, complete base and result tree digests, a sorted change manifest, raw patch digest, and domain-separated diff digest. Tree entries bind path, regular/executable/symlink mode, byte count, and SHA-256 content digest. Identical export retry is idempotent; an existing canonical path with other content or a non-regular file blocks.
+A Check record binds Check ID, argv, working directory, timeout, timestamps, exit code, stdout and stderr Artifacts, Plan, Task, Candidate, Workspace and diff digests, image, policy, OpenShell identity, mount table, and cleanup result. Zero exit is `pass`; another observed command exit is `fail`. Infrastructure or cleanup failure produces no verdict.
 
-Patch Artifact validation replays the patch against two fresh extractions of the host-verified source archive. The host independently recomputes the base tree, applies with unsafe paths disabled, confirms the base remained unchanged, and recomputes the result tree and change manifest before Artifact publication. Validation failure leaves no published Artifact.
+Each Review uses a fresh Agent or Review assignment, Session, and read-only Sandbox. The Reviewer receives the exact Candidate and passing Check evidence but no Implementer transcript or prior Review finding. Allowed Review Focuses are `spec`, `architecture`, `quality`, and `quant`.
 
-An imported Patch Artifact does not by itself authorize source mutation. The application gate first revalidates the current Plan approval, Task input commit, Artifact provenance, current Session epoch, implementation attempt, and one-active-writer rule. It evaluates every changed path against bounded relative POSIX Task-scope and Project-protection globs; protected paths take precedence over scope.
+A Review record binds Focus, round, verdict, blocking findings, Report, Plan, Task, Candidate, required Check records, Agent and Session identity, permission ceiling, Model Profile and route, Brief, image, policy, OpenShell identity, mount table, and timestamps. Verdicts are `pass`, `rework`, and `blocked`. Every blocking finding includes location, failure scenario, evidence, and required correction.
 
-Before Git mutation, Run state records a `prepared` application bound to the Artifact content, Session and Sandbox provenance, source commit and selected snapshot paths, source and result tree digests, Sandbox diff digest, and exact changed-path set. Host Git then verifies the repository common directory, canonical worktree, full branch ref, exact `HEAD`, and clean state before checking and applying the binary patch. The host independently reads the resulting NUL-delimited Git status, hashes actual regular-file or symlink results without following path symlinks, reconstructs the result tree, and records a distinct host diff digest before advancing the Task to `checking`.
+The host freezes each independent Review before exposing it to later synthesis. A diff or Candidate change makes all Check and Review evidence stale. Attempt and Review-round limits prevent unbounded repair loops.
 
-Retry loads the immutable stored Artifact, recreates its exact source snapshot from the durable commit and path selection, and repeats Patch validation. A prepared worktree may be clean or exactly applied; an applied worktree must remain exact. Any other dirty state, conflicting Patch, changed branch or `HEAD`, missing Artifact, or digest mismatch blocks without reset, clean, stash, or repair.
+## 16. Human commit
 
-After exact host application, the command marks the Message answered, deletes the Sandbox, stops the Session, and returns the Task in `checking`. Retrying a completed command revalidates and reuses the exact applied Patch and implementation Report. A failure before Patch preparation stops or fails the Session and leaves the unapplied Task in `rework`; it never adopts Sandbox changes without verified Artifact evidence.
+Commit requires a current Candidate and every required Check and Review Gate passing against that exact Candidate. The proposal displayed in a transient trusted pane binds:
 
-## Authoritative Checks
+```text
+Plan and approval
+Run branch and parent commit
+Task and Candidate
+Workspace manifest and host diff
+ordered Change Sets
+changed paths, modes, and content digests
+Check and Review records
+one-line subject
+Git author and committer identity
+```
 
-`orchestrator check <task>` executes every Check declared by the approved Task in Plan order. Each item still passes independently through the authoritative single-Check boundary below. The coordinator stops after the first failed verdict, reports the exact completed evidence, and never runs later Checks after the Task has moved to `rework`. If all required Checks pass, the Task advances to `reviewing`.
+Human confirmation publishes an immutable intent before Git mutation. The hardened Git adapter strips ambient `GIT_*` variables, disables system and global configuration, filesystem monitors, hooks, filters, signing, prompts, rename inference, and shell evaluation. It stages only Candidate paths, verifies every staged blob and mode, creates one exact parent commit, and advances the Run branch with compare-and-swap.
 
-Only registered Check definitions may satisfy a Gate. A definition is a bounded argument array plus an optional normalized relative POSIX working directory. The host invokes the array directly, never through a shell. The execution timeout is also an explicit Check input.
+The resulting Commit record and passing Gate are immutable. A retry may adopt only the exact commit authorized by a preceding durable intent. An unauthorized matching commit or any branch, parent, tree, source, evidence, identity, or worktree drift blocks.
 
-The host reconstructs a complete source tree from the Task input commit and its immutable applied Patch. This differs from the potentially scope-limited implementation snapshot: authoritative verification receives the full tracked Project at the base commit with the exact verified changes applied. Its manifest binds the input commit, Task source digest, host diff digest, complete path/content/mode tree, archive digest, and a separate Check-source digest. Neither the package nor the Sandbox contains `.git`. The host verifies a fresh extraction, and the Check image helper repeats archive and complete-tree verification after upload.
+The passing Commit Gate marks the Task accepted, advances the clean Workspace baseline, and unblocks dependencies. Push, merge, deploy, and release remain unavailable.
 
-Before external mutation, the host atomically publishes an intent under `checks/<task>/<check>/<job>/intent.json`. The job ID and Sandbox name derive from a domain-separated binding of Run, Task, Check, Plan, input commit, source and diff digests, argv, working directory, timeout, image digest, and policy digest. The intent also contains a random durable ownership token. OpenShell labels bind the Sandbox record to the job and a 128-bit token fingerprint; an internal marker binds the full token. A Ready abandoned Sandbox requires both proofs before deletion. An Error Sandbox that never reached marker initialization may be removed only when its trusted control-plane labels match the durable intent.
+## 17. cmux and Pi control
 
-Authoritative execution requires an exactly pinned, version-matched OpenShell client and gateway. The selected gateway/workspace must report no inference route. An image must be an OCI digest reference whose suffix equals its recorded digest or a canonical absolute local context whose complete tree matches its domain-separated digest. A local context is copied to private staging and verified again; validated policy bytes are also copied to private staging. OpenShell therefore consumes the bytes named by the intent rather than mutable caller paths. The fresh `check` Sandbox uses a separate pinned image with no Pi process, default-deny network, no credentials, no host state, and no host checkout. Project-specific images may add a required compiler or toolchain while preserving those properties.
+The default cmux workspace contains a persistent Lead Pi pane on the left and a right-hand stack of active Agent panes. A Run cmux binding stores its stable operation ID, Workspace UUID, and title. An Agent pane binding stores its operation ID, Workspace, Pane and Surface UUIDs, expected title, and exact Session generation.
 
-The registered process runs only after source verification. Its Sandbox must be successfully deleted before evidence is accepted. The host then revalidates the exact Run worktree, current Plan files, registered Check definition, and approval. Any drift or cleanup failure leaves the intent pending and publishes no result.
+UUIDs are authoritative; titles and layout are recoverable presentation. Missing panes do not alter workflow state. Pane creation, adoption, reattachment, and removal retain the v0.2 durable-intent and ambiguity-rejection rules under Agent terminology.
 
-A completed job atomically publishes immutable `stdout.log`, `stderr.log`, and `record.json`. The record binds command exit, time, exact inputs, Sandbox identity, OpenShell versions and gateway, log sizes and digests, intent digest, and its own domain-separated digest. Stored records and logs are revalidated on every read. An exact completed retry reuses that evidence and can finish an interrupted Gate update without another Sandbox.
+The Pi extension exposes the `/orchestrator` user namespace and a closed model-facing tool surface. Both call the Supervisor over a host-local authenticated control path. Pi renders state but does not own it. Human approvals never traverse the Pi conversation or model-facing protocol.
 
-The Task Gate records the intent digest as `pending`, then the record digest as `pass` or `fail`. Nonzero command exit is authoritative failed evidence and moves the Task to `rework`. Passing evidence leaves the Task `checking` until all required Check Gates pass, then moves it to `reviewing`. Infrastructure failure is not converted into a command verdict.
+The primary `orchestrator` command bootstraps or resumes this surface from a cmux-created terminal. `doctor`, `canary`, `status`, `reconcile`, and `stop` remain host diagnostics. Phase commands remain a low-level API until the Pi surface reaches parity and may remain for automation afterward.
 
-## Authoritative Reviews
+## 18. Artifact contract
 
-A Review may start only after every registered Task Check has an exact passing Gate and immutable record for the current Plan, input commit, Task source, reconstructed source, and host diff. The host reconstructs and verifies that complete source again, then initializes a fresh `read` Session from it. The Pi launcher accepts this package only for read Sessions, verifies it both before and after private image-context staging, and exposes no base tree, host checkout, or Git metadata.
+Large non-source payloads cross OpenShell through verified Artifact transfer. The Link carries only a descriptor. The Supervisor derives the one permitted Sandbox output path from the Artifact ID, verifies exact Sandbox provenance, remote regular-file type, size and SHA-256, downloads into same-filesystem staging, verifies provenance again, validates local type, size, digest and schema, and atomically publishes immutable content plus a provenance record.
 
-Review model routing is selected by Lens. `spec`, `architecture`, and `quality` use the Reviewer's default logical alias; `quant` uses its configured Quant override when present. The selected concrete route must satisfy the Role locality policy and the OpenShell client's exact version and gateway checks.
+Artifacts remain appropriate for Reports, logs, manifests, and binary results. They are not used for normal source snapshots, per-Agent Project copies, implementation patches, or Candidate reconstruction. No Sandbox Artifact is executed on the host.
 
-The Review Brief is bound to a fresh Run, Seat, Session, and epoch. It includes Project instructions, the read-only Reviewer Role, Task, approved Plan, host-supplied Decisions, selected Skills, changed-path anchors, a digest-bound pointer to the immutable current patch at `/workspace/input/review.patch`, passing Check metadata, and exact digests. It includes no dependency Report, Implementer transcript, hidden reasoning, prior Reviewer result, or claim that the implementation is correct. A Review-context digest makes any Lens, diff, or Check-evidence change stale.
+## 19. Recovery and staleness
 
-The host stores an immutable intent under `reviews/<task>/<lens>/<job>/intent.json` before inference. It binds the Review round, all frozen evidence, Role and Brief, model route, Session and Sandbox, read-policy digest, runtime versions, and request Message. The corresponding Gate holds the intent digest while pending. Review request Messages are fully Session-bound and use the normal host Mailbox lifecycle.
+On restart the Supervisor acquires single-writer ownership and reconciles:
 
-The model must return one bounded JSON object. Allowed verdicts are `pass`, `rework`, and `blocked`; prose does not alter state. A passing object has no blocking finding. A non-passing object must give each finding's location, concrete failure scenario, evidence, and required correction. Truncation, malformed JSON, contradictory content, or a Message/model binding mismatch is an execution failure, not a verdict.
+```text
+Project, planning, and Run state
+Plan publication and approval
+Run branch and linked Workspace
+Workspace phase, generation, manifest, and diff
+Write Lease and writable Sandbox absence or provenance
+Candidate and Gate evidence
+Agent, Session, Sandbox, Connection, and cmux bindings
+Messages, Decisions, Reports, Handoffs, Change Sets, and Artifacts
+```
 
-After inference, the host rechecks approval, Project and Plan bytes, Run worktree contents, Check Gates and immutable records, Role, policy, and current Session. It then renders a Markdown Report and atomically publishes it with a self-digested JSON record under the intent directory. Both files become mode `0400`; their sizes, content digests, record digest, and intent binding are checked on every read.
+Recovery never requires `events.jsonl`, a transcript, terminal scrollback, or model memory. It reconnects an exact current Session, reattaches a missing pane, resumes an idempotent operation, replaces a Session from durable context, or blocks. It does not infer completion from process absence.
 
-The Lens Gate stores the Review record digest as `pass` or `fail`. A passing Lens leaves the Task `reviewing` for remaining Lenses and human commit. `rework` moves the Task to `rework`; `blocked` moves it to `blocked`. One Review round covers all Lenses over one diff. Invalid output and infrastructure retry replace the Session epoch without incrementing that round.
+Any digest-bound evidence becomes stale when an input in its contract changes. Stale evidence cannot satisfy a Gate. A human may waive a Gate only through a trusted confirmation bound to exact current evidence and a recorded rationale; a waiver never repairs or hides source drift.
 
-An exact completed Gate may reuse only a current immutable result. If result publication succeeded but Gate publication was interrupted, retry resolves the pending intent, validates its result against current evidence, removes any still-active bound Review Sandbox, records the Session stopped, and completes the Gate without another model call. Missing or modified source, Check, intent, Report, record, Role, policy, model, or Plan evidence fails closed.
+## 20. Digest registry
 
-`orchestrator review <task>` resolves one unambiguous Run and executes every unique Review Lens declared by the approved Task in Plan order. Before starting a Session, it requires a configured OpenShell client for the complete Lens set. Each Lens still passes through the authoritative single-Review boundary above, so it receives a fresh Seat epoch, Session, Sandbox, Brief, Message, model route, intent, Report, and Gate. Durable Review request identifiers include both Lens and nonce.
+The following domains are reserved for schema version 2. `record` means canonical JSON of all required fields named in the corresponding section, excluding the digest field itself.
 
-The coordinator never supplies one Reviewer's finding or Report to another Reviewer. Each Brief states the normative question for its Lens; Quant additionally receives the Project's Quant Skill and independently reproduces material quantities where practical. The host freezes each result before considering the next Lens. A `rework` or `blocked` verdict halts the set immediately and leaves later Lenses unstarted; infrastructure or invalid-output failures propagate as errors rather than verdicts. On retry, exact passing Lenses are revalidated and reused, while an incomplete Lens receives a replacement Session epoch without incrementing the Review round.
-
-No aggregate Review artifact is stored. The approved Task defines the required set, and its immutable per-Lens records and Gates are the authoritative completion state. The command computes an aggregate `pass`, `rework`, or `blocked` result from that state. A complete pass leaves the Task `reviewing` for the existing human Commit Gate.
-
-## Human Task commits
-
-`orchestrator commit <task>` resolves the Task to one durable Run, reloads the current Project, Plan, machine-local model routes, Reviewer Role, and Sandbox policy, and reconstructs the immutable applied Patch. It accepts only a `reviewing` Task whose trusted-checkout HEAD still equals the approved base commit and whose Plan approval, scope, protected paths, Check Gates and records, Review Gates and records, Review Sessions, model routes, runtime versions, source, diff, branch, and worktree all remain exact. Multiple matching Runs require an explicit `--run`.
-
-The displayed proposal binds the Plan revision and digest, Run branch, Task input commit, resulting source and host diff digests, Patch Artifact, sorted changes, every required passing Check and Review record, one-line subject, and Git author identity. Interactive execution requires an affirmative TTY response; automation requires explicit `--yes`. Confirmation creates an immutable intent and pending `commit` Gate before Git mutation. A changed proposal cannot consume an earlier authorization.
-
-The trusted Git adapter strips ambient `GIT_*` variables and disables system and global configuration, filesystem monitors, hooks, signing, prompts, rename inference, and shell evaluation. It rejects any clean filter affecting the source before archive, status, or staging can execute it. After verifying the canonical repository and linked worktree, exact branch and parent, applied Patch, and diff digest, it stages only the approved changed paths and hashes every staged blob and mode against the Patch. It creates the object with `commit-tree`, then advances the Run branch with compare-and-swap `update-ref` against the exact parent. The resulting commit must have one exact parent, the approved tree, subject, and author/committer identity, no residual worktree changes, and exactly the approved path/content/mode result.
-
-An immutable Commit record binds the human intent to the observed commit, parent, tree, identity, timestamp, and its own digest. If intent publication succeeds before the pending Gate update, retry finds that exact proposal authorization and repairs the Gate without asking again. If Git succeeds before record or passing-Gate publication, retry may recover only that exact commit from the intent. A matching commit without prior durable authorization is rejected. Unexpected Git state is never reset, cleaned, stashed, amended, or adopted.
-
-A passing `commit` Gate marks the Task `accepted`. The new commit becomes the `input_commit` for the next ready writer and for newly unblocked dependent Tasks. The Run becomes `complete` only when every Task is terminal; otherwise it remains `active`. Run state is written before its Project summary is synchronized, and a no-op retry repairs a stale summary left by interruption.
-
-## Session identity
-
-A Seat has one current Session identity: Run, Seat, Session, and monotonic epoch. The Pi client reads that identity from immutable Session input, binds every Link frame to it, and rejects old epochs. Reconnection replaces the transport connection without replacing the Seat or Session identity.
-
-The Run state contains a stable Seat registry and immutable Session history. A newly registered Seat is dormant at epoch zero. Its first Session starts at epoch one; every replacement advances exactly one epoch, identifies its predecessor and replacement reason, and leaves the predecessor terminal. Session history must be contiguous, and only the current Session may be nonterminal.
-
-Registry mutations are serialized by the single-writer Project store. Starting or replacing a Session requires a caller-selected stable Session ID, so retrying the same operation is idempotent while competing replacements against the same expected identity cannot both advance the epoch. Every mutating Session operation verifies the full current identity. A stale Run, Seat, Session, or epoch is rejected before state changes.
-
-Session status transitions follow an explicit graph. `stopped` and `failed` are terminal and require an end time and reason. An OpenShell Sandbox binding records its UUID, name, and workspace once and cannot be replaced in place. Older version-one Run files without registry fields read as empty registries and acquire the fields on their next atomic mutation.
-
-Lifecycle reconciliation observes the current Seat, Session, exact Sandbox provenance, live Link identity, and cmux projection before recommending `start`, `reconnect`, `reattach`, `replace`, or `blocked`. Observation alone does not change workflow state. A host restart may rebuild a Link for the same Session only after the immutable Sandbox configuration matches the current identity, pinned Pi and client versions, current profile and policy digest, and expected model and Brief route.
-
-Replacement is an ordered retryable operation. The host validates the replacement input and exact Sandbox provenance before side effects, detaches the Link, marks the old Session terminal, removes its Sandbox and Pane, supersedes pending Messages for that exact epoch, and creates the next Session last. A failure leaves enough durable state to resume the same operation. A Sandbox with the expected name but a different UUID or workspace blocks replacement before any state changes.
-
-## Context pressure and Handoff
-
-Every newly built Pi Session contains the Project's exact context thresholds in immutable Session configuration. After each assistant turn, the Pi client obtains Pi's current context-window estimate and emits a structured `context-pressure` observation. It classifies usage as `normal`, `warning`, `handoff`, or `stop`; crossing into `handoff` or `stop` emits one `handoff-requested` event until usage falls below the threshold again. `/orchestrate handoff [reason]` emits the same request explicitly. The host recomputes every reported fraction and classification from token counts and its own current thresholds; a client label is never authoritative.
-
-A Handoff checkpoint is structured durable state, not a transcript summary. It records completed work, current state, blockers, the next action, source anchors, the exact source digest, and optional Task and patch digests. The host renders it into a validated Handoff Report with required sections. A replacement Brief is compiled from authoritative Project inputs plus that Report, binds the replacement Session identity and epoch, and includes a domain-separated Handoff-context digest. The predecessor transcript is neither read nor accepted by this boundary.
-
-Before retiring the predecessor, the host atomically stores an immutable Handoff intent and replacement Brief under `handoffs/<seat>/<handoff>/`, and stores the Handoff Report in the Run Report store. The intent binds the old and new identities, trigger, reason, optional pressure evidence, checkpoint, Report, Brief, source, profile, policy, model route, context policy, and runtime versions. Replacement then uses the existing ordered lifecycle operation. Only after the new exact Session is active does the host publish an immutable result bound to its Sandbox UUID, name, and workspace.
-
-The operation ID and replacement Session ID are deterministic for an exact request. A retry before epoch advancement repeats the same teardown. A retry after advancement but before launch starts the already-authoritative unbound Session. A retry after Sandbox binding reconnects only after immutable configuration matches the intent. A completed retry reuses the exact result. A failed or otherwise terminal predecessor retains its original terminal reason while the new Session records the Handoff reason; no illegal terminal-to-terminal transition is attempted.
-
-If a replacement Sandbox is later lost, recovery is a new Handoff from that current epoch, using Reports, source and patch state, and an operator- or host-produced checkpoint. It advances the same Seat to another epoch and never depends on terminal scrollback or the terminated Pi transcript.
-
-## Metrics and Run reports
-
-Metrics are measurements, not workflow authority. The host may store immutable observations for model turns, Sandbox startup, Link failure, Message delivery, context pressure, and explicit human interventions. Every observation has a content-derived identifier and digest, identifies its Run, and binds a Session identity whenever the measurement concerns a Session. Report generation rejects observations for missing or stale Session epochs, unknown Tasks, mismatched model aliases, or Messages with another target or creation time.
-
-Model usage is normalized into input, output, cache-read, cache-write, and total token counts while retaining a digest of the raw provider usage object. Cost is estimated only when the exact model route contains machine-local USD rates per million tokens. A report exposes priced and unpriced turn counts separately; absent pricing never implies zero cost. The declared `local`, `prefer-local`, or `remote` route locality is frozen with each model-turn observation.
-
-A Run metrics snapshot combines validated observations with current Run, Task, and Session state plus every validated Check, Review, Handoff, Report, Commit, Message, and exact Plan approval record. It records wall-clock and aggregate durations, attempts, Review rounds and blocking findings, Handoffs, context pressure, model locality and usage, Sandbox startup, Link failures, Message latency, and human-control actions. Reviews created before observation instrumentation contribute their already-durable model usage without being counted twice when an observation also exists.
-
-The snapshot binds the canonical Run state and a sorted evidence-set digest, then receives its own domain-separated digest. `orchestrator metrics <run>` renders the current snapshot without changing workflow state. `orchestrator report <run>` atomically publishes that snapshot as immutable `report.json` and deterministic `report.md` files under `metrics/reports/<report>/`. Publishing the same snapshot is idempotent; modified JSON, Markdown, evidence, or digests are rejected.
-
-The generated retrospective section states only that human conclusions remain pending. A report cannot satisfy a Gate, declare the proving run successful, or manufacture project-specific retrospective answers. No observation or report contains a Pi transcript.
-
-## OpenShell lifecycle
-
-The OpenShell adapter validates Sandbox names before launch, disables automatic credential providers, observes remote exit codes without treating expected denial as an infrastructure error, and parses `get` and `list` responses into versioned host types. Creation is followed by an authoritative `get`; JSON output is not requested from `sandbox create` because OpenShell 0.0.106 forbids combining it with an initial command.
-
-Every programmatic `sandbox exec` closes the CLI child process's stdin immediately. OpenShell 0.0.106 buffers non-interactive stdin until EOF, so leaving the pipe open prevents the remote command from starting.
-
-Deletion with `missingOk` verifies absence through `sandbox list`; it does not suppress a failure while a Sandbox with the requested name still exists.
-
-Every new read Session records source and read-policy digests in immutable Sandbox input. Same-Session recovery first verifies the durable Sandbox UUID, name, workspace, and ready phase, then reads that input and validates the current identity, epoch, versions, policy, and, for a model-routed Session, the expected model route and Brief digest before opening a new loopback forward. Releasing a recovered host Link does not delete the Sandbox; each Link, forward, and Sandbox cleanup step remains independently retryable.
-
-## cmux projection
-
-cmux is a trusted host cockpit, not an authoritative state store. The adapter is pinned to cmux 0.64.22, verifies its required socket capabilities, requests JSON output with UUID identifiers, and invokes the CLI without a host shell. The cmux socket password remains inherited host-process state and is never persisted or forwarded to a Sandbox.
-
-A Run Workspace binding contains its stable creation operation UUID, Workspace UUID, and expected title. A Seat Pane binding contains its stable creation operation UUID, Workspace UUID, Pane UUID, Surface UUID, and expected title. Titles are labels and bounded recovery evidence; UUID bindings remain authoritative.
-
-Run state stores the Workspace operation before mutation and stores each Session-bound Pane operation and creation intent before mutation. Returned UUID bindings are written atomically. A host restart therefore resumes the same operation rather than inferring ownership from titles or creating an untracked duplicate.
-
-Workspace creation uses cmux's native operation UUID. Before unbound Pane creation, the caller must persist a Pane intent containing the operation UUID and the complete prior Pane UUID set. A retry may adopt exactly one new single-Surface Pane; zero candidates permits creation and multiple candidates fail closed. Once a binding exists, a missing target is drift and cannot trigger implicit replacement.
-
-Projection reconciliation only observes cmux state. It may report missing objects or title mismatches, but it cannot complete a Task, terminate a Session, or mutate Run state. Pane deletion refuses to close a Pane that has acquired any Surface beyond its bound one.
-
-A missing Pane may be reattached only with a new durable operation ID and only after observation proves the old binding is absent. If the entire Workspace is absent, stale Pane state can be retired without issuing an unsafe close; recreating the Run Workspace remains an explicit blocked recovery decision.
-
-## Sandbox profiles
-
-Committed `read`, `write`, and `check` policies use hard Landlock enforcement and an empty base network map. All profiles make base and input material read-only. `read` also makes the Project copy read-only; `write` and `check` permit writes only to the Project copy, Session/output space, home, and temporary paths.
-
-The current Docker baseline obtains UID/GID 10001 from the pinned image's OCI `USER`. Policy-level process overrides are rejected for OpenShell 0.0.106 because the live probe observed supplementary root-group membership when both override fields were set. A version upgrade must rerun the identity canary before changing this rule.
-
-OpenShell 0.0.106 policy updates may expand access but cannot be used to revoke a `read_write` path. Session initialization therefore MUST NOT depend on tightening a live Sandbox policy.
-
-Inference endpoints are not part of ordinary `network_policies`. A logical model alias resolves through machine-local configuration to one OpenShell gateway, exact routed model, Pi API shape, locality, and context limits. Before Sandbox creation, the host verifies that the selected gateway's current user-facing inference route names the expected model.
-
-Inside a model-routed Session, Pi registers one synthetic `orchestrator` provider whose base URL is `https://inference.local` for Anthropic Messages or `https://inference.local/v1` for OpenAI-compatible APIs. Its `unused` API key is a protocol placeholder, not a credential. OpenShell strips it and injects the real provider credential outside the Sandbox. The Pi child receives only a validated OpenShell HTTP proxy address, the fixed OpenShell CA path, and `NODE_USE_ENV_PROXY=1`; it still receives no provider credential or general network permission. Because OpenShell handles `inference.local` before ordinary network-policy evaluation, authoritative Check Sandboxes MUST use a dedicated gateway and workspace whose absent inference route the host verifies before launch; they never launch Pi.
-
-A model-routed Session includes an immutable compiled Brief. Its content is re-digested before image construction and its digest is recorded in Session configuration. Model completion and failure events bind the result to the initiating Message IDs, logical alias, requested model, stop reason, and bounded response data; the host rejects any event whose Message or route binding differs from the verified Session. These live events do not themselves satisfy a Gate or replace a durable Report.
-
-## Security canary
-
-`orchestrator canary` requires an exact OpenShell version pin and creates a fresh Sandbox for every selected profile. It verifies identity, source access, writable boundaries, OpenShell control-key isolation, host filesystem isolation, credential absence, Docker and SSH isolation, default network denial, host-gateway denial, and privilege denial. Each profile records its policy digest and cleanup result. Any failed assertion or cleanup makes the command fail.
+| Object                     | Domain                                  | Ordered parts                                |
+| -------------------------- | --------------------------------------- | -------------------------------------------- |
+| Plan                       | `pi-orchestrator/plan/v2`               | `plan.md`, `tasks.yaml` raw bytes            |
+| Permission ceiling         | `pi-orchestrator/permission-ceiling/v2` | `record`                                     |
+| Routing policy             | `pi-orchestrator/routing-policy/v2`     | `record`                                     |
+| Resolved model route       | `pi-orchestrator/model-route/v2`        | `record`                                     |
+| Workspace manifest         | `pi-orchestrator/workspace-manifest/v2` | `record`                                     |
+| Host diff                  | `pi-orchestrator/workspace-diff/v2`     | `input-commit`, `manifest-digest`, `changes` |
+| Plan publication proposal  | `pi-orchestrator/plan-publication/v2`   | `record`                                     |
+| Human approval             | `pi-orchestrator/approval/v2`           | `record`                                     |
+| Brief                      | `pi-orchestrator/brief/v2`              | `content`, `binding`                         |
+| Decision                   | `pi-orchestrator/decision/v2`           | `record`                                     |
+| Message                    | `pi-orchestrator/message/v2`            | `record`                                     |
+| Report                     | `pi-orchestrator/report/v2`             | `content`, `binding`                         |
+| Write Lease                | `pi-orchestrator/write-lease/v2`        | `record`                                     |
+| Change Set                 | `pi-orchestrator/change-set/v2`         | `record`                                     |
+| Candidate                  | `pi-orchestrator/candidate/v2`          | `record`                                     |
+| Check intent               | `pi-orchestrator/check-intent/v2`       | `record`                                     |
+| Check result               | `pi-orchestrator/check-record/v2`       | `record`                                     |
+| Review intent              | `pi-orchestrator/review-intent/v2`      | `record`                                     |
+| Review result              | `pi-orchestrator/review-record/v2`      | `record`                                     |
+| Handoff                    | `pi-orchestrator/handoff/v2`            | `content`, `binding`                         |
+| Commit proposal and intent | `pi-orchestrator/commit-intent/v2`      | `record`                                     |
+| Commit result              | `pi-orchestrator/commit-record/v2`      | `record`                                     |
+| Artifact provenance        | `pi-orchestrator/artifact/v2`           | `content-digest`, `binding`                  |
+| Canonical Run state        | `pi-orchestrator/run-state/v2`          | `record`                                     |
+| Metrics evidence set       | `pi-orchestrator/metrics-evidence/v2`   | `sorted-record-digests`, `run-state-digest`  |
+
+For `content` plus `binding`, content is the exact stored UTF-8 or binary bytes and binding is canonical JSON of all provenance fields. For `changes`, entries are canonical JSON sorted by relative path. For `sorted-record-digests`, digests are byte-sorted before canonical JSON encoding.
+
+Changing a domain, part name, part order, canonicalization rule, required field, or semantic meaning requires a new digest-domain version. Validation always recomputes digests from authoritative bytes; a stored digest is never trusted by itself.
+
+## 21. Resource and retry limits
+
+Cross-process and Sandbox operations use stable IDs and are safe to retry. Default limits remain:
+
+```text
+implementation attempts    3
+Review rounds              2
+consultation hops          2
+initial Brief fraction     0.25
+context warning            0.60
+Handoff recommended        0.75
+new mutating phase denied  0.85
+Link record                64 KiB
+```
+
+Artifact, Workspace-entry, total-byte, command-output, model-output, and timeout limits are finite machine-local or host constants and are recorded with the operation that used them. Exceeding a limit fails closed and does not create successful evidence.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; Plan publication amended by [ADR 0029](0029-plan-publication.md)
 
 ## Context
 

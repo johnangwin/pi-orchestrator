@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0027](0027-workspace-mutation.md)
 
 ## Context
 

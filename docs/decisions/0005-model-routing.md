@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Superseded by [ADR 0025](0025-permissions-model-profiles.md)
 
 ## Context
 

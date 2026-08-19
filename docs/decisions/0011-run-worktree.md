@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0026](0026-direct-workspace-projection.md)
 
 ## Context
 

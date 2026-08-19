@@ -44,5 +44,5 @@
 - architecture and quantitative consultation (implementation complete; Stepout exercise pending)
 - independent criticism and Lead Plan synthesis (implementation complete; Stepout exercise pending)
 - all required Review Lenses (implementation complete; Stepout exercise pending)
-- Handoff and terminated-Session recovery
+- Handoff and terminated-Session recovery (implementation complete; Stepout exercise pending)
 - metrics and retrospective

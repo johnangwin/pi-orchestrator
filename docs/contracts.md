@@ -255,6 +255,18 @@ Lifecycle reconciliation observes the current Seat, Session, exact Sandbox prove
 
 Replacement is an ordered retryable operation. The host validates the replacement input and exact Sandbox provenance before side effects, detaches the Link, marks the old Session terminal, removes its Sandbox and Pane, supersedes pending Messages for that exact epoch, and creates the next Session last. A failure leaves enough durable state to resume the same operation. A Sandbox with the expected name but a different UUID or workspace blocks replacement before any state changes.
 
+## Context pressure and Handoff
+
+Every newly built Pi Session contains the Project's exact context thresholds in immutable Session configuration. After each assistant turn, the Pi client obtains Pi's current context-window estimate and emits a structured `context-pressure` observation. It classifies usage as `normal`, `warning`, `handoff`, or `stop`; crossing into `handoff` or `stop` emits one `handoff-requested` event until usage falls below the threshold again. `/orchestrate handoff [reason]` emits the same request explicitly. The host recomputes every reported fraction and classification from token counts and its own current thresholds; a client label is never authoritative.
+
+A Handoff checkpoint is structured durable state, not a transcript summary. It records completed work, current state, blockers, the next action, source anchors, the exact source digest, and optional Task and patch digests. The host renders it into a validated Handoff Report with required sections. A replacement Brief is compiled from authoritative Project inputs plus that Report, binds the replacement Session identity and epoch, and includes a domain-separated Handoff-context digest. The predecessor transcript is neither read nor accepted by this boundary.
+
+Before retiring the predecessor, the host atomically stores an immutable Handoff intent and replacement Brief under `handoffs/<seat>/<handoff>/`, and stores the Handoff Report in the Run Report store. The intent binds the old and new identities, trigger, reason, optional pressure evidence, checkpoint, Report, Brief, source, profile, policy, model route, context policy, and runtime versions. Replacement then uses the existing ordered lifecycle operation. Only after the new exact Session is active does the host publish an immutable result bound to its Sandbox UUID, name, and workspace.
+
+The operation ID and replacement Session ID are deterministic for an exact request. A retry before epoch advancement repeats the same teardown. A retry after advancement but before launch starts the already-authoritative unbound Session. A retry after Sandbox binding reconnects only after immutable configuration matches the intent. A completed retry reuses the exact result. A failed or otherwise terminal predecessor retains its original terminal reason while the new Session records the Handoff reason; no illegal terminal-to-terminal transition is attempted.
+
+If a replacement Sandbox is later lost, recovery is a new Handoff from that current epoch, using Reports, source and patch state, and an operator- or host-produced checkpoint. It advances the same Seat to another epoch and never depends on terminal scrollback or the terminated Pi transcript.
+
 ## OpenShell lifecycle
 
 The OpenShell adapter validates Sandbox names before launch, disables automatic credential providers, observes remote exit codes without treating expected denial as an infrastructure error, and parses `get` and `list` responses into versioned host types. Creation is followed by an authoritative `get`; JSON output is not requested from `sandbox create` because OpenShell 0.0.106 forbids combining it with an initial command.

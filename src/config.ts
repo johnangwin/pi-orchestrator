@@ -29,6 +29,41 @@ export const ReviewLensSchema = z.enum([
 ]);
 export type ReviewLens = z.infer<typeof ReviewLensSchema>;
 
+export const DEFAULT_CONTEXT_THRESHOLDS = {
+  initial_fraction: 0.25,
+  warn_fraction: 0.6,
+  handoff_fraction: 0.75,
+  stop_fraction: 0.85,
+} as const;
+
+export const ContextThresholdsSchema = z
+  .object({
+    initial_fraction: z.number().positive().max(1),
+    warn_fraction: z.number().positive().max(1),
+    handoff_fraction: z.number().positive().max(1),
+    stop_fraction: z.number().positive().max(1),
+  })
+  .strict()
+  .superRefine((thresholds, context) => {
+    const fractions = [
+      thresholds.initial_fraction,
+      thresholds.warn_fraction,
+      thresholds.handoff_fraction,
+      thresholds.stop_fraction,
+    ];
+    if (
+      !fractions.every(
+        (fraction, index) => index === 0 || fraction > fractions[index - 1]!,
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "context fractions must increase from initial through stop",
+      });
+    }
+  });
+export type ContextThresholds = z.infer<typeof ContextThresholdsSchema>;
+
 const ModelRouteSchema = z.union([
   ModelAliasSchema,
   z
@@ -78,14 +113,7 @@ export const ProjectConfigSchema = z
       .strict(),
     roles: z.array(IdentifierSchema).min(1),
     models: z.record(IdentifierSchema, ModelRouteSchema),
-    context: z
-      .object({
-        initial_fraction: z.number().positive().max(1),
-        warn_fraction: z.number().positive().max(1),
-        handoff_fraction: z.number().positive().max(1),
-        stop_fraction: z.number().positive().max(1),
-      })
-      .strict(),
+    context: ContextThresholdsSchema,
     attempts: z
       .object({
         implementation: z.number().int().positive(),
@@ -111,24 +139,6 @@ export const ProjectConfigSchema = z
   })
   .strict()
   .superRefine((config, context) => {
-    const fractions = [
-      config.context.initial_fraction,
-      config.context.warn_fraction,
-      config.context.handoff_fraction,
-      config.context.stop_fraction,
-    ];
-    if (
-      !fractions.every(
-        (fraction, index) => index === 0 || fraction > fractions[index - 1]!,
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["context"],
-        message: "context fractions must increase from initial through stop",
-      });
-    }
-
     if (new Set(config.roles).size !== config.roles.length) {
       context.addIssue({
         code: "custom",

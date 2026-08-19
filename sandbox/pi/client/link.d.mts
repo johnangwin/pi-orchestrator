@@ -16,6 +16,14 @@ export interface ClientConfig {
   readonly client_version: string;
   readonly pi_version: string;
   readonly profile?: "read" | "write" | undefined;
+  readonly context?:
+    | {
+        readonly initial_fraction: number;
+        readonly warn_fraction: number;
+        readonly handoff_fraction: number;
+        readonly stop_fraction: number;
+      }
+    | undefined;
   readonly source_digest?: string | undefined;
   readonly policy_digest?: string | undefined;
   readonly model?:

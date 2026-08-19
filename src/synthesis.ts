@@ -1639,6 +1639,7 @@ async function runTurn(input: {
       snapshot: input.snapshot,
       model: input.model,
       brief: input.brief,
+      context: input.options.project.config.context,
       policyDirectory: path.resolve(
         input.options.policyDirectory ?? bundledPiPolicyDirectory(),
       ),

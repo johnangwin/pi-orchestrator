@@ -1,6 +1,10 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import {
+  DEFAULT_CONTEXT_THRESHOLDS,
+  validContextThresholds,
+} from "./context.mjs";
 
 export const MAX_LINK_FRAME_BYTES = 64 * 1024;
 const frameIdPattern = /^[a-z][a-z0-9-]{0,127}$/;
@@ -144,6 +148,10 @@ function validBrief(value) {
   );
 }
 
+function validContext(value) {
+  return value === undefined || validContextThresholds(value);
+}
+
 function validInputs(value) {
   return (
     Array.isArray(value) &&
@@ -175,7 +183,15 @@ function parseConfig(value) {
         "client_version",
         "pi_version",
       ],
-      ["source_digest", "policy_digest", "profile", "model", "brief", "inputs"],
+      [
+        "source_digest",
+        "policy_digest",
+        "profile",
+        "context",
+        "model",
+        "brief",
+        "inputs",
+      ],
     ) ||
     value.version !== 1 ||
     !validIdentity(value.identity) ||
@@ -191,6 +207,7 @@ function parseConfig(value) {
     value.pi_version.length === 0 ||
     (value.profile !== undefined &&
       !["read", "write"].includes(value.profile)) ||
+    !validContext(value.context) ||
     (value.source_digest !== undefined &&
       !digestPattern.test(value.source_digest)) ||
     (value.policy_digest !== undefined &&
@@ -202,7 +219,10 @@ function parseConfig(value) {
   ) {
     throw new Error("Invalid Orchestrator client configuration");
   }
-  return value;
+  return {
+    ...value,
+    context: value.context ?? DEFAULT_CONTEXT_THRESHOLDS,
+  };
 }
 
 export async function readClientConfig(filePath) {

@@ -37,6 +37,14 @@ const implementationSections = [
   "Downstream",
 ] as const;
 
+const handoffSections = [
+  "Completed",
+  "Current State",
+  "Blockers",
+  "Next Action",
+  "Source Anchors",
+] as const;
+
 function validateSections(content: string, sections: readonly string[]): void {
   for (const section of sections) {
     if (!new RegExp(`^#{1,6}\\s+${section}\\s*$`, "m").test(content)) {
@@ -53,6 +61,8 @@ export function createReport(
 ): Report {
   if (input.kind === "implementation")
     validateSections(input.content, implementationSections);
+  if (input.kind === "handoff")
+    validateSections(input.content, handoffSections);
   return ReportSchema.parse({
     version: 1,
     ...input,

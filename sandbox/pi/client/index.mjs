@@ -1,4 +1,5 @@
 import { readClientConfig, startLinkServer } from "./link.mjs";
+import { contextPressureEvent, crossedHandoffThreshold } from "./context.mjs";
 import { runtimeIdentity } from "./environment.mjs";
 import { registerModelRoute } from "./model.mjs";
 import { turnEvent } from "./turn.mjs";
@@ -8,6 +9,27 @@ let activeServer;
 let activeContext;
 let lastAssistant;
 const deliveredMessageIds = [];
+let lastPressureLevel = "normal";
+
+function currentPressure(context, config) {
+  if (!context) return null;
+  return contextPressureEvent(context.getContextUsage(), config.context);
+}
+
+function publishContextPressure(context, config) {
+  if (!activeServer) return;
+  const pressure = currentPressure(context, config);
+  if (!pressure) return;
+  activeServer.emit("context-pressure", pressure);
+  if (crossedHandoffThreshold(lastPressureLevel, pressure.level)) {
+    activeServer.emit("handoff-requested", {
+      source: "context-pressure",
+      reason: "Context usage reached the configured Handoff threshold.",
+      pressure,
+    });
+  }
+  lastPressureLevel = pressure.level;
+}
 
 function messageText(message) {
   const references =
@@ -24,6 +46,7 @@ export default async function orchestratorClient(pi) {
   pi.on("session_start", async (_event, context) => {
     if (activeServer) await activeServer.close();
     activeContext = context;
+    lastPressureLevel = "normal";
     const runtime = runtimeIdentity({
       client_version: process.env.ORCHESTRATOR_CLIENT_VERSION,
       pi_version: process.env.ORCHESTRATOR_PI_VERSION,
@@ -61,8 +84,9 @@ export default async function orchestratorClient(pi) {
     );
   });
 
-  pi.on("turn_end", async (event) => {
+  pi.on("turn_end", async (event, context) => {
     if (event.message?.role === "assistant") lastAssistant = event.message;
+    publishContextPressure(context, config);
   });
 
   pi.on("agent_settled", async () => {
@@ -79,21 +103,42 @@ export default async function orchestratorClient(pi) {
     activeContext = undefined;
     lastAssistant = undefined;
     deliveredMessageIds.splice(0);
+    lastPressureLevel = "normal";
     const server = activeServer;
     activeServer = undefined;
     if (server) await server.close();
   });
 
   pi.registerCommand("orchestrate", {
-    description: "Show the active Orchestrator Link identity",
+    description: "Inspect or request an Orchestrator action",
     handler: async (args, context) => {
-      if (args.trim() !== "status") {
-        context.ui.notify("Usage: /orchestrate status", "warning");
+      const [action, ...rest] = args.trim().split(/\s+/);
+      if (action === "handoff") {
+        if (!activeServer) {
+          context.ui.notify("The Orchestrator Link is unavailable", "error");
+          return;
+        }
+        const pressure = currentPressure(context, config);
+        activeServer.emit("handoff-requested", {
+          source: "manual",
+          reason:
+            rest.join(" ").trim() || "The current Session requested Handoff.",
+          ...(pressure ? { pressure } : {}),
+        });
+        context.ui.notify("Handoff requested", "info");
+        return;
+      }
+      if (action !== "status") {
+        context.ui.notify(
+          "Usage: /orchestrate status | /orchestrate handoff [reason]",
+          "warning",
+        );
         return;
       }
       const config = await readClientConfig(configPath);
+      const pressure = currentPressure(context, config);
       context.ui.notify(
-        `${config.identity.run}/${config.identity.seat}/${config.identity.session} epoch ${config.identity.epoch}`,
+        `${config.identity.run}/${config.identity.seat}/${config.identity.session} epoch ${config.identity.epoch}${pressure ? ` · ${pressure.percent.toFixed(1)}% context` : ""}`,
         "info",
       );
     },

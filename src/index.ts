@@ -12,6 +12,7 @@ export * from "./digest.js";
 export * from "./error.js";
 export * from "./event.js";
 export * from "./git.js";
+export * from "./handoff.js";
 export * from "./init.js";
 export * from "./link.js";
 export * from "./local.js";

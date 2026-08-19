@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IdentifierSchema } from "./config.js";
+import { IdentifierSchema, type ContextThresholds } from "./config.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { MailboxRouter, type MailboxLink } from "./mailbox.js";
 import type { ResolvedModelRoute } from "./model.js";
@@ -82,6 +82,7 @@ export interface RecoverSessionOptions {
   readonly clientVersion?: string;
   readonly startupTimeoutMs?: number;
   readonly turnTimeoutMs?: number;
+  readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly briefDigest?: string;
 }
@@ -329,7 +330,7 @@ export class SessionReconciler {
   }
 
   async activate(
-    session: ReadSession,
+    session: SessionRuntime,
     pane?: Omit<Parameters<ProjectionRegistry["ensurePane"]>[0], "identity">,
   ): Promise<void> {
     const identity = SessionIdentitySchema.parse(session.identity);
@@ -394,6 +395,7 @@ export class SessionReconciler {
       ...(options.turnTimeoutMs
         ? { turnTimeoutMs: options.turnTimeoutMs }
         : {}),
+      ...(options.context ? { context: options.context } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.briefDigest ? { briefDigest: options.briefDigest } : {}),
     });
@@ -452,7 +454,9 @@ export class SessionReconciler {
     }
 
     await this.mailbox.detach(expected);
-    await this.registry.transition(expected, { status: "stopped", reason });
+    if (!terminalSession(current)) {
+      await this.registry.transition(expected, { status: "stopped", reason });
+    }
     if (options.runtime) {
       await options.runtime.stop();
     } else if (current.sandbox && actualSandbox) {

@@ -1836,6 +1836,7 @@ export async function runReview(
         workspaceSource: source,
         model,
         brief,
+        context: current.project.config.context,
         inputs: [patchInput],
         policyDirectory,
         ...(options.imageContext ? { imageContext: options.imageContext } : {}),

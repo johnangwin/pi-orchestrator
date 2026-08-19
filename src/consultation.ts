@@ -1211,6 +1211,7 @@ async function executeRole(input: {
       snapshot: input.snapshot,
       model,
       brief,
+      context: input.options.project.config.context,
       policyDirectory: path.resolve(
         input.options.policyDirectory ?? bundledPiPolicyDirectory(),
       ),

@@ -15,9 +15,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { CompiledBrief } from "./brief.js";
+import {
+  ContextThresholdsSchema,
+  DEFAULT_CONTEXT_THRESHOLDS,
+  type ContextThresholds,
+} from "./config.js";
 import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
-import { HostLink, TcpLinkTransport } from "./link.js";
+import { HostLink, TcpLinkTransport, type LinkEventFrame } from "./link.js";
 import { VersionSchema } from "./local.js";
 import type { Message } from "./message.js";
 import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
@@ -42,7 +47,7 @@ import {
 import { verifySourceSnapshot, type SourceSnapshot } from "./snapshot.js";
 
 export const PI_RUNTIME_VERSION = "0.84.2";
-export const PI_CLIENT_VERSION = "0.2.1";
+export const PI_CLIENT_VERSION = "0.2.2";
 export const PI_LINK_PORT = 41_727;
 
 export const PiSessionModelSchema = z
@@ -125,6 +130,7 @@ export const PiClientConfigSchema = z
     client_version: VersionSchema,
     pi_version: VersionSchema,
     profile: z.enum(["read", "write"]).default("read"),
+    context: ContextThresholdsSchema.default(DEFAULT_CONTEXT_THRESHOLDS),
     source_digest: z
       .string()
       .regex(/^sha256:[a-f0-9]{64}$/)
@@ -184,6 +190,7 @@ interface StartSessionOptions {
   readonly linkPort?: number;
   readonly startupTimeoutMs?: number;
   readonly turnTimeoutMs?: number;
+  readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
   readonly inputs?: readonly SessionInput[];
@@ -215,6 +222,7 @@ export interface ResumeReadSessionOptions {
   readonly clientVersion?: string;
   readonly startupTimeoutMs?: number;
   readonly turnTimeoutMs?: number;
+  readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly briefDigest?: string;
 }
@@ -233,6 +241,7 @@ export interface ReadSessionInfo {
   readonly openshell: OpenShellPreflight;
   readonly piVersion: string;
   readonly clientVersion: string;
+  readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
   readonly inference?: OpenShellInferenceRoute;
   readonly briefDigest?: string;
@@ -619,6 +628,13 @@ export class ReadSession {
     return this.link.deliver(message);
   }
 
+  waitForEvent(
+    predicate: (frame: LinkEventFrame) => boolean,
+    timeoutMs?: number,
+  ): Promise<LinkEventFrame> {
+    return this.link.waitForEvent(predicate, timeoutMs);
+  }
+
   async run(
     message: Message,
     timeoutMs = this.turnTimeoutMs,
@@ -823,6 +839,9 @@ async function resumeSession(
       "Model-routed Session recovery requires both a model route and an expected Brief digest",
     );
   }
+  const context = ContextThresholdsSchema.parse(
+    options.context ?? DEFAULT_CONTEXT_THRESHOLDS,
+  );
 
   const [sandbox, preflight, policy] = await Promise.all([
     options.client.getSandbox(expectedSandbox.name),
@@ -883,6 +902,15 @@ async function resumeSession(
     throw new OrchestratorError(
       "session_profile_mismatch",
       `Immutable Sandbox configuration declares '${config.profile}', not '${profile}'`,
+    );
+  }
+  if (
+    options.context !== undefined &&
+    canonicalJson(config.context) !== canonicalJson(context)
+  ) {
+    throw new OrchestratorError(
+      "session_context_policy_stale",
+      "Sandbox Session was created under another context-pressure policy",
     );
   }
   if (config.policy_digest !== policy.digest) {
@@ -986,6 +1014,7 @@ async function resumeSession(
         openshell: preflight,
         piVersion,
         clientVersion,
+        context: config.context,
         ...(model ? { model } : {}),
         ...(inference ? { inference } : {}),
         ...(config.brief ? { briefDigest: config.brief.digest } : {}),
@@ -1038,6 +1067,9 @@ async function startSession(
   const model = options.model
     ? ResolvedModelRouteSchema.parse(options.model)
     : undefined;
+  const context = ContextThresholdsSchema.parse(
+    options.context ?? DEFAULT_CONTEXT_THRESHOLDS,
+  );
   if ((model === undefined) !== (options.brief === undefined)) {
     throw new OrchestratorError(
       "invalid_session_input",
@@ -1100,6 +1132,7 @@ async function startSession(
     client_version: clientVersion,
     pi_version: piVersion,
     profile,
+    context,
     source_digest: source.sourceDigest,
     policy_digest: policy.digest,
     inputs: inputs.map((input) => input.config),
@@ -1198,6 +1231,7 @@ async function startSession(
         openshell: preflight,
         piVersion,
         clientVersion,
+        context: config.context,
         ...(model ? { model } : {}),
         ...(inference ? { inference } : {}),
         ...(options.brief ? { briefDigest: options.brief.digest } : {}),

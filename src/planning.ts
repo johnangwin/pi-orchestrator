@@ -2104,6 +2104,7 @@ export async function runPlanningQuestionnaire(
         snapshot,
         model,
         brief,
+        context: options.project.config.context,
         policyDirectory,
         ...(options.imageContext ? { imageContext: options.imageContext } : {}),
         ...(options.startupTimeoutMs

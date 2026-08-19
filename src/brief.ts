@@ -36,6 +36,7 @@ export interface BriefInput {
   readonly plan: Pick<LoadedPlan, "id" | "revision" | "digest" | "markdown">;
   readonly decisions: readonly Decision[];
   readonly dependencyReports: readonly Report[];
+  readonly handoff?: Report;
   readonly skills: readonly LoadedSkill[];
   readonly outputContract: string;
   readonly sourceAnchors: readonly SourceAnchor[];
@@ -70,6 +71,7 @@ export interface BriefBinding {
   readonly decisionsDigest: Digest;
   readonly sourceDigests: Readonly<Record<string, Digest>>;
   readonly reviewDigest?: Digest;
+  readonly handoffDigest?: Digest;
   readonly identity: BriefIdentity;
 }
 
@@ -127,6 +129,14 @@ export function compileBrief(input: BriefInput): CompiledBrief {
             .map((report) => `### ${report.id}\n\n${report.content}`)
             .join("\n\n"),
     ),
+    ...(input.handoff
+      ? [
+          section(
+            "Current Handoff",
+            `Report: ${input.handoff.id}\nContent digest: ${input.handoff.content_digest}\n\n${input.handoff.content}`,
+          ),
+        ]
+      : []),
     section("Required Output", input.outputContract),
     section(
       "Source Anchors",
@@ -184,6 +194,13 @@ export function compileBrief(input: BriefInput): CompiledBrief {
           ]),
         }
       : {}),
+    ...(input.handoff
+      ? {
+          handoffDigest: digestParts("pi-orchestrator/handoff-context/v1", [
+            ["handoff", canonicalJson(input.handoff)],
+          ]),
+        }
+      : {}),
     identity: { ...input.identity },
   };
 
@@ -216,6 +233,9 @@ export function briefStaleReasons(
   }
   if (previous.reviewDigest !== current.reviewDigest) {
     reasons.push("Review evidence changed");
+  }
+  if (previous.handoffDigest !== current.handoffDigest) {
+    reasons.push("Handoff changed");
   }
   if (canonicalJson(previous.identity) !== canonicalJson(current.identity)) {
     reasons.push("Session identity or epoch changed");

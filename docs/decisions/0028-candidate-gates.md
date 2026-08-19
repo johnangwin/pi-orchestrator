@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; Workspace storage amended by ADR 0030
 
 ## Context
 

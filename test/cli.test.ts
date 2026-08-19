@@ -41,6 +41,9 @@ describe("host CLI", () => {
     expect(help).toContain("review [options] <task>");
     expect(help).toContain("metrics [options] <run>");
     expect(help).toContain("report [options] <run>");
+
+    const canaryHelp = await orchestrator(["canary", "--help"]);
+    expect(canaryHelp).toContain("--workspace-volume");
   });
 
   it("creates the standalone first-run Project", async () => {

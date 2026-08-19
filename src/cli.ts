@@ -37,6 +37,7 @@ import {
   type PlanningQuestionnaire,
 } from "./planning.js";
 import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
+import { runWorkspaceVolumeCanary } from "./proof.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
 import { resolveReviewModelRoute, resolveRoleModelRoute } from "./model.js";
 import { runRequiredReviews } from "./review.js";
@@ -72,6 +73,7 @@ interface DoctorOptions extends OpenShellOptions {
 }
 
 interface CanaryCliOptions extends OpenShellOptions {
+  readonly workspaceVolume?: boolean;
   readonly image?: string;
   readonly json?: boolean;
   readonly policies?: string;
@@ -414,9 +416,14 @@ program
   .option("--image <source>", "probe image path or registry reference")
   .option("--policies <directory>", "Sandbox policy directory")
   .option("--profile <profile...>", "profiles to verify: read, write, check")
+  .option(
+    "--workspace-volume",
+    "run the shared Workspace volume proof instead of base profiles",
+  )
   .option("--json", "emit JSON")
   .action(async (options: CanaryCliOptions) => {
-    const { client, requiredVersion } = await configuredOpenShell(options);
+    const configured = await configuredOpenShell(options);
+    const { requiredVersion } = configured;
     if (requiredVersion === undefined) {
       throw new OrchestratorError(
         "openshell_version_unpinned",
@@ -431,8 +438,60 @@ program
       (path.isAbsolute(options.image) || options.image.startsWith("."))
         ? path.resolve(options.image)
         : options.image;
+    if (options.workspaceVolume) {
+      if (options.profile !== undefined) {
+        throw new OrchestratorError(
+          "invalid_canary_profiles",
+          "--profile cannot be combined with --workspace-volume",
+        );
+      }
+      const settings = configured.local?.openshell.shared_workspace;
+      if (!settings) {
+        throw new OrchestratorError(
+          "shared_workspace_disabled",
+          "The Workspace-volume canary requires openshell.shared_workspace in machine-local configuration",
+        );
+      }
+      const gateway = options.gateway ?? settings.gateway;
+      const client = new OpenShellClient({
+        command: options.openshell ?? configured.local?.openshell.command,
+        ...(gateway ? { gateway } : {}),
+        workspace:
+          options.workspace ??
+          configured.local?.openshell.workspace ??
+          "default",
+        requiredVersion,
+      });
+      const result = await runWorkspaceVolumeCanary({
+        client,
+        settings,
+        ...(image ? { image } : {}),
+        ...(options.policies
+          ? { policyDirectory: path.resolve(options.policies) }
+          : {}),
+        projectRoot: process.cwd(),
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(
+          `OpenShell Workspace-volume canary: ${result.passed ? "PASS" : "FAIL"}`,
+        );
+        console.log(
+          `  ${result.openshell.gateway}: OpenShell ${result.openshell.gatewayVersion}, ${result.openshell.driver} ${result.openshell.driverVersion}`,
+        );
+        console.log(`  Evidence: ${result.evidenceDigest}`);
+        for (const assertion of result.assertions) {
+          if (!assertion.passed) {
+            console.log(`  ${assertion.id}: ${assertion.detail}`);
+          }
+        }
+      }
+      if (!result.passed) process.exitCode = 1;
+      return;
+    }
     const result = await runCanary({
-      client,
+      client: configured.client,
       ...(image ? { image } : {}),
       ...(options.policies
         ? { policyDirectory: path.resolve(options.policies) }

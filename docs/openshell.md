@@ -11,6 +11,12 @@ openshell:
   command: /opt/homebrew/bin/openshell
   required_version: "0.0.106"
   workspace: default
+  shared_workspace:
+    enabled: true
+    gateway: openshell
+    driver: docker
+    driver_version: "29.5.2"
+    docker_command: /usr/local/bin/docker
 ```
 
 Run `orchestrator doctor` before creating any Sandbox. The preflight requires:
@@ -28,6 +34,22 @@ orchestrator canary
 ```
 
 The command fails unless the version is pinned, all selected profiles pass, and every disposable Sandbox is removed. Use `--profile read` (or `write`/`check`) for a focused diagnostic run; the default is all three.
+
+## Shared Workspace volume
+
+Version 0.3 uses one plain Docker named volume per Run. The Supervisor creates and inspects it; Project configuration and model input cannot supply raw volume names or mount arguments. Bind-backed volumes and host bind mounts are rejected.
+
+The trusted proof command is:
+
+```sh
+orchestrator canary --workspace-volume
+```
+
+It compiles normalized volume-subpath capabilities, checks the observed Linux mount table, exercises one writer and one reader over a shared Workspace, verifies protected and restricted paths, and removes both Sandboxes and the disposable volume. It does not switch ordinary Sessions from the v0.2 source path.
+
+The 2026-08-19 proof passed on OpenShell 0.0.106 and Docker 29.5.2 with hard Landlock enabled. The Project root was native `ext4` and read-only, the Task subpath was writable only to the writer, protected and restricted descendants remained constrained, the reader observed the write, Git and host paths were absent, and cleanup completed. See [OpenShell Workspace-Volume Proof](proofs/openshell-workspace-volume.md).
+
+The rejected host-bind experiment is retained in [OpenShell Direct-Mount Proof](proofs/openshell-direct-mounts.md). Do not enable bind mounts or weaken Landlock; neither is needed by the accepted design.
 
 ## macOS Docker callback
 

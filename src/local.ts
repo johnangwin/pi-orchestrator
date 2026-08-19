@@ -13,12 +13,38 @@ export const VersionSchema = z
     "must be a semantic version without a leading v",
   );
 
+export const SharedWorkspaceSettingsSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    gateway: z.string().min(1).optional(),
+    driver: z.literal("docker").default("docker"),
+    driver_version: VersionSchema.optional(),
+    docker_command: z.string().min(1).default("docker"),
+  })
+  .strict()
+  .superRefine((settings, context) => {
+    if (!settings.enabled) return;
+    for (const field of ["gateway", "driver_version"] as const) {
+      if (settings[field] === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: "is required when shared workspaces are enabled",
+        });
+      }
+    }
+  });
+export type SharedWorkspaceSettings = z.infer<
+  typeof SharedWorkspaceSettingsSchema
+>;
+
 const OpenShellSettingsSchema = z
   .object({
     command: z.string().min(1).default("openshell"),
     required_version: VersionSchema.optional(),
     workspace: z.string().min(1).default("default"),
     gateways: z.record(z.string(), z.string().min(1)).default({}),
+    shared_workspace: SharedWorkspaceSettingsSchema.optional(),
   })
   .passthrough();
 

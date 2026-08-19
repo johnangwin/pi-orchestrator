@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseLocalConfig } from "../src/local.js";
+import { OpenShellMountSet } from "../src/mount.js";
 import {
   OpenShellClient,
   parseOpenShellInferenceRoute,
@@ -10,6 +11,7 @@ import {
   type ProcessResult,
   type ProcessRunner,
 } from "../src/openshell.js";
+import { DockerVolumeCapability } from "../src/volume.js";
 
 type StubResult = Omit<ProcessResult, "exitCode"> &
   Partial<Pick<ProcessResult, "exitCode">>;
@@ -164,6 +166,69 @@ System inference:
   });
 });
 
+describe("OpenShell gateway inspection", () => {
+  it("reads the exact local driver and gateway registration", async () => {
+    const client = new OpenShellClient({
+      gateway: "openshell-direct",
+      runner: runner({
+        "gateway info --output json --gateway openshell-direct --workspace default":
+          {
+            stdout: JSON.stringify({
+              auth: null,
+              compute_drivers: [
+                {
+                  capabilities: {
+                    driver_name: "docker",
+                    driver_version: "29.5.2",
+                  },
+                  name: "docker",
+                },
+              ],
+              gateway: "openshell-direct",
+              server: "https://localhost:17670",
+              status: "healthy",
+              version: "0.0.106",
+            }),
+            stderr: "",
+          },
+        "gateway list --output json": {
+          stdout: JSON.stringify([
+            {
+              active: true,
+              auth: "mtls",
+              endpoint: "https://localhost:17670",
+              is_remote: false,
+              name: "openshell-direct",
+              remote_host: null,
+              resolved_host: null,
+              source: "user",
+              type: "local",
+            },
+          ]),
+          stderr: "",
+        },
+      }),
+    });
+
+    await expect(client.getGatewayInfo()).resolves.toMatchObject({
+      gateway: "openshell-direct",
+      compute_drivers: [
+        {
+          name: "docker",
+          capabilities: { driver_version: "29.5.2" },
+        },
+      ],
+    });
+    await expect(client.listGateways()).resolves.toEqual([
+      expect.objectContaining({
+        name: "openshell-direct",
+        is_remote: false,
+        type: "local",
+      }),
+    ]);
+  });
+});
+
 const readySandbox = JSON.stringify({
   annotations: {},
   created_at: "2026-08-17 23:39:16",
@@ -275,6 +340,74 @@ describe("OpenShell Sandbox lifecycle", () => {
     await client.deleteSandbox("pio-cny-read-001");
 
     expect(calls).toHaveLength(8);
+  });
+
+  it("serializes only a host-compiled volume capability", async () => {
+    const volume = DockerVolumeCapability.fromInspection(
+      {
+        CreatedAt: "2026-08-19T12:00:00Z",
+        Driver: "local",
+        Labels: { "io.pi-orchestrator.kind": "run-workspace" },
+        Mountpoint: "/var/lib/docker/volumes/pio-run-example/_data",
+        Name: "pio-run-example",
+        Options: null,
+        Scope: "local",
+      },
+      "pio-run-example",
+      { "io.pi-orchestrator.kind": "run-workspace" },
+    );
+    const mountSet = OpenShellMountSet.forVolume({
+      volume,
+    });
+    const calls: string[][] = [];
+    const create = [
+      "sandbox",
+      "create",
+      "--name",
+      "pio-cny-read-001",
+      "--from",
+      "/image",
+      "--policy",
+      "/read.yaml",
+      "--driver-config-json",
+      mountSet.driverConfigJson(),
+      "--no-auto-providers",
+      "--no-tty",
+      "--workspace",
+      "default",
+      "--",
+      "/usr/bin/true",
+    ];
+    const client = new OpenShellClient({
+      runner: runner(
+        {
+          [create.join(" ")]: { stdout: "created", stderr: "" },
+          "sandbox get pio-cny-read-001 --output json --workspace default": {
+            stdout: readySandbox,
+            stderr: "",
+          },
+        },
+        calls,
+      ),
+    });
+    await expect(
+      client.createSandbox({
+        name: "pio-cny-read-001",
+        from: "/image",
+        policyPath: "/read.yaml",
+        mountSet,
+      }),
+    ).resolves.toMatchObject({ phase: "Ready" });
+    expect(calls[0]).toEqual(create);
+
+    await expect(
+      client.createSandbox({
+        name: "pio-cny-read-001",
+        from: "/image",
+        policyPath: "/read.yaml",
+        mountSet: {} as OpenShellMountSet,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_openshell_mount_set" });
   });
 
   it("rejects Sandbox names that OpenShell cannot represent", async () => {
@@ -456,6 +589,39 @@ models:
         },
       },
     });
+  });
+
+  it("requires a complete shared Workspace volume configuration", () => {
+    expect(
+      parseLocalConfig(`version: 1
+openshell:
+  required_version: "0.0.106"
+  shared_workspace:
+    enabled: true
+    gateway: openshell
+    driver: docker
+    driver_version: "29.5.2"
+    docker_command: /usr/local/bin/docker
+`),
+    ).toMatchObject({
+      openshell: {
+        shared_workspace: {
+          enabled: true,
+          gateway: "openshell",
+          driver: "docker",
+          driver_version: "29.5.2",
+          docker_command: "/usr/local/bin/docker",
+        },
+      },
+    });
+
+    expect(() =>
+      parseLocalConfig(`version: 1
+openshell:
+  shared_workspace:
+    enabled: true
+`),
+    ).toThrow("is required");
   });
 
   it("rejects a floating version label", () => {

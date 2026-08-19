@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import { OrchestratorError } from "./error.js";
 import { VersionSchema } from "./local.js";
+import { OpenShellMountSet } from "./mount.js";
 
 export interface ProcessResult {
   readonly stdout: string;
@@ -144,6 +145,47 @@ export const OpenShellStatusSchema = z.object({
 });
 export type OpenShellStatus = z.infer<typeof OpenShellStatusSchema>;
 
+export const OpenShellGatewayInfoSchema = z
+  .object({
+    auth: z.unknown().nullable(),
+    compute_drivers: z.array(
+      z
+        .object({
+          capabilities: z
+            .object({
+              driver_name: z.string().min(1),
+              driver_version: z.string().min(1),
+            })
+            .passthrough(),
+          name: z.string().min(1),
+        })
+        .passthrough(),
+    ),
+    gateway: z.string().min(1),
+    server: z.string().url(),
+    status: z.string().min(1),
+    version: VersionSchema,
+  })
+  .passthrough();
+export type OpenShellGatewayInfo = z.infer<typeof OpenShellGatewayInfoSchema>;
+
+export const OpenShellGatewayRegistrationSchema = z
+  .object({
+    active: z.boolean(),
+    auth: z.string().min(1),
+    endpoint: z.string().url(),
+    is_remote: z.boolean(),
+    name: z.string().min(1),
+    remote_host: z.string().nullable(),
+    resolved_host: z.string().nullable(),
+    source: z.string().min(1),
+    type: z.string().min(1),
+  })
+  .passthrough();
+export type OpenShellGatewayRegistration = z.infer<
+  typeof OpenShellGatewayRegistrationSchema
+>;
+
 export const OpenShellSandboxSchema = z
   .object({
     annotations: z.record(z.string(), z.unknown()).default({}),
@@ -184,6 +226,7 @@ export interface CreateSandboxOptions {
   readonly from: string;
   readonly policyPath: string;
   readonly labels?: Readonly<Record<string, string>>;
+  readonly mountSet?: OpenShellMountSet;
   readonly command?: readonly string[];
   readonly timeoutMs?: number;
 }
@@ -450,6 +493,45 @@ export class OpenShellClient {
     return parseOpenShellInferenceRoute(stdout);
   }
 
+  async getGatewayInfo(): Promise<OpenShellGatewayInfo> {
+    const { stdout } = await this.execute([
+      "gateway",
+      "info",
+      "--output",
+      "json",
+      ...this.globalArgs(),
+    ]);
+    const result = OpenShellGatewayInfoSchema.safeParse(
+      parseJson(stdout, "gateway info"),
+    );
+    if (!result.success) {
+      throw new OrchestratorError(
+        "invalid_openshell_output",
+        `OpenShell gateway info output did not match the expected contract: ${result.error.message}`,
+      );
+    }
+    return result.data;
+  }
+
+  async listGateways(): Promise<OpenShellGatewayRegistration[]> {
+    const { stdout } = await this.execute([
+      "gateway",
+      "list",
+      "--output",
+      "json",
+    ]);
+    const result = z
+      .array(OpenShellGatewayRegistrationSchema)
+      .safeParse(parseJson(stdout, "gateway list"));
+    if (!result.success) {
+      throw new OrchestratorError(
+        "invalid_openshell_output",
+        `OpenShell gateway list output did not match the expected contract: ${result.error.message}`,
+      );
+    }
+    return result.data;
+  }
+
   async listSandboxes(): Promise<OpenShellSandbox[]> {
     const { stdout } = await this.execute([
       "sandbox",
@@ -517,6 +599,15 @@ export class OpenShellClient {
         "A Sandbox creation command cannot be empty",
       );
     }
+    if (
+      options.mountSet !== undefined &&
+      !(options.mountSet instanceof OpenShellMountSet)
+    ) {
+      throw new OrchestratorError(
+        "invalid_openshell_mount_set",
+        "OpenShell Workspace volumes require a host-compiled mount capability",
+      );
+    }
     await this.execute(
       [
         "sandbox",
@@ -527,6 +618,9 @@ export class OpenShellClient {
         options.from,
         "--policy",
         options.policyPath,
+        ...(options.mountSet
+          ? ["--driver-config-json", options.mountSet.driverConfigJson()]
+          : []),
         ...Object.entries(labels)
           .sort(([left], [right]) => left.localeCompare(right))
           .flatMap(([key, value]) => ["--label", `${key}=${value}`]),

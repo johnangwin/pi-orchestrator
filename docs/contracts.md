@@ -163,11 +163,12 @@ openshell:
     write: sandbox/policies/write.yaml
     check: sandbox/policies/check.yaml
 
-  direct_mounts:
-    acknowledged: true
-    allowed_worktree_roots:
-      - ~/.local/share/pi-orchestrator/worktrees
-    sentinel_path: ~/.local/share/pi-orchestrator/mount-sentinel
+  shared_workspace:
+    enabled: true
+    gateway: local
+    driver: docker
+    driver_version: "29.5.2"
+    docker_command: docker
 
 models:
   frontier-lead:
@@ -190,8 +191,8 @@ cmux:
   command: cmux
   workspace_prefix: orchestrator
 
-worktrees:
-  root: ~/.local/share/pi-orchestrator/worktrees
+workspace:
+  volume_prefix: pi-orchestrator
 ```
 
 Model Profile names are Project-defined identifiers, not a fixed enum. Every referenced profile resolves to one exact gateway, concrete model, API shape, locality, context window, and output limit. Optional reasoning and token-pricing metadata becomes part of the resolved route when present.
@@ -329,11 +330,11 @@ Any byte change invalidates approval.
 
 ## 7. Planning and Plan publication
 
-Planning starts from a clean exact commit and one clean detached planning worktree outside the primary checkout. Planning Agents receive the same worktree read-only with Git metadata and restricted paths masked. Planning output remains an immutable host Artifact until publication.
+Planning starts from a clean exact commit materialized once in a temporary Workspace volume. Planning Agents receive the same `project` subtree read-only with Git metadata absent and restricted paths masked. Planning output remains an immutable host Artifact until publication.
 
 Questionnaires, Decisions, independent Architecture and Quant consultations, criticism, and Lead synthesis retain the v0.2 evidence and transcript-isolation rules. Every result binds the exact planning commit, Workspace manifest, Role, permission ceiling, Model Profile, resolved route, policy, image, Brief, Session identity, and upstream durable records.
 
-Publication creates or recovers the reserved Run branch and worktree from the planning commit, writes only validated Plan files, and presents the exact Plan, Git diff, one-line subject, and proposal digest in a transient trusted cmux pane. One human confirmation may authorize both the Plan commit and approval only when both bind to identical bytes.
+Publication creates or recovers the reserved Run branch and volume from the planning commit, writes only validated Plan files through a trusted helper, and presents the exact Plan, Git diff, one-line subject, and proposal digest in a transient trusted cmux pane. One human confirmation may authorize both the Plan commit and approval only when both bind to identical bytes.
 
 Approval records:
 
@@ -427,29 +428,29 @@ stale
 waived
 ```
 
-A Run owns one branch and linked worktree outside the primary checkout. The Workspace record contains:
+A Run owns one branch and one plain Docker named volume. The Workspace record contains:
 
 ```text
-canonical path
+volume name, labels, and inspected identity digest
 full branch ref
-repository common-directory identity
+repository identity
 approved base commit
 current HEAD
 phase: stable | mutating | candidate
 monotonic generation
 current manifest digest
-current host-diff digest
+current Git-diff digest
 active Write Lease ID, if any
 current Candidate ID, if any
 ```
 
-The Project checkout, Run Workspace, and worktree root are canonicalized with symlink-aware containment checks. The Supervisor never resets, cleans, stashes, removes, rehomes, or adopts unexpected content.
+The Supervisor rejects bind-backed volumes, driver options, unexpected labels, remote gateways, and volume reuse across Runs. It never resets, cleans, removes, rehomes, or adopts unexpected Workspace content.
 
 Task runtime state contains its input commit and Workspace generation, implementation and Review attempts, assigned Agent, Change Set IDs, Candidate ID, required Gate records, output commit, and blocker. A Task may enter `checking` only with a frozen Candidate and may become `accepted` only through a passing human Commit Gate.
 
-## 10. Workspace manifests and direct projection
+## 10. Workspace manifests and volume projection
 
-A stable Workspace manifest includes every bounded entry below the Run worktree except `.git`, including tracked, untracked, and ignored entries. The walker uses `lstat`, does not traverse symlinks, and sorts paths by raw UTF-8 byte order.
+A stable Workspace manifest includes every bounded entry below the Run volume's `project` subtree, including tracked, untracked, and ignored entries. A pinned model-free helper uses `lstat`, does not traverse symlinks, and sorts paths by raw UTF-8 byte order.
 
 Each entry records:
 
@@ -461,21 +462,21 @@ content SHA-256 for regular and executable files
 link-target bytes and SHA-256 for symlinks
 ```
 
-Special files, invalid UTF-8 paths, traversal, unsafe symlinks, unexpected multiple hard links, changing reads, excessive entries, or excessive bytes fail closed. Git status is collected separately with a scrubbed NUL-delimited porcelain command. The host validates the linked-worktree `.git` entry and common directory but never includes Git metadata in source digests.
+Special files, invalid UTF-8 paths, traversal, unsafe symlinks, unexpected multiple hard links, changing reads, excessive entries, or excessive bytes fail closed. Git status is collected separately through a scrubbed trusted helper. Git metadata is absent from `project` and never included in source digests.
 
 Every model Sandbox mount table must prove:
 
 ```text
-Run Workspace                 /workspace/project     read-only
+Run volume `project` subpath  /workspace/project     read-only
 current Task write roots      same nested paths      read-write only for Lease holder
-.git mask                     nested path            opaque and read-only
+Git metadata                  absent                 not projected
 restricted-path masks         nested paths           opaque and read-only or absent
 Session home and output       private paths          read-write
 ```
 
 The root mount is never writable. Nested write mounts exist only for one current Write Lease. Read-only Agents may observe a mutating Workspace, but no source-bound durable conclusion is accepted until the next stable generation.
 
-Direct mounts require explicit machine-local acknowledgement, an allowed canonical worktree root, a dedicated local gateway, and a passing canary for the exact OpenShell, driver, image, and policy versions. Missing enforcement prevents Session launch.
+Workspace volumes require an explicitly configured local Docker gateway, a plain inspected named volume, and a passing canary for the exact OpenShell, Docker, image, and policy versions. Missing enforcement prevents Session launch.
 
 ## 11. Agents, Sessions, and Sandboxes
 
@@ -558,7 +559,7 @@ Run, Task, Agent, Session, and generation
 Write Lease ID and digest
 baseline and result Workspace generations and manifest digests
 sorted additions, modifications, deletions, mode changes, and symlink changes
-host-diff digest
+Git-diff digest
 scope and path-policy results
 creation timestamp
 ```
@@ -570,7 +571,7 @@ A Candidate freezes the aggregate Task result and contains:
 ```text
 Run, Plan, Task, and approval digests
 Task input commit and Workspace generation
-complete Workspace manifest and host-diff digests
+complete Workspace manifest and Git-diff digests
 ordered Change Set IDs and digests
 sorted changed paths and resulting modes and content digests
 permission, routing, image, policy, and mount provenance
@@ -651,7 +652,7 @@ Commit requires a current Candidate and every required Check and Review Gate pas
 Plan and approval
 Run branch and parent commit
 Task and Candidate
-Workspace manifest and host diff
+Workspace manifest and Git diff
 ordered Change Sets
 changed paths, modes, and content digests
 Check and Review records
@@ -661,7 +662,7 @@ Git author and committer identity
 
 Human confirmation publishes an immutable intent before Git mutation. The hardened Git adapter strips ambient `GIT_*` variables, disables system and global configuration, filesystem monitors, hooks, filters, signing, prompts, rename inference, and shell evaluation. It stages only Candidate paths, verifies every staged blob and mode, creates one exact parent commit, and advances the Run branch with compare-and-swap.
 
-The resulting Commit record and passing Gate are immutable. A retry may adopt only the exact commit authorized by a preceding durable intent. An unauthorized matching commit or any branch, parent, tree, source, evidence, identity, or worktree drift blocks.
+The resulting Commit record and passing Gate are immutable. A retry may adopt only the exact commit authorized by a preceding durable intent. An unauthorized matching commit or any branch, parent, tree, source, evidence, identity, or Workspace drift blocks.
 
 The passing Commit Gate marks the Task accepted, advances the clean Workspace baseline, and unblocks dependencies. Push, merge, deploy, and release remain unavailable.
 

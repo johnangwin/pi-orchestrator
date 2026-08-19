@@ -12,7 +12,8 @@ RUN apt-get update \
     && chown -R 10001:10001 /home/sandbox /sandbox /workspace
 
 COPY canary.sh /usr/local/bin/orchestrator-canary
-RUN chmod 0555 /usr/local/bin/orchestrator-canary
+COPY mount-canary.sh /usr/local/bin/orchestrator-mount-canary
+RUN chmod 0555 /usr/local/bin/orchestrator-canary /usr/local/bin/orchestrator-mount-canary
 
 WORKDIR /sandbox
 

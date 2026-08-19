@@ -252,6 +252,11 @@ openshell:
     quant: openshell-quant
     review: openshell-review
     fast: openshell-fast
+  # Enable after selecting a local Docker gateway, pinning its exact
+  # driver version, and passing orchestrator canary --workspace-volume.
+  shared_workspace:
+    enabled: false
+    docker_command: docker
 
 models:
   plan:

@@ -18,6 +18,7 @@ import {
   CheckIntentSchema,
   createCheckSource,
   runCheck,
+  runRequiredChecks,
   verifyCheckImage,
   verifyCheckSource,
   type CheckImage,
@@ -620,5 +621,46 @@ describe("Check source packages", () => {
     await expect(
       store.getResult(fixture.task.id, result.intent.check, result.intent.id),
     ).rejects.toMatchObject({ code: "check_store_corrupt" });
+  });
+});
+
+describe("required Check orchestration", () => {
+  it("runs Checks in Plan order and stops after the first failure", async () => {
+    const task = fixtureTask({ checks: ["first-check", "second-check"] });
+    const fixture = await createAppliedFixture({
+      task,
+      checks: {
+        "first-check": { argv: ["node", "--test"] },
+        "second-check": { argv: ["node", "--check", "src/fixture.ts"] },
+      },
+    });
+    fixtures.push(fixture);
+    const executed: string[] = [];
+    const result = await runRequiredChecks({
+      store: fixture.store,
+      project: fixture.project,
+      plan: fixture.plan,
+      runId: fixture.runId,
+      taskId: task.id,
+      client: new FakeCheckOpenShell(),
+      executeCheck: async (options) => {
+        executed.push(options.checkId);
+        return {
+          intent: {} as Awaited<ReturnType<typeof runCheck>>["intent"],
+          record: {
+            check: options.checkId,
+            verdict: options.checkId === "first-check" ? "fail" : "pass",
+          } as Awaited<ReturnType<typeof runCheck>>["record"],
+          reused: false,
+          task: (await fixture.store.readRun(fixture.runId)).tasks[task.id]!,
+        };
+      },
+    });
+
+    expect(executed).toEqual(["first-check"]);
+    expect(result).toMatchObject({
+      verdict: "fail",
+      required: ["first-check", "second-check"],
+    });
   });
 });

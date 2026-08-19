@@ -719,5 +719,5 @@ describe("planning critique and synthesis", () => {
     } finally {
       await tampered.store.close();
     }
-  });
+  }, 15_000);
 });

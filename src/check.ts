@@ -286,6 +286,20 @@ export interface RunCheckResult {
   readonly task: TaskRecord;
 }
 
+export interface RunRequiredChecksOptions extends Omit<
+  RunCheckOptions,
+  "checkId"
+> {
+  readonly executeCheck?: (options: RunCheckOptions) => Promise<RunCheckResult>;
+}
+
+export interface RunRequiredChecksResult {
+  readonly verdict: "pass" | "fail";
+  readonly required: readonly string[];
+  readonly checks: readonly RunCheckResult[];
+  readonly task: TaskRecord;
+}
+
 function bundledPath(...segments: string[]): string {
   return fileURLToPath(
     new URL(`../sandbox/${segments.join("/")}`, import.meta.url),
@@ -1910,4 +1924,30 @@ export async function runCheck(
     await stagedImage?.dispose();
     await source.dispose();
   }
+}
+
+export async function runRequiredChecks(
+  options: RunRequiredChecksOptions,
+): Promise<RunRequiredChecksResult> {
+  const task = findTask(options.plan, options.taskId);
+  const { executeCheck = runCheck, ...checkOptions } = options;
+  const results: RunCheckResult[] = [];
+  for (const checkId of task.checks) {
+    const result = await executeCheck({ ...checkOptions, checkId });
+    results.push(result);
+    if (result.record.verdict === "fail") {
+      return {
+        verdict: "fail",
+        required: task.checks,
+        checks: results,
+        task: result.task,
+      };
+    }
+  }
+  return {
+    verdict: "pass",
+    required: task.checks,
+    checks: results,
+    task: results.at(-1)!.task,
+  };
 }

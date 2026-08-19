@@ -12,11 +12,14 @@
   },
   "files": [
     "dist",
+    "docs",
+    "examples",
     "README.md",
     "sandbox"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "example:create": "npm run build --silent && node dist/cli.js example",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

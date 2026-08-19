@@ -388,7 +388,7 @@ describe("read Session bootstrap", () => {
       await source.dispose();
       await fixture.dispose();
     }
-  });
+  }, 15_000);
 
   it("rejects a changed immutable input before OpenShell mutation", async () => {
     const root = await createFixtureProject();

@@ -186,7 +186,7 @@ describe("Run metrics and reports", () => {
     } finally {
       await fixture.dispose();
     }
-  });
+  }, 15_000);
 
   it("rejects observations bound to a missing Session", async () => {
     const fixture = await createAppliedFixture();

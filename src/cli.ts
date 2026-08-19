@@ -8,6 +8,7 @@ import process from "node:process";
 import { Command } from "commander";
 import { approvalFreshness, createApproval } from "./approval.js";
 import { runCanary } from "./canary.js";
+import { runRequiredChecks } from "./check.js";
 import {
   commitTask,
   inspectTaskCommit,
@@ -19,7 +20,9 @@ import { IdentifierSchema, type ReviewLens } from "./config.js";
 import type { Digest } from "./digest.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
+import { createExampleProject } from "./example.js";
 import { initializeProject } from "./init.js";
+import { runImplementation } from "./implementation.js";
 import {
   loadLocalConfig,
   resolveMachinePath,
@@ -96,6 +99,12 @@ interface ReviewOptions extends CommonOptions {
   readonly run?: string;
 }
 
+interface TaskExecutionOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+  readonly run?: string;
+}
+
 interface PlanOptions extends CommonOptions {
   readonly config?: string;
   readonly home?: string;
@@ -119,6 +128,11 @@ interface DraftOptions extends CommonOptions {
 
 interface RunOutputOptions extends CommonOptions {
   readonly home?: string;
+}
+
+interface ExampleOptions {
+  readonly config?: string;
+  readonly json?: boolean;
 }
 
 async function optionalLocalConfig(
@@ -445,6 +459,36 @@ program
       }
     }
     if (!result.passed) process.exitCode = 1;
+  });
+
+program
+  .command("example")
+  .description("create a standalone first-run price calculator Project")
+  .argument(
+    "[directory]",
+    "new standalone Project directory",
+    "./pi-orchestrator-first-run",
+  )
+  .option("--config <path>", "copy an existing machine-local configuration")
+  .option("--json", "emit JSON")
+  .action(async (directory: string, options: ExampleOptions) => {
+    const result = await createExampleProject({
+      directory,
+      ...(options.config ? { localConfig: options.config } : {}),
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`Created first-run Project at ${result.root}`);
+    console.log(`  Plan: ${result.planId}`);
+    console.log(`  Task: ${result.taskId}`);
+    if (result.localConfig === "example") {
+      console.log(
+        "  Configure .pi/orchestrator.local.yaml with your OpenShell gateways and models.",
+      );
+    }
+    console.log(`Next: cd ${result.root}`);
   });
 
 program
@@ -913,6 +957,176 @@ program
           ? JSON.stringify(output, null, 2)
           : `${result.created ? "Started" : "Recovered"} Run ${result.run.id} at ${result.run.worktree}`,
       );
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("implement")
+  .description("run one isolated implementation Session and import its Patch")
+  .argument("<task>", "Task identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--run <id>", "Run identifier when the Task is ambiguous")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: TaskExecutionOptions) => {
+    const taskId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const home = path.resolve(options.home ?? defaultOrchestratorHome());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const store = await ProjectStore.open({
+      home,
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const run = await resolveTaskRun(store, taskId, options.run);
+      const plan = await loadPlan(
+        resolvePlanDirectory(project.root, run.plan_id),
+        catalogFromConfig(project.config),
+      );
+      const task = plan.tasks.find((candidate) => candidate.id === taskId);
+      if (!task) {
+        throw new OrchestratorError(
+          "task_not_found",
+          `Plan '${plan.id}' has no Task '${taskId}'`,
+        );
+      }
+      const role = project.roles.get(task.role);
+      if (!role) {
+        throw new OrchestratorError(
+          "role_not_found",
+          `Task '${taskId}' Role '${task.role}' is unavailable`,
+        );
+      }
+      const model = resolveRoleModelRoute(
+        project.config,
+        local,
+        task.role,
+        role.definition.inference,
+      );
+      const client = new OpenShellClient({
+        command: local.openshell.command,
+        gateway: model.gateway,
+        workspace: local.openshell.workspace,
+        ...(local.openshell.required_version
+          ? { requiredVersion: local.openshell.required_version }
+          : {}),
+      });
+      const result = await runImplementation({
+        store,
+        project,
+        plan,
+        runId: run.id,
+        taskId,
+        local,
+        client,
+      });
+      const output = {
+        run: run.id,
+        task: taskId,
+        task_status: result.task.status,
+        reused: result.reused,
+        changed_paths: result.application.changed_paths,
+        source_digest: result.application.source_digest,
+        diff_digest: result.application.host_diff_digest,
+        report: result.report.id,
+        session: result.identity.session,
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(
+          `Task ${taskId} implementation: ${result.reused ? "reused" : "applied"}`,
+        );
+        for (const changedPath of result.application.changed_paths) {
+          console.log(`  ${changedPath}`);
+        }
+        console.log(`Next: orchestrator check ${taskId}`);
+      }
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("check")
+  .description("run every required Check in a fresh no-inference Sandbox")
+  .argument("<task>", "Task identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--run <id>", "Run identifier when the Task is ambiguous")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: TaskExecutionOptions) => {
+    const taskId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const home = path.resolve(options.home ?? defaultOrchestratorHome());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const store = await ProjectStore.open({
+      home,
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const run = await resolveTaskRun(store, taskId, options.run);
+      const plan = await loadPlan(
+        resolvePlanDirectory(project.root, run.plan_id),
+        catalogFromConfig(project.config),
+      );
+      const client = new OpenShellClient({
+        command: local.openshell.command,
+        workspace: local.openshell.workspace,
+        ...(local.openshell.required_version
+          ? { requiredVersion: local.openshell.required_version }
+          : {}),
+      });
+      const result = await runRequiredChecks({
+        store,
+        project,
+        plan,
+        runId: run.id,
+        taskId,
+        client,
+      });
+      const output = {
+        run: run.id,
+        task: taskId,
+        task_status: result.task.status,
+        verdict: result.verdict,
+        required: result.required,
+        checks: result.checks.map((check) => ({
+          id: check.record.check,
+          verdict: check.record.verdict,
+          exit_code: check.record.exit_code,
+          record_digest: check.record.record_digest,
+          reused: check.reused,
+        })),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(`Task ${taskId} Checks: ${result.verdict.toUpperCase()}`);
+        for (const check of output.checks) {
+          console.log(
+            `  ${check.id}: ${check.verdict.toUpperCase()} (${check.reused ? "reused" : "recorded"})`,
+          );
+        }
+        if (result.verdict === "pass") {
+          console.log(`Next: orchestrator review ${taskId}`);
+        }
+      }
+      if (result.verdict === "fail") process.exitCode = 1;
     } finally {
       await store.close();
     }

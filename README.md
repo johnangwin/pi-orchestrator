@@ -1,148 +1,131 @@
 # Pi Orchestrator
 
-Pi Orchestrator is a standalone host control plane for approved, isolated Pi software-development runs.
+Pi Orchestrator is a host control plane for approved, isolated Pi software-development runs. The host owns workflow state, Git, Sandboxes, Checks, Reviews, and human gates; model-driven Sessions are disposable workers without host credentials or Git metadata.
 
-The host owns authoritative state, Git integration, sandbox lifecycle, checks, reviews, and human gates. Model-driven Pi processes are disposable workers and never receive host state, host Git metadata, or ambient credentials.
+Version 0.2 is under active development. Push, merge, deployment, release, and production access are intentionally unavailable.
 
-## Invariants
-
-- No Session transcript is a required dependency of another Session.
-- Only the host Orchestrator may perform authoritative state transitions.
-- No model-driven Pi process runs with host-user authority.
-- Checks and Reviews are bound to exact Plan, source, and diff digests.
-
-## Repository ownership
-
-This repository contains the reusable host, Pi client extension, adapters, schemas, and sandbox assets. Consumer repositories such as Stepout contain their own `AGENTS.md`, `.agents/` configuration, Skills, Roles, Plans, Decisions, and registered Checks.
-
-## Development
+## Install
 
 Requirements:
 
 - Node.js 22.19 or newer
 - OpenShell 0.0.106 for the current integration baseline
-- cmux 0.64.22 for the current visible-Session baseline
+- cmux 0.64.22 for visible Session support
 - Docker Desktop or another OpenShell-supported compute driver
-- Rust for native sandbox helpers added in later milestones
+
+Install the CLI from this repository:
 
 ```sh
-npm install
-npm run typecheck
-npm test
+git clone https://github.com/johnangwin/pi-orchestrator.git
+cd pi-orchestrator
+npm ci
 npm run build
-
-# Opt-in integration test against the configured local OpenShell gateway
-PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
-
-# Disposable workspace plus local fake model; no remote inference or API key
-PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
-
-# Real Sandbox file export and host-side Artifact import
-PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
-
-# Writable implementation Session, Patch export, transfer, and host replay
-PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
-
-# Complete source reconstruction and fresh no-inference Check Sandbox
-PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
-
-# Exact checked source plus a fresh Review Pi Session and structured Gate result
-PI_ORCHESTRATOR_LIVE_REVIEW=1 npm test -- test/review.live.test.ts
-
-# Read-only cmux version and capability probe; run from a cmux terminal
-PI_ORCHESTRATOR_LIVE_CMUX=1 npm test -- test/cmux.live.test.ts
+npm link
+orchestrator --version
 ```
 
-The host-side state and validation core is complete. The OpenShell adapter verifies an exact CLI version and authenticated, version-matched gateway, owns typed Sandbox lifecycle and transfer operations, and starts loopback-only service forwards. Downloaded Artifacts are bound to exact Session and Sandbox provenance, independently verified, schema-checked, and atomically stored as non-executable files. The committed `read`, `write`, and `check` profiles pass automated isolation canaries in fresh Sandboxes.
-
-The first live Session path is also implemented. It creates an exact committed Git snapshot, builds a per-Session image from the pinned Pi 0.84.2 runtime, starts directly under the `read` policy, loads the sandbox client extension, and establishes an authenticated, epoch-bound Link that survives host reconnection. Logical model aliases resolve to exact OpenShell gateways and models; Pi calls only `inference.local`, and bounded completion events return through the Link.
-
-Run state now includes a durable Seat and Session registry. It serializes lifecycle mutations, retains contiguous Session history, atomically allocates monotonic replacement epochs, rejects stale identities, and preserves immutable OpenShell Sandbox provenance across host restarts.
-
-The cmux host adapter now verifies an exact CLI and capability set, creates retriable Run Workspaces and Seat Panes from durable operation identities, launches trusted command arrays without a host shell, and reports UI drift through read-only reconciliation. Missing panes remain operational failures, never evidence that workflow work completed.
-
-Host Mailbox routing now resolves Seat-addressed Messages to the authoritative current Session and epoch before persistence, advances them only after a valid Link acknowledgement, and redelivers pending work after same-Session reconnection. Delivery failures leave Messages durable and mark the Session disconnected; replacement epochs never inherit old pending Messages implicitly.
-
-Visible Session lifecycle is now recoverable across host restarts. Run state durably binds cmux creation operations, Pane intents, and UUID handles to the exact Session epoch. The reconciler compares Seat, Session, OpenShell Sandbox, Link, and cmux state; it can rebuild a Link from immutable Sandbox input, reattach a missing Pane with a new operation ID, or perform ordered Session replacement. Replacement verifies Sandbox provenance before side effects, closes the old epoch to new delivery, removes external resources, supersedes its pending Messages, and advances the epoch last.
-
-Context-aware Handoff now completes the disposable-Session lifecycle. Pi emits host-verifiable pressure observations from the configured 60/75/85 percent thresholds and requests replacement on the Handoff crossing; an operator can also use `/orchestrate handoff [reason]`. The host freezes a structured checkpoint Report, compiles a fresh epoch-bound Brief, persists the intent before teardown, and activates the replacement through the existing reconciler. Interrupted launch resumes from that evidence, and a terminated predecessor can be replaced without its transcript while retaining its original failure record.
-
-Project-agnostic Run metrics and reporting are now implemented. The host stores digest-validated observations for model turns, Sandbox startup, Link failure, Message delivery, context pressure, and explicit human interventions, then combines them with authoritative Run, Task, Session, Check, Review, Handoff, Report, Commit, Message, and approval evidence. `orchestrator metrics <run>` produces a current summary; `orchestrator report <run>` atomically publishes immutable JSON and Markdown snapshots under host Run state. Reports contain no transcript data, distinguish unpriced model turns from configured cost estimates, and reserve project-specific retrospective conclusions for the proving run.
-
-An approved Plan can now start a durable Run with an isolated host Git worktree. The host records the exact base commit, reserved branch, and canonical worktree path before Git mutation, then verifies repository identity, branch ownership, `HEAD`, and cleanliness on every retry. It never resets, cleans, stashes, or deletes unexpected worktree content.
-
-Implementation Sessions now start from one exact source archive expanded into an immutable base and writable project copy under the final OpenShell `write` policy. The pinned exporter produces a source-bound, binary-capable Patch Artifact; the host imports it through verified Artifact staging and independently replays it against a fresh source extraction before publication. The host then validates every changed path against approved Task scope and protected Project patterns, durably prepares the operation, applies it only to the exact isolated Run worktree, and independently verifies the resulting path, content, mode, source, and diff digests. A retry can reconstruct the verified Patch from durable state and its stored Artifact; unexpected worktree content always blocks without repair.
-
-Authoritative Checks now rebuild the complete patched Project, verify it independently on the host and in a fresh no-inference OpenShell Sandbox, and execute only registered argv arrays. Durable intents make abandoned-Sandbox cleanup retriable; immutable logs and records bind the result to exact Plan, source, diff, command, timeout, image, policy, Sandbox, and OpenShell identities. A failed command moves the Task to rework, while all required passes advance it to fresh Review.
-
-Authoritative Reviews now run each required Lens in a fresh read-only Pi Session and OpenShell Sandbox over the exact complete source evaluated by Checks. Lens-specific Briefs contain the current diff and passing Check evidence but no Implementer transcript or prior Reviewer finding. The host accepts only structured verdicts, revalidates every source, Plan, Check, Role, policy, model, Session, and Sandbox binding after inference, and atomically stores an immutable Review Report before updating the Gate. Interrupted Gate publication reuses exact durable evidence; invalid output and failed attempts require a replacement Session epoch.
-
-Required Review orchestration is available through `orchestrator review <task>`. It runs the Task's declared Lenses in Plan order, routes Quant independently, reuses exact completed evidence, retries only an incomplete Lens, and stops before later Lenses on `rework` or `blocked`. The aggregate result is derived from the Plan and durable Lens Gates rather than stored as another authority.
-
-Human Task commits now close the one-Task vertical slice. The CLI displays the exact Plan, branch, Patch, diff, Check, Review, subject, and author evidence before confirmation, persists that authorization before Git mutation, and creates the commit with hooks and signing disabled. An interrupted operation recovers only the exact approved commit; success accepts the Task, advances dependent Tasks to the new commit, and synchronizes Run completion into Project status.
-
-Repository-aware planning now opens Milestone 5. A clean committed Project is copied into a fresh read-only Lead Session, which must inspect the source and return a bounded structured questionnaire with real source anchors. The host binds that questionnaire to the exact goal, commit, source, Role, model, policy, Brief, Session, and Sandbox evidence. Human option selections or free-form responses are stored as immutable Decisions; no transcript or unapproved implementation Run is created.
-
-Answered planning requests can now launch independent Architecture and Quant consultations. Each fresh read-only Session receives the exact repository, questionnaire, Decisions, Role, Skills, and its own output contract, but no transcript or peer result. Immutable evidence and rendered Reports bind each result to its model route, policy, Brief, Session, Sandbox, source, and attempt; partial failure preserves the completed Role and retries only the failed Role with a fresh Session.
-
-Consulted requests can now produce a validated Plan draft through `orchestrator draft`. A fresh Reviewer-route critic evaluates the frozen specialist Reports before a fresh Lead Session synthesizes `plan.md` and `tasks.yaml`. The host validates required sections, Task dependencies, Roles, Checks, scope, acceptance criteria, required Review Lenses, critic resolutions, source anchors, and Plan revision, then stores the exact draft and immutable evidence outside the repository. The command is resumable and does not modify the Project, approve the Plan, or create a Run.
-
-## OpenShell
-
-Install or update the macOS Homebrew package, restart the matching gateway, and run the repository preflight:
+Install or update OpenShell on macOS:
 
 ```sh
 brew update
+brew install nvidia/openshell/openshell
 brew upgrade nvidia/openshell/openshell
 brew services restart openshell
-orchestrator doctor
-orchestrator canary
 ```
 
-`orchestrator doctor` fails closed when the CLI differs from `openshell.required_version`, the gateway is unavailable or unauthenticated, or the gateway and CLI versions differ. `orchestrator canary` then verifies the actual Sandbox profiles and removes every disposable Sandbox. Update `.pi/orchestrator.local.yaml` deliberately after a new OpenShell version passes both commands; do not use `latest` as the configured version.
+Pi Orchestrator deliberately pins the OpenShell version used by a Project. A newer installation must be tested and then recorded as `openshell.required_version`; the configured value must never be `latest`.
 
-On macOS with the Docker driver, sandbox containers must be able to call the host gateway over IPv4. The proven loopback-only gateway setting is:
+## First Run
 
-```toml
-[openshell]
-version = 1
-
-[openshell.gateway]
-bind_address = "127.0.0.1:17670"
-```
-
-After changing `/opt/homebrew/var/openshell/gateway.toml`, restart the service and rerun `orchestrator doctor`. See [OpenShell Integration](docs/openshell.md) for the probe and troubleshooting details.
-
-## Initial CLI
+Create the standalone price-calculator Project. It is copied outside this repository, initialized with Git, and includes a valid one-Task Plan and zero-dependency tests.
 
 ```sh
-# In a consumer repository
-orchestrator init . --project-id stepout
+orchestrator example ~/pi-orchestrator-first-run
+cd ~/pi-orchestrator-first-run
+node --test
+```
 
-# Gather repository-bound planning evidence
-orchestrator plan "Introduce a strategy identity boundary" --id strategy-boundary-planning
-orchestrator answer strategy-boundary-planning
-orchestrator consult strategy-boundary-planning
-orchestrator draft strategy-boundary-planning
+Edit `.pi/orchestrator.local.yaml` so its gateway names and model routes match your OpenShell installation. You can instead copy an existing valid configuration while creating the Project:
 
-# After reviewing and placing the draft in docs/plans/<plan-id>/
-orchestrator validate strategy-boundary
-orchestrator approve strategy-boundary
-orchestrator start strategy-boundary
-orchestrator review strategy-id
-orchestrator commit strategy-id
-orchestrator metrics strategy-boundary-r1
-orchestrator report strategy-boundary-r1
-orchestrator status
+```sh
+orchestrator example ~/pi-orchestrator-first-run \
+  --config /path/to/orchestrator.local.yaml
+```
+
+Verify the host and Sandbox boundary:
+
+```sh
 orchestrator doctor
 orchestrator canary
 ```
 
-Runtime state defaults to `~/.local/share/pi-orchestrator` and may be redirected with `ORCHESTRATOR_HOME` or the command-level `--home` option.
+Run the supplied `percentage-discount` Plan:
 
-`orchestrator start` uses `worktrees.root` from `.pi/orchestrator.local.yaml`, falling back to `<orchestrator-home>/worktrees` when that file is absent. The default Run ID is `<plan-id>-r<revision>`; pass `--run <id>` when a different stable identity is required.
+```sh
+orchestrator validate percentage-discount
+orchestrator approve percentage-discount
+orchestrator start percentage-discount
 
-Model cost estimates are optional machine-local configuration. Add a `pricing` object to a model route with `input_per_million`, `output_per_million`, `cache_read_per_million`, and `cache_write_per_million` USD rates. Without an exact configured rate, the turn remains visible and is reported as unpriced rather than assigned an assumed cost.
+orchestrator implement add-discount
+orchestrator check add-discount
+orchestrator review add-discount
+orchestrator commit add-discount
 
-See [Core Contracts](docs/contracts.md) for the structured formats and digest rules introduced by the standalone implementation.
-See [cmux Integration](docs/cmux.md) for the control-socket and recovery contract.
+orchestrator metrics percentage-discount-r1
+orchestrator report percentage-discount-r1
+orchestrator status
+```
+
+`approve` and `commit` require explicit human confirmation. Authoritative Checks run in fresh no-inference Sandboxes, every Review Lens receives a fresh read-only Session, and the commit is created only in the isolated Run worktree.
+
+Runtime state defaults to `~/.local/share/pi-orchestrator`. Set `ORCHESTRATOR_HOME` or use `--home` to choose another location.
+
+## Existing Project
+
+Initialize committed Project configuration in an existing clean Git repository:
+
+```sh
+orchestrator init . --project-id my-project
+cp .pi/orchestrator.local.yaml.example .pi/orchestrator.local.yaml
+```
+
+Then:
+
+1. Document repository constraints in `AGENTS.md`.
+2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
+3. Configure machine-local gateways and models in `.pi/orchestrator.local.yaml`.
+4. Add or generate a Plan under `docs/plans/<plan-id>/`.
+5. Run the same validate, approve, start, implement, check, review, and commit sequence used by the example.
+
+For repository-aware Plan generation:
+
+```sh
+orchestrator plan "Describe the intended change" --id change-planning
+orchestrator answer change-planning
+orchestrator consult change-planning
+orchestrator draft change-planning
+```
+
+The generated draft remains outside the Project until a human reviews and places it under `docs/plans/`. Drafting does not approve a Plan or create a Run.
+
+## Security Model
+
+- No Session transcript is a required dependency of another Session.
+- Only the host Orchestrator performs authoritative state transitions.
+- No model-driven Pi process runs with host-user authority.
+- Sandboxes receive allowlisted source and environment data, never host state or ambient credentials.
+- Checks and Reviews are bound to exact Plan, source, and diff digests.
+- Human approval is required for Plans, protected scope changes, Gate waivers, and commits.
+
+OpenShell policies fail closed. Run `orchestrator canary` after relevant OpenShell, image, runtime, or policy upgrades.
+
+## Development
+
+```sh
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
+
+See [Development](docs/development.md) for opt-in live integration tests, [OpenShell Integration](docs/openshell.md) for gateway setup and troubleshooting, [Core Contracts](docs/contracts.md) for durable formats, and [Roadmap](docs/roadmap.md) for implementation status.

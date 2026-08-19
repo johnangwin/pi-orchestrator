@@ -177,6 +177,10 @@ The payload and record are changed to mode `0400`, flushed, and published togeth
 
 ## Implementation patches
 
+`orchestrator implement <task>` resolves one unambiguous approved Run and accepts only a `ready` Task, or an unapplied `rework` Task. It resolves the Task Role through the machine-local model map, allocates the stable `implementer` Seat and a fresh Session epoch, compiles an exact source-bound Brief, and starts a `write` Session over the Task input commit. Dependency continuity is supplied through durable implementation Reports rather than Session transcripts.
+
+The Implementer edits only `/workspace/project` and returns one bounded structured result. The host renders that result into the required implementation Report sections; the exact Patch manifest supplies the authoritative changed-file list. Malformed or truncated output is an execution failure. Before the model turn, the host binds the request through the durable Mailbox; after the turn it exports and imports the Patch through the normal Artifact boundary described below.
+
 The pinned Sandbox exporter requires immutable `write`-profile Session configuration, compares `/workspace/base` and `/workspace/project`, and emits one binary-capable JSON Patch Artifact. It rejects `.git`, unsafe or non-UTF-8 paths, special files, changing files, more than 100,000 entries, a patch over 32 MiB, or a complete Artifact over 64 MiB. Git runs without system/global configuration, external diff commands, text conversion, or rename inference.
 
 The Patch bundle binds the source snapshot digest, complete base and result tree digests, a sorted change manifest, raw patch digest, and domain-separated diff digest. Tree entries bind path, regular/executable/symlink mode, byte count, and SHA-256 content digest. Identical export retry is idempotent; an existing canonical path with other content or a non-regular file blocks.
@@ -189,7 +193,11 @@ Before Git mutation, Run state records a `prepared` application bound to the Art
 
 Retry loads the immutable stored Artifact, recreates its exact source snapshot from the durable commit and path selection, and repeats Patch validation. A prepared worktree may be clean or exactly applied; an applied worktree must remain exact. Any other dirty state, conflicting Patch, changed branch or `HEAD`, missing Artifact, or digest mismatch blocks without reset, clean, stash, or repair.
 
+After exact host application, the command marks the Message answered, deletes the Sandbox, stops the Session, and returns the Task in `checking`. Retrying a completed command revalidates and reuses the exact applied Patch and implementation Report. A failure before Patch preparation stops or fails the Session and leaves the unapplied Task in `rework`; it never adopts Sandbox changes without verified Artifact evidence.
+
 ## Authoritative Checks
+
+`orchestrator check <task>` executes every Check declared by the approved Task in Plan order. Each item still passes independently through the authoritative single-Check boundary below. The coordinator stops after the first failed verdict, reports the exact completed evidence, and never runs later Checks after the Task has moved to `rework`. If all required Checks pass, the Task advances to `reviewing`.
 
 Only registered Check definitions may satisfy a Gate. A definition is a bounded argument array plus an optional normalized relative POSIX working directory. The host invokes the array directly, never through a shell. The execution timeout is also an explicit Check input.
 

@@ -38,7 +38,15 @@
 - fresh Review (complete)
 - human commit (complete)
 
-## Milestone 5: Stepout proving run
+## Milestone 5: First-run onboarding
+
+- operator-facing implementation command (complete)
+- required-Checks command (complete)
+- standalone price-calculator example generator (complete)
+- install-first README and focused development guide (complete)
+- live first-run exercise against configured models (pending)
+
+## Milestone 6: Stepout proving run
 
 - repository-aware planning and questionnaire (implementation complete; Stepout exercise pending)
 - architecture and quantitative consultation (implementation complete; Stepout exercise pending)

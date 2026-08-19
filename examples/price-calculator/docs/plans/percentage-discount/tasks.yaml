@@ -1,0 +1,36 @@
+version: 1
+
+plan:
+  id: percentage-discount
+  revision: 1
+
+tasks:
+  - id: add-discount
+    title: Add percentage discounts
+    role: implementer
+    goal: >
+      Add an optional integer percentage discount to calculateTotal while
+      preserving integer-cents arithmetic and existing behavior.
+    depends: []
+    scope:
+      - src/**
+      - test/**
+    non_goals:
+      - Add taxes, currencies, coupons, or tiered pricing.
+      - Add dependencies or a general pricing abstraction.
+      - Change the one-argument behavior.
+    acceptance:
+      - Calling calculateTotal with one argument preserves current results.
+      - discountPercent accepts safe integers from 0 through 100.
+      - Invalid discount percentages throw TypeError.
+      - The discount is applied once to the complete subtotal.
+      - Half-cent discounted results round upward to the nearest cent.
+      - Unsafe intermediate or final arithmetic throws RangeError.
+      - Boundary and rounding behavior is covered by tests.
+    checks:
+      - test
+    reviews:
+      - spec
+      - architecture
+      - quality
+      - quant

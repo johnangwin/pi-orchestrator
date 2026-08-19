@@ -35,9 +35,36 @@ describe("host CLI", () => {
     expect(help).toContain("answer [options] <planning>");
     expect(help).toContain("consult [options] <planning>");
     expect(help).toContain("draft [options] <planning>");
+    expect(help).toContain("example [options] [directory]");
+    expect(help).toContain("implement [options] <task>");
+    expect(help).toContain("check [options] <task>");
     expect(help).toContain("review [options] <task>");
     expect(help).toContain("metrics [options] <run>");
     expect(help).toContain("report [options] <run>");
+  });
+
+  it("creates the standalone first-run Project", async () => {
+    const parent = await mkdtemp(
+      path.join(os.tmpdir(), "pi-orchestrator-cli-example-"),
+    );
+    roots.push(parent);
+    const destination = path.join(parent, "first-run");
+    const result = JSON.parse(
+      await orchestrator(["example", destination, "--json"]),
+    ) as {
+      root: string;
+      projectId: string;
+      planId: string;
+      taskId: string;
+    };
+    expect(result).toEqual(
+      expect.objectContaining({
+        root: destination,
+        projectId: "price-calculator",
+        planId: "percentage-discount",
+        taskId: "add-discount",
+      }),
+    );
   });
 
   it("validates, approves, and reports a fresh Plan", async () => {

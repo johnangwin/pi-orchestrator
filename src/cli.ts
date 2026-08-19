@@ -15,7 +15,7 @@ import {
   type CommitProposal,
 } from "./commit.js";
 import { runPlanningConsultations } from "./consultation.js";
-import { IdentifierSchema } from "./config.js";
+import { IdentifierSchema, type ReviewLens } from "./config.js";
 import type { Digest } from "./digest.js";
 import { catalogFromConfig, loadPlan } from "./plan.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
@@ -35,7 +35,8 @@ import {
 } from "./planning.js";
 import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
-import { resolveRoleModelRoute } from "./model.js";
+import { resolveReviewModelRoute, resolveRoleModelRoute } from "./model.js";
+import { runRequiredReviews } from "./review.js";
 import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
 import { runPlanSynthesis } from "./synthesis.js";
@@ -82,6 +83,12 @@ interface CommitOptions extends CommonOptions {
   readonly run?: string;
   readonly subject?: string;
   readonly yes?: boolean;
+}
+
+interface ReviewOptions extends CommonOptions {
+  readonly config?: string;
+  readonly home?: string;
+  readonly run?: string;
 }
 
 interface PlanOptions extends CommonOptions {
@@ -897,6 +904,115 @@ program
           ? JSON.stringify(output, null, 2)
           : `${result.created ? "Started" : "Recovered"} Run ${result.run.id} at ${result.run.worktree}`,
       );
+    } finally {
+      await store.close();
+    }
+  });
+
+program
+  .command("review")
+  .description("run every required Review Lens for a checked Task")
+  .argument("<task>", "Task identifier")
+  .option("--project <path>", "consumer Project path")
+  .option("--home <path>", "runtime state root")
+  .option("--config <path>", "machine-local configuration path")
+  .option("--run <id>", "Run identifier when the Task is ambiguous")
+  .option("--json", "emit JSON")
+  .action(async (value: string, options: ReviewOptions) => {
+    const taskId = IdentifierSchema.parse(value);
+    const project = await loadProject(options.project ?? process.cwd());
+    const home = path.resolve(options.home ?? defaultOrchestratorHome());
+    const configPath = path.resolve(
+      options.config ??
+        path.join(project.root, ".pi", "orchestrator.local.yaml"),
+    );
+    const local = await loadLocalConfig(configPath);
+    const role = project.roles.get("reviewer");
+    if (!role) {
+      throw new OrchestratorError(
+        "reviewer_role_not_found",
+        "Required Review orchestration needs the 'reviewer' Role",
+      );
+    }
+    const store = await ProjectStore.open({
+      home,
+      projectId: project.config.project.id,
+      projectRoot: project.root,
+    });
+    try {
+      const run = await resolveTaskRun(store, taskId, options.run);
+      const plan = await loadPlan(
+        resolvePlanDirectory(project.root, run.plan_id),
+        catalogFromConfig(project.config),
+      );
+      const task = plan.tasks.find((candidate) => candidate.id === taskId);
+      if (!task) {
+        throw new OrchestratorError(
+          "task_not_found",
+          `Plan '${plan.id}' has no Task '${taskId}'`,
+        );
+      }
+      const clients = Object.fromEntries(
+        task.reviews.map((lens) => {
+          const model = resolveReviewModelRoute(
+            project.config,
+            local,
+            lens,
+            role.definition.inference,
+          );
+          return [
+            lens,
+            new OpenShellClient({
+              command: local.openshell.command,
+              gateway: model.gateway,
+              workspace: local.openshell.workspace,
+              ...(local.openshell.required_version
+                ? { requiredVersion: local.openshell.required_version }
+                : {}),
+            }),
+          ];
+        }),
+      ) as Partial<Record<ReviewLens, OpenShellClient>>;
+      const result = await runRequiredReviews({
+        store,
+        project,
+        plan,
+        runId: run.id,
+        taskId,
+        local,
+        clients,
+      });
+      const output = {
+        run: run.id,
+        task: taskId,
+        task_status: result.task.status,
+        verdict: result.verdict,
+        required: result.required,
+        reviews: result.reviews.map((review) => ({
+          lens: review.record.lens,
+          verdict: review.record.verdict,
+          round: review.record.round,
+          record_digest: review.record.record_digest,
+          report_digest: review.record.report.content_digest,
+          session: review.record.identity.session,
+          reused: review.reused,
+        })),
+      };
+      if (options.json) {
+        console.log(JSON.stringify(output, null, 2));
+      } else {
+        console.log(`Task ${taskId} Reviews: ${result.verdict}`);
+        for (const review of output.reviews) {
+          console.log(
+            `  ${review.lens}: ${review.verdict} (${review.reused ? "reused" : "recorded"}, round ${review.round})`,
+          );
+        }
+        if (result.reviews.length < result.required.length) {
+          console.log(
+            `  remaining: ${result.required.slice(result.reviews.length).join(", ")}`,
+          );
+        }
+      }
     } finally {
       await store.close();
     }

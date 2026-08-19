@@ -73,6 +73,8 @@ Authoritative Checks now rebuild the complete patched Project, verify it indepen
 
 Authoritative Reviews now run each required Lens in a fresh read-only Pi Session and OpenShell Sandbox over the exact complete source evaluated by Checks. Lens-specific Briefs contain the current diff and passing Check evidence but no Implementer transcript or prior Reviewer finding. The host accepts only structured verdicts, revalidates every source, Plan, Check, Role, policy, model, Session, and Sandbox binding after inference, and atomically stores an immutable Review Report before updating the Gate. Interrupted Gate publication reuses exact durable evidence; invalid output and failed attempts require a replacement Session epoch.
 
+Required Review orchestration is available through `orchestrator review <task>`. It runs the Task's declared Lenses in Plan order, routes Quant independently, reuses exact completed evidence, retries only an incomplete Lens, and stops before later Lenses on `rework` or `blocked`. The aggregate result is derived from the Plan and durable Lens Gates rather than stored as another authority.
+
 Human Task commits now close the one-Task vertical slice. The CLI displays the exact Plan, branch, Patch, diff, Check, Review, subject, and author evidence before confirmation, persists that authorization before Git mutation, and creates the commit with hooks and signing disabled. An interrupted operation recovers only the exact approved commit; success accepts the Task, advances dependent Tasks to the new commit, and synchronizes Run completion into Project status.
 
 Repository-aware planning now opens Milestone 5. A clean committed Project is copied into a fresh read-only Lead Session, which must inspect the source and return a bounded structured questionnaire with real source anchors. The host binds that questionnaire to the exact goal, commit, source, Role, model, policy, Brief, Session, and Sandbox evidence. Human option selections or free-form responses are stored as immutable Decisions; no transcript or unapproved implementation Run is created.
@@ -123,6 +125,7 @@ orchestrator draft strategy-boundary-planning
 orchestrator validate strategy-boundary
 orchestrator approve strategy-boundary
 orchestrator start strategy-boundary
+orchestrator review strategy-id
 orchestrator commit strategy-id
 orchestrator status
 orchestrator doctor

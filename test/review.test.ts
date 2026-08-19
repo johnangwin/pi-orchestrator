@@ -15,6 +15,7 @@ import { loadSandboxPolicy } from "../src/policy.js";
 import {
   ReviewStore,
   parseReviewAssessment,
+  runRequiredReviews,
   runReview,
   type ReviewAssessment,
   type ReviewSession,
@@ -259,6 +260,40 @@ function execute(
     lens: options.lens ?? "spec",
     local: localConfig(),
     client: options.client ?? reviewClient(options.gateway),
+    launchSession: runtime.launch,
+    nonce: options.nonce ?? (() => "12345678"),
+    now: () => new Date("2026-08-18T17:00:00.000Z"),
+  });
+}
+
+function executeRequired(
+  fixture: AppliedFixture,
+  runtime: FakeReviewRuntime,
+  options: {
+    readonly clients?: Partial<
+      Record<
+        "spec" | "architecture" | "quality" | "quant",
+        ReadSessionOpenShell
+      >
+    >;
+    readonly nonce?: (
+      lens: "spec" | "architecture" | "quality" | "quant",
+    ) => string;
+  } = {},
+) {
+  return runRequiredReviews({
+    store: fixture.store,
+    project: fixture.project,
+    plan: fixture.plan,
+    runId: fixture.runId,
+    taskId: fixture.task.id,
+    local: localConfig(),
+    clients: options.clients ?? {
+      spec: reviewClient(),
+      architecture: reviewClient(),
+      quality: reviewClient(),
+      quant: reviewClient("quant-gateway"),
+    },
     launchSession: runtime.launch,
     nonce: options.nonce ?? (() => "12345678"),
     now: () => new Date("2026-08-18T17:00:00.000Z"),
@@ -656,6 +691,173 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     await expect(
       reviews.getResult(fixture.task.id, "spec", result.record.id),
     ).rejects.toMatchObject({ code: "review_store_corrupt" });
+  });
+
+  it("runs every required Lens independently and reuses the complete set", async () => {
+    const fixture = await checked(
+      fixtureTask({
+        reviews: ["spec", "architecture", "quality", "quant"],
+      }),
+    );
+    const runtime = new FakeReviewRuntime();
+    runtime.responses = [
+      JSON.stringify({
+        ...passingAssessment,
+        conclusion: "SPEC-PRIVATE-RESULT",
+      }),
+      JSON.stringify({
+        ...passingAssessment,
+        conclusion: "ARCHITECTURE-PRIVATE-RESULT",
+      }),
+      JSON.stringify({
+        ...passingAssessment,
+        conclusion: "QUALITY-PRIVATE-RESULT",
+      }),
+      JSON.stringify({
+        ...passingAssessment,
+        conclusion: "QUANT-PRIVATE-RESULT",
+      }),
+    ];
+
+    const first = await executeRequired(fixture, runtime);
+
+    expect(first.verdict).toBe("pass");
+    expect(first.required).toEqual([
+      "spec",
+      "architecture",
+      "quality",
+      "quant",
+    ]);
+    expect(first.reviews.map((review) => review.record.lens)).toEqual(
+      first.required,
+    );
+    expect(first.reviews.map((review) => review.record.model.alias)).toEqual([
+      "review",
+      "review",
+      "review",
+      "quant",
+    ]);
+    expect(
+      new Set(first.reviews.map((review) => review.record.identity.session))
+        .size,
+    ).toBe(4);
+    expect(new Set(runtime.sandboxIds).size).toBe(4);
+    expect(first.reviews.every((review) => review.record.round === 1)).toBe(
+      true,
+    );
+    expect(first.task).toMatchObject({ status: "reviewing", review_rounds: 1 });
+    expect(
+      first.required.map((lens) => first.task.gates[`review-${lens}`]?.status),
+    ).toEqual(["pass", "pass", "pass", "pass"]);
+    expect(runtime.briefs[1]).not.toContain("SPEC-PRIVATE-RESULT");
+    expect(runtime.briefs[2]).not.toContain("ARCHITECTURE-PRIVATE-RESULT");
+    expect(runtime.briefs[3]).not.toContain("QUALITY-PRIVATE-RESULT");
+    expect(runtime.briefs[0]).toContain(
+      "Does the implementation satisfy the approved Task",
+    );
+    expect(runtime.briefs[1]).toContain(
+      "consistent with the Project's current architecture",
+    );
+    expect(runtime.briefs[2]).toContain(
+      "correct, maintainable, secure, and adequately tested",
+    );
+    expect(runtime.briefs[3]).toContain(
+      "Independently reproduce material quantities",
+    );
+    expect(runtime.briefs[3]).toContain("## Skill: quant");
+
+    const reused = await executeRequired(fixture, runtime);
+    expect(reused.verdict).toBe("pass");
+    expect(reused.reviews.every((review) => review.reused)).toBe(true);
+    expect(runtime.launches).toHaveLength(4);
+  });
+
+  it("reuses passed Lenses and retries only the failed Session epoch", async () => {
+    const fixture = await checked(
+      fixtureTask({ reviews: ["spec", "architecture", "quality"] }),
+    );
+    const runtime = new FakeReviewRuntime();
+    runtime.responses = [JSON.stringify(passingAssessment), "not JSON"];
+    const firstNonces = ["11111111", "22222222"];
+
+    await expect(
+      executeRequired(fixture, runtime, {
+        nonce: () => firstNonces.shift()!,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_review_output" });
+    expect(
+      (await fixture.store.readRun(fixture.runId)).tasks[fixture.task.id],
+    ).toMatchObject({
+      status: "reviewing",
+      review_rounds: 1,
+      gates: {
+        "review-spec": { status: "pass" },
+        "review-architecture": { status: "pending" },
+      },
+    });
+
+    runtime.responses = [
+      JSON.stringify(passingAssessment),
+      JSON.stringify(passingAssessment),
+    ];
+    const retryNonces = ["33333333", "44444444"];
+    const retry = await executeRequired(fixture, runtime, {
+      nonce: () => retryNonces.shift()!,
+    });
+
+    expect(retry.verdict).toBe("pass");
+    expect(retry.reviews.map((review) => review.reused)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(retry.reviews[1]?.record.identity).toMatchObject({
+      seat: "review-architecture",
+      session: "review-architecture-33333333",
+      epoch: 2,
+    });
+    expect(retry.task.review_rounds).toBe(1);
+    expect(runtime.launches).toHaveLength(4);
+  });
+
+  it("halts the required set on a non-passing verdict", async () => {
+    const fixture = await checked(
+      fixtureTask({ reviews: ["spec", "architecture", "quality"] }),
+    );
+    const runtime = new FakeReviewRuntime();
+    runtime.responses = [
+      JSON.stringify(passingAssessment),
+      JSON.stringify(failingAssessment("rework")),
+    ];
+
+    const result = await executeRequired(fixture, runtime);
+
+    expect(result.verdict).toBe("rework");
+    expect(result.reviews.map((review) => review.record.lens)).toEqual([
+      "spec",
+      "architecture",
+    ]);
+    expect(result.task.status).toBe("rework");
+    expect(result.task.gates["review-quality"]).toBeUndefined();
+    expect(runtime.launches).toHaveLength(2);
+  });
+
+  it("requires every Lens client before starting the set", async () => {
+    const fixture = await checked(
+      fixtureTask({ reviews: ["spec", "quality"] }),
+    );
+    const runtime = new FakeReviewRuntime();
+
+    await expect(
+      executeRequired(fixture, runtime, {
+        clients: { spec: reviewClient() },
+      }),
+    ).rejects.toMatchObject({ code: "review_client_missing" });
+    expect(runtime.launches).toHaveLength(0);
+    expect(
+      (await fixture.store.readRun(fixture.runId)).tasks[fixture.task.id]
+        ?.review_rounds,
+    ).toBe(0);
   });
 });
 

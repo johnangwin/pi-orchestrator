@@ -33,7 +33,16 @@ export const PlanTaskSchema = z
     checks: z.array(IdentifierSchema).min(1),
     reviews: z.array(ReviewLensSchema).min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((task, context) => {
+    if (new Set(task.reviews).size !== task.reviews.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviews"],
+        message: "Review Lenses must be unique",
+      });
+    }
+  });
 export type PlanTask = z.infer<typeof PlanTaskSchema>;
 
 export const TasksFileSchema = z

@@ -123,6 +123,11 @@ describe("Plan validation and approval", () => {
       "invalid_plan",
     ],
     [
+      "duplicate Lens",
+      fixtureTask({ reviews: ["spec", "spec"] }),
+      "invalid_plan",
+    ],
+    [
       "unsafe source scope",
       fixtureTask({ scope: ["../src/**"] }),
       "invalid_plan",

@@ -86,6 +86,16 @@ const ReviewTextSchema = z.string().trim().min(1).max(16_000);
 const ReviewListSchema = z.array(z.string().trim().min(1).max(4_000)).max(64);
 const REVIEW_PATCH_PATH = "/workspace/input/review.patch" as const;
 
+const REVIEW_LENS_QUESTIONS: Readonly<Record<ReviewLens, string>> = {
+  spec: "Does the implementation satisfy the approved Task, its acceptance criteria, and its non-goals?",
+  architecture:
+    "Is the implementation consistent with the Project's current architecture and intended direction without prematurely implementing the future?",
+  quality:
+    "Is the implementation correct, maintainable, secure, and adequately tested?",
+  quant:
+    "Are the quantitative definitions, units, assumptions, calculations, causal constraints, and conclusions correct? Independently reproduce material quantities where practical.",
+};
+
 export const ReviewFindingSchema = z
   .object({
     location: z.string().trim().min(1).max(2_000),
@@ -827,6 +837,21 @@ export interface RunReviewResult {
   readonly task: TaskRecord;
 }
 
+export type RunRequiredReviewsOptions = Omit<
+  RunReviewOptions,
+  "client" | "lens" | "nonce"
+> & {
+  readonly clients: Readonly<Partial<Record<ReviewLens, ReadSessionOpenShell>>>;
+  readonly nonce?: (lens: ReviewLens) => string;
+};
+
+export interface RunRequiredReviewsResult {
+  readonly required: readonly ReviewLens[];
+  readonly verdict: "pass" | "rework" | "blocked";
+  readonly reviews: readonly RunReviewResult[];
+  readonly task: TaskRecord;
+}
+
 function requireRunBinding(options: {
   readonly run: RunState;
   readonly project: Project;
@@ -1030,7 +1055,14 @@ function compileReviewBrief(options: {
   readonly source: CheckSource;
   readonly model: ResolvedModelRoute;
 }): CompiledBrief {
-  const skills = options.role.definition.skills.map((name) => {
+  const skillNames = [
+    ...options.role.definition.skills,
+    ...(options.lens === "quant" &&
+    !options.role.definition.skills.includes("quant")
+      ? ["quant"]
+      : []),
+  ];
+  const skills = skillNames.map((name) => {
     const skill = options.project.skills.get(name);
     if (!skill) {
       throw new OrchestratorError(
@@ -1049,7 +1081,7 @@ function compileReviewBrief(options: {
     decisions: options.decisions,
     dependencyReports: [],
     skills,
-    outputContract: REVIEW_OUTPUT_CONTRACT,
+    outputContract: `Lens question: ${REVIEW_LENS_QUESTIONS[options.lens]}\n\n${REVIEW_OUTPUT_CONTRACT}`,
     sourceAnchors: options.patch.bundle.changes.map((change) => ({
       path: change.path,
       reason: "Changed by the exact Patch under Review.",
@@ -1763,7 +1795,7 @@ export async function runReview(
     });
     const message = MessageSchema.parse({
       version: 1,
-      id: `review-request-${nonce}`,
+      id: `review-request-${lens}-${nonce}`,
       run: initialRun.id,
       from: { host: true },
       to: {
@@ -2078,4 +2110,51 @@ export async function runReview(
   } finally {
     await source.dispose();
   }
+}
+
+export async function runRequiredReviews(
+  options: RunRequiredReviewsOptions,
+): Promise<RunRequiredReviewsResult> {
+  const task = findTask(options.plan, options.taskId);
+  const required = [...task.reviews];
+  if (new Set(required).size !== required.length) {
+    throw new OrchestratorError(
+      "invalid_plan",
+      `Task '${task.id}' contains duplicate Review Lenses`,
+    );
+  }
+  const missing = required.filter((lens) => !options.clients[lens]);
+  if (missing.length > 0) {
+    throw new OrchestratorError(
+      "review_client_missing",
+      `Task '${task.id}' has no OpenShell client for required Review Lenses: ${missing.join(", ")}`,
+    );
+  }
+
+  const { clients, nonce, ...shared } = options;
+  const reviews: RunReviewResult[] = [];
+  for (const lens of required) {
+    const result = await runReview({
+      ...shared,
+      lens,
+      client: clients[lens]!,
+      ...(nonce ? { nonce: () => nonce(lens) } : {}),
+    });
+    reviews.push(result);
+    if (result.record.verdict !== "pass") {
+      return {
+        required,
+        verdict: result.record.verdict,
+        reviews,
+        task: result.task,
+      };
+    }
+  }
+
+  return {
+    required,
+    verdict: "pass",
+    reviews,
+    task: reviews.at(-1)!.task,
+  };
 }

@@ -35,6 +35,7 @@ describe("host CLI", () => {
     expect(help).toContain("answer [options] <planning>");
     expect(help).toContain("consult [options] <planning>");
     expect(help).toContain("draft [options] <planning>");
+    expect(help).toContain("review [options] <task>");
   });
 
   it("validates, approves, and reports a fresh Plan", async () => {

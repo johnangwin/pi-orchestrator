@@ -34,6 +34,7 @@ import { compilePlanningBrief } from "../src/planning.js";
 import { loadProject } from "../src/project.js";
 import {
   createReadOnlySourceWorkspace,
+  createRunSourceWorkspace,
   createWorkspaceSourceManifest,
   ReadOnlySourceWorkspace,
   recoverReadOnlySourceWorkspace,
@@ -111,6 +112,7 @@ class FixtureDocker implements WorkspaceSourceDocker {
     readonly gitDirectory: string;
     readonly commit: string;
   }> = [];
+  inspectionCalls = 0;
   private readonly volumes = new Map<
     string,
     { readonly root: string; readonly capability: DockerVolumeCapability }
@@ -217,6 +219,7 @@ class FixtureDocker implements WorkspaceSourceDocker {
   inspectWorkspaceVolume(options: {
     readonly volume: DockerVolumeCapability;
   }): Promise<ProcessResult> {
+    this.inspectionCalls += 1;
     const target = this.volumes.get(options.volume.name)?.root;
     if (!target) {
       return Promise.resolve({ stdout: "", stderr: "missing", exitCode: 1 });
@@ -226,7 +229,7 @@ class FixtureDocker implements WorkspaceSourceDocker {
         stdout: execFileSync(
           process.execPath,
           [helper, "inspect", path.join(target, "project")],
-          { encoding: "utf8" },
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
         ),
         stderr: "",
         exitCode: 0,
@@ -238,6 +241,14 @@ class FixtureDocker implements WorkspaceSourceDocker {
         exitCode: 1,
       });
     }
+  }
+
+  inspectWorkspaceGitStatus(): Promise<ProcessResult> {
+    return Promise.resolve({
+      stdout: "",
+      stderr: "Fixture Git status is not configured",
+      exitCode: 1,
+    });
   }
 
   async removeVolume(name: string): Promise<void> {
@@ -292,6 +303,40 @@ function mountInfo(
 }
 
 describe("read-only Workspace source", () => {
+  it("reopens a bound Run volume without inspecting mutable contents", async () => {
+    const projectRoot = await createFixtureProject();
+    const volumeRoot = await mkdtemp(
+      path.join(os.tmpdir(), "pio-run-volume-test-"),
+    );
+    roots.push(projectRoot, volumeRoot);
+    const commit = await commitFixture(projectRoot);
+    const docker = new FixtureDocker(volumeRoot);
+    const created = await createRunSourceWorkspace({
+      projectRoot,
+      projectId: "fixture",
+      runId: "run-one",
+      commit,
+      local: sharedLocal(),
+      docker,
+    });
+    const inspections = docker.inspectionCalls;
+    const recovered = await createRunSourceWorkspace({
+      projectRoot,
+      projectId: "fixture",
+      runId: "run-one",
+      commit,
+      local: sharedLocal(),
+      binding: {
+        volumeName: created.volume.name,
+        volumeDigest: created.volume.digest,
+      },
+      docker,
+    });
+
+    expect(recovered.volume.digest).toBe(created.volume.digest);
+    expect(docker.inspectionCalls).toBe(inspections);
+  });
+
   it("materializes an exact commit without Git metadata and compiles restricted masks", async () => {
     const projectRoot = await createFixtureProject();
     await writeFile(

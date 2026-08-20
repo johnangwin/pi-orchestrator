@@ -50,6 +50,7 @@ import type { ProjectStore, RunState, TaskRecord } from "./state.js";
 import {
   compareWorkspaceManifests,
   validateWorkspaceManifest,
+  WorkspaceManifestStore,
   workspaceManifestEntries,
   type WorkspaceManifest,
   type WorkspaceManifestChange,
@@ -172,7 +173,7 @@ export interface AcquireWriteLeaseInput {
   readonly policyDigest: Digest;
   readonly imageDigest: Digest;
   readonly gatewayDigest: Digest;
-  readonly mountTableDigest: Digest;
+  readonly mountSetDigest: Digest;
 }
 
 export interface WritableSandboxProvenance {
@@ -180,6 +181,7 @@ export interface WritableSandboxProvenance {
   readonly name: string;
   readonly workspace: string;
   readonly gatewayDigest: Digest;
+  readonly mountSetDigest: Digest;
   readonly mountTableDigest: Digest;
   readonly sandboxDigest: Digest;
 }
@@ -213,6 +215,7 @@ export class WorkspaceLifecycle {
   readonly leases: WriteLeaseStore;
   readonly changes: ChangeSetStore;
   readonly candidates: CandidateStore;
+  readonly manifests: WorkspaceManifestStore;
 
   constructor(
     private readonly store: LifecycleStore,
@@ -224,6 +227,7 @@ export class WorkspaceLifecycle {
     this.leases = new WriteLeaseStore(directory);
     this.changes = new ChangeSetStore(directory);
     this.candidates = new CandidateStore(directory);
+    this.manifests = new WorkspaceManifestStore(directory);
   }
 
   private timestamp(): string {
@@ -240,6 +244,7 @@ export class WorkspaceLifecycle {
         "Workspace Git diff is not bound to the initial manifest",
       );
     }
+    await this.manifests.put(manifest);
     return this.store.updateRun(this.runId, (state) => {
       if (gitDiff.input_commit !== state.base_commit) {
         throw new OrchestratorError(
@@ -332,6 +337,7 @@ export class WorkspaceLifecycle {
   async acquire(input: AcquireWriteLeaseInput): Promise<WriteLease> {
     const id = IdentifierSchema.parse(input.id);
     const baseline = validateWorkspaceManifest(input.baselineManifest);
+    await this.manifests.put(baseline);
     const expiresAt = TimestampSchema.parse(input.expiresAt);
     const initial = await this.store.readRun(this.runId);
     const validated = this.validateLeaseRequest(initial, input);
@@ -376,7 +382,8 @@ export class WorkspaceLifecycle {
       policy_digest: input.policyDigest,
       image_digest: input.imageDigest,
       gateway_digest: input.gatewayDigest,
-      mount_table_digest: input.mountTableDigest,
+      mount_set_digest: input.mountSetDigest,
+      mount_table_digest: null,
       sandbox_name: input.sandboxName,
       sandbox_workspace: input.sandboxWorkspace,
       sandbox_id: null,
@@ -520,6 +527,7 @@ export class WorkspaceLifecycle {
         lease.sandbox_workspace === provenance.workspace &&
         lease.sandbox_digest === provenance.sandboxDigest &&
         lease.gateway_digest === provenance.gatewayDigest &&
+        lease.mount_set_digest === provenance.mountSetDigest &&
         lease.mount_table_digest === provenance.mountTableDigest
       ) {
         return lease;
@@ -538,7 +546,7 @@ export class WorkspaceLifecycle {
       lease.sandbox_name !== provenance.name ||
       lease.sandbox_workspace !== provenance.workspace ||
       lease.gateway_digest !== provenance.gatewayDigest ||
-      lease.mount_table_digest !== provenance.mountTableDigest ||
+      lease.mount_set_digest !== provenance.mountSetDigest ||
       state.workspace?.generation !== lease.workspace_generation ||
       state.workspace.manifest_digest !== lease.baseline_manifest_digest
     ) {
@@ -556,6 +564,7 @@ export class WorkspaceLifecycle {
       activateWriteLease(lease, {
         sandboxId: provenance.id,
         sandboxDigest: provenance.sandboxDigest,
+        mountTableDigest: provenance.mountTableDigest,
         activatedAt: this.timestamp(),
       }),
     );
@@ -595,7 +604,9 @@ export class WorkspaceLifecycle {
       lease.sandbox_name === provenance.name &&
       lease.sandbox_workspace === provenance.workspace &&
       lease.gateway_digest === provenance.gatewayDigest &&
-      lease.mount_table_digest === provenance.mountTableDigest &&
+      lease.mount_set_digest === provenance.mountSetDigest &&
+      (lease.mount_table_digest === null ||
+        lease.mount_table_digest === provenance.mountTableDigest) &&
       (lease.sandbox_digest === null ||
         lease.sandbox_digest === provenance.sandboxDigest) &&
       (lease.sandbox_id === null || lease.sandbox_id === provenance.id);
@@ -728,6 +739,10 @@ export class WorkspaceLifecycle {
       deletionVerified = true;
       const baseline = validateWorkspaceManifest(input.baselineManifest);
       const result = validateWorkspaceManifest(input.resultManifest);
+      await Promise.all([
+        this.manifests.put(baseline),
+        this.manifests.put(result),
+      ]);
       const gitDiff = validateWorkspaceDiff(input.gitDiff);
       const state = await this.store.readRun(this.runId);
       const workspace = state.workspace;
@@ -821,6 +836,7 @@ export class WorkspaceLifecycle {
         policy_digest: lease.policy_digest,
         image_digest: lease.image_digest,
         gateway_digest: lease.gateway_digest,
+        mount_set_digest: lease.mount_set_digest,
         mount_table_digest: lease.mount_table_digest,
         sandbox_digest: lease.sandbox_digest,
         report: input.report ?? null,
@@ -997,6 +1013,7 @@ export class WorkspaceLifecycle {
       );
     }
     const manifest = validateWorkspaceManifest(input.manifest);
+    await this.manifests.put(manifest);
     const gitDiff = validateWorkspaceDiff(input.gitDiff);
     const state = await this.store.readRun(this.runId);
     const workspace = state.workspace;
@@ -1148,8 +1165,13 @@ export class WorkspaceLifecycle {
       gateway_digests: sortedDigests(
         changeSets.map((entry) => entry.gateway_digest),
       ),
+      mount_set_digests: sortedDigests(
+        changeSets.map((entry) => entry.mount_set_digest),
+      ),
       mount_table_digests: sortedDigests(
-        changeSets.map((entry) => entry.mount_table_digest),
+        changeSets.flatMap((entry) =>
+          entry.mount_table_digest ? [entry.mount_table_digest] : [],
+        ),
       ),
       sandbox_digests: sortedDigests(
         changeSets.flatMap((entry) =>
@@ -1309,18 +1331,18 @@ export class WorkspaceLifecycle {
       return;
     }
     const unleasedWritable = input.writableSandboxIds.length > 0;
+    if (unleasedWritable) {
+      return this.blockUnleasedWriters(input.writableSandboxIds);
+    }
     if (
       workspace.manifest_digest === manifest.digest &&
-      workspace.git_diff_digest === gitDiff.digest &&
-      !unleasedWritable
+      workspace.git_diff_digest === gitDiff.digest
     ) {
       return;
     }
 
     const timestamp = this.timestamp();
-    const reason = unleasedWritable
-      ? `Writable Sandboxes exist without a Write Lease: ${input.writableSandboxIds.join(", ")}`
-      : "Workspace digest changed without a Write Lease";
+    const reason = "Workspace digest changed without a Write Lease";
     let staleCandidate: Candidate | undefined;
     if (workspace.candidate?.status === "frozen") {
       const current = await this.candidates.get(workspace.candidate);
@@ -1366,12 +1388,74 @@ export class WorkspaceLifecycle {
         },
       };
     });
-    throw new OrchestratorError(
-      unleasedWritable
-        ? "writable_sandbox_without_lease"
-        : "workspace_changed_without_lease",
-      reason,
-    );
+    throw new OrchestratorError("workspace_changed_without_lease", reason);
+  }
+
+  async blockUnleasedWriters(
+    writableSandboxIds: readonly string[],
+  ): Promise<never> {
+    if (writableSandboxIds.length === 0) {
+      throw new OrchestratorError(
+        "invalid_writable_sandbox_evidence",
+        "At least one unleased writable Sandbox is required",
+      );
+    }
+    const state = await this.store.readRun(this.runId);
+    const workspace = state.workspace;
+    if (!workspace) {
+      throw new OrchestratorError(
+        "workspace_uninitialized",
+        `Run '${state.id}' has no Workspace`,
+      );
+    }
+    if (workspace.active_lease) {
+      throw new OrchestratorError(
+        "write_lease_active",
+        `Run '${state.id}' still has Write Lease '${workspace.active_lease.id}'`,
+      );
+    }
+    const timestamp = this.timestamp();
+    const reason = `Writable Sandboxes exist without a Write Lease: ${writableSandboxIds.join(", ")}`;
+    let staleCandidate: Candidate | undefined;
+    if (workspace.candidate?.status === "frozen") {
+      const current = await this.candidates.get(workspace.candidate);
+      staleCandidate = transitionCandidate(current, {
+        status: "stale",
+        at: timestamp,
+        reason,
+      });
+      await this.candidates.put(staleCandidate);
+    }
+    await this.store.updateRun(this.runId, (current) => {
+      const currentWorkspace = current.workspace;
+      if (!currentWorkspace || currentWorkspace.active_lease) return current;
+      return {
+        ...current,
+        status: "blocked",
+        tasks: Object.fromEntries(
+          Object.entries(current.tasks).map(([id, task]) => [
+            id,
+            staleGates(task, timestamp, reason),
+          ]),
+        ),
+        workspace: {
+          ...currentWorkspace,
+          phase: "stable",
+          candidate: staleCandidate
+            ? candidateReference(staleCandidate)
+            : currentWorkspace.candidate,
+          drift: {
+            expected_manifest_digest: currentWorkspace.manifest_digest,
+            observed_manifest_digest: currentWorkspace.manifest_digest,
+            expected_git_diff_digest: currentWorkspace.git_diff_digest,
+            observed_git_diff_digest: currentWorkspace.git_diff_digest,
+            observed_at: timestamp,
+            reason,
+          },
+        },
+      };
+    });
+    throw new OrchestratorError("writable_sandbox_without_lease", reason);
   }
 }
 

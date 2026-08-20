@@ -104,7 +104,8 @@ const CandidateRecordSchema = z
     image_digests: z.array(DigestSchema).min(1).max(1_024),
     policy_digests: z.array(DigestSchema).min(1).max(1_024),
     gateway_digests: z.array(DigestSchema).min(1).max(1_024),
-    mount_table_digests: z.array(DigestSchema).min(1).max(1_024),
+    mount_set_digests: z.array(DigestSchema).min(1).max(1_024),
+    mount_table_digests: z.array(DigestSchema).max(1_024),
     sandbox_digests: z.array(DigestSchema).max(1_024),
     frozen_at: TimestampSchema,
     status: CandidateStatusSchema,
@@ -119,6 +120,7 @@ const CandidateRecordSchema = z
       "image_digests",
       "policy_digests",
       "gateway_digests",
+      "mount_set_digests",
       "mount_table_digests",
       "sandbox_digests",
     ] as const) {
@@ -228,6 +230,7 @@ export function validateCandidate(value: unknown): Candidate {
     image_digests: Object.freeze([...parsed.data.image_digests]),
     policy_digests: Object.freeze([...parsed.data.policy_digests]),
     gateway_digests: Object.freeze([...parsed.data.gateway_digests]),
+    mount_set_digests: Object.freeze([...parsed.data.mount_set_digests]),
     mount_table_digests: Object.freeze([...parsed.data.mount_table_digests]),
     sandbox_digests: Object.freeze([...parsed.data.sandbox_digests]),
   }) as Candidate;

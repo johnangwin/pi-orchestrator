@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -24,6 +25,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+const helper = fileURLToPath(
+  new URL("../sandbox/pi/workspace.mjs", import.meta.url),
+);
 
 afterEach(async () => {
   await Promise.all(
@@ -108,6 +112,70 @@ describe("complete Run Workspace manifests", () => {
     expect(ignoredChanged.entries.map((entry) => entry.path)).toContain(
       "ignored.log",
     );
+  });
+
+  it("compares a Git commit with the complete Workspace without executing source", async () => {
+    const repository = await workspace();
+    await execFileAsync("git", ["init"], { cwd: repository });
+    await execFileAsync("git", ["config", "user.name", "Fixture"], {
+      cwd: repository,
+    });
+    await execFileAsync("git", ["config", "user.email", "fixture@test"], {
+      cwd: repository,
+    });
+    await writeFile(path.join(repository, ".gitignore"), "*.log\n");
+    await writeFile(path.join(repository, "changed.txt"), "before\n");
+    await writeFile(path.join(repository, "removed.txt"), "removed\n");
+    await execFileAsync("git", ["add", "."], { cwd: repository });
+    await execFileAsync("git", ["commit", "-m", "fixture"], {
+      cwd: repository,
+    });
+    const { stdout: headOutput } = await execFileAsync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: repository },
+    );
+    const commit = String(headOutput).trim();
+
+    const materialized = await workspace();
+    const marker = path.join(materialized, "executed");
+    await writeFile(path.join(materialized, ".gitignore"), "*.log\n");
+    await writeFile(path.join(materialized, "changed.txt"), "after\n");
+    await writeFile(path.join(materialized, "ignored.log"), "ignored\n");
+    await writeFile(
+      path.join(materialized, "new-tool.sh"),
+      `#!/bin/sh\ntouch ${marker}\n`,
+      { mode: 0o755 },
+    );
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      helper,
+      "git-status",
+      await realpath(path.join(repository, ".git")),
+      commit,
+      materialized,
+    ]);
+    expect(JSON.parse(String(stdout))).toEqual({
+      commit,
+      changes: [
+        {
+          path: "changed.txt",
+          index_status: " ",
+          worktree_status: "M",
+        },
+        {
+          path: "new-tool.sh",
+          index_status: "?",
+          worktree_status: "?",
+        },
+        {
+          path: "removed.txt",
+          index_status: " ",
+          worktree_status: "D",
+        },
+      ],
+    });
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("hashes symlink targets without traversing them and rejects escapes", async () => {

@@ -1035,7 +1035,7 @@ program
 
 program
   .command("implement")
-  .description("run one isolated implementation Session and import its Patch")
+  .description("run one Implementer under a Task Write Lease")
   .argument("<task>", "Task identifier")
   .option("--project <path>", "consumer Project path")
   .option("--home <path>", "runtime state root")
@@ -1099,9 +1099,13 @@ program
         task: taskId,
         task_status: result.task.status,
         reused: result.reused,
-        changed_paths: result.application.changed_paths,
-        source_digest: result.application.source_digest,
-        diff_digest: result.application.host_diff_digest,
+        changed_paths: result.candidate.changed_paths.map(
+          (entry) => entry.path,
+        ),
+        manifest_digest: result.candidate.manifest_digest,
+        diff_digest: result.candidate.git_diff_digest,
+        change_set: result.changeSet.id,
+        candidate: result.candidate.id,
         report: result.report.id,
         session: result.identity.session,
       };
@@ -1109,12 +1113,14 @@ program
         console.log(JSON.stringify(output, null, 2));
       } else {
         console.log(
-          `Task ${taskId} implementation: ${result.reused ? "reused" : "applied"}`,
+          `Task ${taskId} implementation: ${result.reused ? "reused" : "frozen"}`,
         );
-        for (const changedPath of result.application.changed_paths) {
+        for (const changedPath of output.changed_paths) {
           console.log(`  ${changedPath}`);
         }
-        console.log(`Next: orchestrator check ${taskId}`);
+        console.log(
+          `Candidate ${result.candidate.id} is frozen for Phase 9 Checks`,
+        );
       }
     } finally {
       await store.close();

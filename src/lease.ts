@@ -65,7 +65,8 @@ const WriteLeaseRecordSchema = z
     policy_digest: DigestSchema,
     image_digest: DigestSchema,
     gateway_digest: DigestSchema,
-    mount_table_digest: DigestSchema,
+    mount_set_digest: DigestSchema,
+    mount_table_digest: DigestSchema.nullable(),
     sandbox_name: OpenShellSandboxNameSchema,
     sandbox_workspace: z.string().min(1),
     sandbox_id: z.string().uuid().nullable(),
@@ -133,26 +134,41 @@ const WriteLeaseRecordSchema = z
     const activated = lease.activated_at !== null;
     if (
       lease.status === "active" &&
-      (!activated || lease.sandbox_id === null || lease.sandbox_digest === null)
+      (!activated ||
+        lease.sandbox_id === null ||
+        lease.sandbox_digest === null ||
+        lease.mount_table_digest === null)
     ) {
       context.addIssue({
         code: "custom",
         message: "an active lease requires activated Sandbox provenance",
       });
     }
+    const sandboxProvenance = [
+      lease.sandbox_id,
+      lease.sandbox_digest,
+      lease.mount_table_digest,
+    ];
     if (
-      activated !== (lease.sandbox_id !== null) ||
-      activated !== (lease.sandbox_digest !== null)
+      sandboxProvenance.some((value) => value !== null) &&
+      sandboxProvenance.some((value) => value === null)
     ) {
       context.addIssue({
         code: "custom",
-        message: "Sandbox identity and activation time must appear together",
+        message: "Sandbox provenance fields must appear together",
+      });
+    }
+    if (activated !== sandboxProvenance.every((value) => value !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Sandbox provenance and activation time must appear together",
       });
     }
     if (
       lease.status === "preparing" &&
       (lease.sandbox_id !== null ||
         lease.sandbox_digest !== null ||
+        lease.mount_table_digest !== null ||
         activated ||
         lease.revocation_started_at !== null ||
         lease.sandbox_deleted_at !== null ||
@@ -271,6 +287,7 @@ export function sameWriteLeaseBinding(
     "status",
     "sandbox_id",
     "sandbox_digest",
+    "mount_table_digest",
     "activated_at",
     "expires_at",
     "renewal_count",
@@ -291,6 +308,7 @@ export function activateWriteLease(
   input: {
     readonly sandboxId: string;
     readonly sandboxDigest: Digest;
+    readonly mountTableDigest: Digest;
     readonly activatedAt: string;
   },
 ): WriteLease {
@@ -306,6 +324,7 @@ export function activateWriteLease(
     status: "active",
     sandbox_id: input.sandboxId,
     sandbox_digest: input.sandboxDigest,
+    mount_table_digest: input.mountTableDigest,
     activated_at: input.activatedAt,
   });
 }

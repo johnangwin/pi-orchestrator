@@ -418,11 +418,23 @@ export async function collectWorkspaceGitDiff(options: {
       root,
     ),
   );
+  return createWorkspaceDiff({
+    inputCommit,
+    manifestDigest,
+    changes,
+  });
+}
+
+export function createWorkspaceDiff(options: {
+  readonly inputCommit: string;
+  readonly manifestDigest: Digest;
+  readonly changes: readonly WorkspaceGitChange[];
+}): WorkspaceDiff {
   const record = WorkspaceDiffRecordSchema.parse({
     version: 2,
-    input_commit: inputCommit,
-    manifest_digest: manifestDigest,
-    changes,
+    input_commit: GitCommitSchema.parse(options.inputCommit),
+    manifest_digest: DigestSchema.parse(options.manifestDigest),
+    changes: options.changes,
   });
   return validateWorkspaceDiff({
     ...record,

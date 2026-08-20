@@ -85,7 +85,7 @@ export interface ClientConfig {
       }[]
     | undefined;
   readonly workspace_projection?:
-    | {
+    | ({
         readonly source_digest: string;
         readonly workspace_generation: number;
         readonly manifest_digest: string;
@@ -95,7 +95,20 @@ export interface ClientConfig {
         readonly mount_table_digest: string;
         readonly image_digest: string;
         readonly projection_digest: string;
-      }
+      } & (
+        | {
+            readonly lease_id: string;
+            readonly lease_digest: string;
+            readonly write_roots_digest: string;
+            readonly gateway_digest: string;
+          }
+        | {
+            readonly lease_id?: never;
+            readonly lease_digest?: never;
+            readonly write_roots_digest?: never;
+            readonly gateway_digest?: never;
+          }
+      ))
     | undefined;
 }
 

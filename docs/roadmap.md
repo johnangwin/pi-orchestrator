@@ -10,7 +10,7 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 7 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Complete deterministic Workspace manifests, Write Leases, Change Sets, and Candidates now bind mutable execution. Read-only planning Agents run from a digest-pinned static image against verified read-only Workspace projections without source archives or derived images. Implementer, Check, and Review execution remains on the retained v0.2 source-transfer path until its named replacement phase.
+Phases 0 through 8 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Read-only Agents and leased Implementers now use digest-pinned static images against the persistent Run Workspace without source archives, derived source images, Patch export, or replay. Complete manifests, requested and observed mount evidence, Write Leases, Change Sets, and frozen Candidates bind every implementation attempt. Check and Review execution remains on the retained v0.2 source-transfer path until Phases 9 and 10 replace it.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
@@ -22,8 +22,8 @@ Phases 0 through 7 are complete. The original host-bind design failed under hard
 |     5 | Add complete Workspace manifests                  | Complete |
 |     6 | Add Write Leases, Change Sets, and Candidates     | Complete |
 |     7 | Run read-only Agents from the shared Workspace    | Complete |
-|     8 | Run Implementers under Write Leases               | Next     |
-|     9 | Run authoritative Checks against Candidates       | Pending  |
+|     8 | Run Implementers under Write Leases               | Complete |
+|     9 | Run authoritative Checks against Candidates       | Next     |
 |    10 | Run fresh Reviews against Candidates              | Pending  |
 |    11 | Commit exact Candidates                           | Pending  |
 |    12 | Add the trusted background Supervisor             | Pending  |
@@ -112,6 +112,16 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - masked restricted paths, inspected the actual native mount table, and uploaded only digest-bound Session inputs;
 - migrated questionnaire planning, Architecture and Quant consultations, independent criticism, and Lead synthesis;
 - made durable recovery re-inspect the named volume, rebuild policy masks, verify complete contents and gateway provenance, and reject mount drift.
+
+## Phase 8 outcome
+
+- replaced the active implementation path with direct mutation of the persistent Run volume under one Task-scoped Write Lease;
+- persisted the requested mount set before Sandbox creation and bound activation to the actual Sandbox, gateway, and Linux mount table;
+- kept the Project root read-only and reopened only validated literal Task roots, with protected and restricted overlays retained;
+- revoked and deleted every writer before model-free manifest and Git inspection, including after host-process interruption;
+- stored Reports, immutable Change Sets, monotonic Workspace generations, frozen Candidates, and idempotent `workspace_changed` Messages;
+- retained failed and interrupted deltas for bounded fresh rework without a predecessor transcript;
+- added non-owning read projections so active read Agents observe allowed shared-volume writes while their source-bound Briefs become stale.
 
 ## Later proof gates
 

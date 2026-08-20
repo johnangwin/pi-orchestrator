@@ -232,6 +232,13 @@ function validInputs(value) {
 }
 
 function validWorkspaceProjection(value) {
+  const writeFields = [
+    "lease_id",
+    "lease_digest",
+    "write_roots_digest",
+    "gateway_digest",
+  ];
+  const writable = writeFields.some((field) => Object.hasOwn(value, field));
   return (
     exactKeys(value, [
       "source_digest",
@@ -243,6 +250,7 @@ function validWorkspaceProjection(value) {
       "mount_table_digest",
       "image_digest",
       "projection_digest",
+      ...(writable ? writeFields : []),
     ]) &&
     digestPattern.test(value.source_digest) &&
     Number.isSafeInteger(value.workspace_generation) &&
@@ -256,8 +264,16 @@ function validWorkspaceProjection(value) {
       value.mount_table_digest,
       value.image_digest,
       value.projection_digest,
-    ].every((digest) => digestPattern.test(digest))
+      ...(writable
+        ? [value.lease_digest, value.write_roots_digest, value.gateway_digest]
+        : []),
+    ].every((digest) => digestPattern.test(digest)) &&
+    (!writable || identifierPattern.test(value.lease_id))
   );
+}
+
+function writableWorkspaceProjection(value) {
+  return plainObject(value) && Object.hasOwn(value, "lease_id");
 }
 
 function validPermissionAssignment(value) {
@@ -381,7 +397,10 @@ function parseConfig(value) {
     (value.inputs !== undefined && !validInputs(value.inputs)) ||
     (value.workspace_projection !== undefined &&
       !validWorkspaceProjection(value.workspace_projection)) ||
-    (value.workspace_projection !== undefined && value.profile !== "read")
+    (value.workspace_projection !== undefined &&
+      (writableWorkspaceProjection(value.workspace_projection)
+        ? value.profile !== "write"
+        : value.profile !== "read"))
   ) {
     throw new Error("Invalid Orchestrator client configuration");
   }

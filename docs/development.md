@@ -32,7 +32,7 @@ PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
 # Sandbox Artifact export and host import
 PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 
-# Writable Session and Patch replay
+# Leased writable Session over the persistent Run volume
 PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
 
 # Fresh no-inference Check Sandbox

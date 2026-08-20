@@ -59,24 +59,24 @@ orchestrator doctor
 orchestrator canary
 ```
 
-Run the supplied `percentage-discount` Plan:
+Validate, approve, and start the supplied `percentage-discount` Plan:
 
 ```sh
 orchestrator validate percentage-discount
 orchestrator approve percentage-discount
 orchestrator start percentage-discount
+```
 
+The current v0.3 checkpoint can then run its Implementer and freeze a Candidate:
+
+```sh
 orchestrator implement add-discount
-orchestrator check add-discount
-orchestrator review add-discount
-orchestrator commit add-discount
-
-orchestrator metrics percentage-discount-r1
-orchestrator report percentage-discount-r1
 orchestrator status
 ```
 
-`approve` and `commit` require explicit human confirmation. Authoritative Checks run in fresh no-inference Sandboxes, every Review Lens receives a fresh read-only Session, and the commit is created only in the isolated Run worktree.
+Phase 8 is complete: implementation now mutates the persistent shared Workspace under a Task Write Lease and returns a frozen Candidate. Candidate-based Checks, Reviews, and commits are the next migration phases, so the old end-to-end `check`, `review`, and `commit` sequence is not yet compatible with this new implementation path. See the [Roadmap](docs/roadmap.md) for the exact boundary.
+
+`approve` requires explicit human confirmation. Runtime state and metrics remain inspectable with `orchestrator status`, `orchestrator metrics <run>`, and `orchestrator report <run>`.
 
 Runtime state defaults to `~/.local/share/pi-orchestrator`. Set `ORCHESTRATOR_HOME` or use `--home` to choose another location.
 
@@ -97,7 +97,7 @@ Then:
 2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
 3. Configure Role routing policy in `.agents/orchestrator.yaml` and matching machine-local Model Profiles in `.pi/orchestrator.local.yaml`.
 4. Add or generate a version-two Plan under `docs/plans/<plan-id>/`; every Task declares literal `write_paths` separately from semantic `scope` globs.
-5. Run the same validate, approve, start, implement, check, review, and commit sequence used by the example.
+5. Run validate, approve, start, and implement; continue through Candidate-based Checks, Reviews, and commit after their roadmap phases land.
 
 For repository-aware Plan generation:
 

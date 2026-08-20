@@ -179,7 +179,7 @@ async function fixture(): Promise<Fixture> {
     policyDigest: fixtureDigest,
     imageDigest: fixtureDigest,
     gatewayDigest: fixtureDigest,
-    mountTableDigest: fixtureDigest,
+    mountSetDigest: fixtureDigest,
   };
   return {
     store,
@@ -212,7 +212,8 @@ async function activate(
     name: input.sandboxName,
     workspace: input.sandboxWorkspace,
     gatewayDigest: input.gatewayDigest,
-    mountTableDigest: input.mountTableDigest,
+    mountSetDigest: input.mountSetDigest,
+    mountTableDigest: fixtureDigest,
     sandboxDigest: fixtureDigest,
   });
   return { lease: active, sandboxId };
@@ -360,7 +361,8 @@ describe("Workspace Write Lease lifecycle", () => {
         name: context.acquireInput.sandboxName,
         workspace: context.acquireInput.sandboxWorkspace,
         gatewayDigest: context.acquireInput.gatewayDigest,
-        mountTableDigest: context.acquireInput.mountTableDigest,
+        mountSetDigest: context.acquireInput.mountSetDigest,
+        mountTableDigest: fixtureDigest,
         sandboxDigest: fixtureDigest,
       }),
     ).resolves.toMatchObject({ status: "active", sandbox_id: sandboxId });
@@ -371,6 +373,7 @@ describe("Workspace Write Lease lifecycle", () => {
         name: context.acquireInput.sandboxName,
         workspace: context.acquireInput.sandboxWorkspace,
         gatewayDigest: context.acquireInput.gatewayDigest,
+        mountSetDigest: context.acquireInput.mountSetDigest,
         mountTableDigest: `sha256:${"f".repeat(64)}`,
         sandboxDigest: fixtureDigest,
       }),
@@ -683,5 +686,28 @@ describe("Workspace Write Lease lifecycle", () => {
         (gate) => gate.status,
       ),
     ).toEqual(["stale", "stale", "stale"]);
+  });
+
+  it("blocks an unleased writer even when source digests have not changed", async () => {
+    const context = await fixture();
+    await expect(
+      context.lifecycle.observe({
+        manifest: context.baseline,
+        gitDiff: context.baselineDiff,
+        writableSandboxIds: ["00000000-0000-4000-8000-000000000099"],
+      }),
+    ).rejects.toMatchObject({ code: "writable_sandbox_without_lease" });
+
+    const state = await context.store.readRun(context.lifecycle.runId);
+    expect(state).toMatchObject({
+      status: "blocked",
+      workspace: {
+        drift: {
+          expected_manifest_digest: context.baseline.digest,
+          observed_manifest_digest: context.baseline.digest,
+          reason: expect.stringContaining("without a Write Lease"),
+        },
+      },
+    });
   });
 });

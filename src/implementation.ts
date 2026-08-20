@@ -11,7 +11,7 @@ import {
 } from "./artifact.js";
 import { compileBrief, type CompiledBrief } from "./brief.js";
 import { IdentifierSchema } from "./config.js";
-import { canonicalJson, type Digest } from "./digest.js";
+import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import type { LocalConfig } from "./local.js";
 import { Mailbox, MessageSchema, type MessageLifecycle } from "./message.js";
@@ -21,7 +21,7 @@ import {
   routingPolicyDigest,
   type ResolvedModelRoute,
 } from "./model.js";
-import type { OpenShellPreflight } from "./openshell.js";
+import type { OpenShellPreflight, OpenShellSandbox } from "./openshell.js";
 import {
   permissionRuntimeState,
   projectPermissionPolicyDigest,
@@ -56,6 +56,29 @@ import {
   type SessionIdentity,
 } from "./session.js";
 import { createSourceSnapshot, type SourceSnapshot } from "./snapshot.js";
+import {
+  createRunSourceWorkspace,
+  verifyWorkspaceGateway,
+  WritableWorkspaceSessionProjectionSchema,
+  type CreateRunSourceWorkspaceOptions,
+  type RunSourceWorkspace,
+  type WorkspaceSourceManifest,
+} from "./source.js";
+import {
+  WorkspaceLifecycle,
+  changedPaths,
+  type WritableSandboxProvenance,
+} from "./lifecycle.js";
+import type { ChangeSet } from "./change.js";
+import type { Candidate } from "./candidate.js";
+import type { WriteLease } from "./lease.js";
+import {
+  compareWorkspaceManifests,
+  createWorkspaceManifestFromEntries,
+  effectiveRestrictedPaths,
+  type WorkspaceManifest,
+} from "./workspace.js";
+import { validateTaskWritePaths } from "./scope.js";
 import type {
   ProjectRecord,
   ProjectStore,
@@ -112,7 +135,11 @@ export function parseImplementationAssessment(
   }
 }
 
-export type ImplementationOpenShell = WriteSessionOpenShell & ArtifactOpenShell;
+export type ImplementationOpenShell = WriteSessionOpenShell &
+  ArtifactOpenShell & {
+    readonly gateway?: string | undefined;
+    listSandboxes(): Promise<OpenShellSandbox[]>;
+  };
 
 export interface ImplementationSession {
   readonly info: WriteSessionInfo;
@@ -152,10 +179,15 @@ export interface RunImplementationOptions {
     readonly temporaryRoot?: string;
   }) => Promise<ImportedArtifact<VerifiedPatch>>;
   readonly applyPatch?: typeof applyTaskPatch;
+  readonly workspaceFactory?: (
+    options: CreateRunSourceWorkspaceOptions,
+  ) => Promise<RunSourceWorkspace>;
+  readonly leaseDurationMs?: number;
 }
 
 export interface RunImplementationResult {
-  readonly application: ApplyTaskPatchResult["application"];
+  readonly candidate: Candidate;
+  readonly changeSet: ChangeSet;
   readonly report: Report;
   readonly reused: boolean;
   readonly task: TaskRecord;
@@ -297,10 +329,21 @@ async function dependencyReports(
   return (await store.list()).filter(
     (report) =>
       report.run === runId &&
-      report.kind === "implementation" &&
       report.task !== undefined &&
-      dependencies.has(report.task),
+      (report.task === task.id ||
+        (report.kind === "implementation" && dependencies.has(report.task))),
   );
+}
+
+interface ImplementationCorrectionEvidence {
+  readonly candidate: {
+    readonly id: string;
+    readonly digest: Digest;
+    readonly manifest_digest: Digest;
+    readonly git_diff_digest: Digest;
+    readonly change_sets: Candidate["change_sets"];
+  };
+  readonly gates: TaskRecord["gates"];
 }
 
 function compileImplementationBrief(options: {
@@ -313,6 +356,7 @@ function compileImplementationBrief(options: {
   readonly model: ResolvedModelRoute;
   readonly sourceDigest: Digest;
   readonly dependencies: readonly Report[];
+  readonly correction?: ImplementationCorrectionEvidence;
 }): CompiledBrief {
   const skills = options.role.definition.skills.map((name) => {
     const skill = options.project.skills.get(name);
@@ -324,6 +368,9 @@ function compileImplementationBrief(options: {
     }
     return skill;
   });
+  const correction = options.correction
+    ? canonicalJson(options.correction)
+    : undefined;
   return compileBrief({
     identity: options.identity,
     agents: options.project.agents,
@@ -335,7 +382,9 @@ function compileImplementationBrief(options: {
     decisions: [],
     dependencyReports: options.dependencies,
     skills,
-    outputContract: IMPLEMENTATION_OUTPUT_CONTRACT,
+    outputContract: correction
+      ? `${IMPLEMENTATION_OUTPUT_CONTRACT}\n\nCurrent correction evidence is authoritative and replaces predecessor conversation context:\n${correction}`
+      : IMPLEMENTATION_OUTPUT_CONTRACT,
     sourceAnchors: options.task.scope.map((scope) => ({
       path: scope,
       reason: "Approved writable Task scope.",
@@ -343,6 +392,14 @@ function compileImplementationBrief(options: {
     sourceDigests: {
       plan: options.plan.digest,
       source: options.sourceDigest,
+      ...(correction
+        ? {
+            correction: digestParts(
+              "pi-orchestrator/implementation-correction/v1",
+              [["evidence", correction]],
+            ),
+          }
+        : {}),
     },
     contextLimitTokens: options.model.context_window,
     initialFraction: options.project.config.context.initial_fraction,
@@ -377,7 +434,8 @@ async function allocateSession(options: {
   readonly task: PlanTask;
   readonly model: ResolvedModelRoute;
   readonly permissionCeiling: PermissionCeiling;
-  readonly nonce: string;
+  readonly attempt?: number;
+  readonly nonce?: string;
 }) {
   const agentId = "implementer";
   await options.registry.register({
@@ -386,7 +444,11 @@ async function allocateSession(options: {
     profile: options.model.profile,
   });
   const agent = await options.registry.get(agentId);
-  const sessionId = IdentifierSchema.parse(`implementation-${options.nonce}`);
+  const sessionId = IdentifierSchema.parse(
+    options.attempt === undefined
+      ? `implementation-${options.nonce}`
+      : `implementation-${options.task.id}-${options.attempt}`,
+  );
   if (agent.record.session === null) {
     return options.registry.start({
       agent: agentId,
@@ -473,20 +535,93 @@ async function markTaskRework(options: {
   readonly store: ProjectStore;
   readonly runId: string;
   readonly taskId: string;
+  readonly attempt?: number;
 }): Promise<void> {
   await options.store.updateRun(options.runId, (run) => {
     const current = run.tasks[options.taskId];
-    if (!current || current.status !== "active" || current.patch_application) {
+    if (!current) {
+      throw new OrchestratorError(
+        "task_not_found",
+        `Run '${run.id}' has no Task '${options.taskId}'`,
+      );
+    }
+    if (
+      current.status === "rework" &&
+      current.implementation_attempts >=
+        (options.attempt ?? current.implementation_attempts)
+    )
       return run;
+    if (!["ready", "active", "rework"].includes(current.status)) return run;
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.taskId]: {
+          ...current,
+          status: "rework",
+          implementation_attempts: Math.max(
+            current.implementation_attempts,
+            options.attempt ?? current.implementation_attempts,
+          ),
+        },
+      },
+    };
+  });
+}
+
+async function markTaskChecking(options: {
+  readonly store: ProjectStore;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly candidate: Candidate;
+}): Promise<TaskRecord> {
+  const updated = await options.store.updateRun(options.runId, (run) => {
+    const current = run.tasks[options.taskId];
+    if (!current) {
+      throw new OrchestratorError(
+        "task_not_found",
+        `Run '${run.id}' has no Task '${options.taskId}'`,
+      );
+    }
+    if (
+      run.workspace?.phase !== "frozen" ||
+      run.workspace.candidate?.id !== options.candidate.id ||
+      run.workspace.candidate.digest !== options.candidate.digest
+    ) {
+      throw new OrchestratorError(
+        "candidate_stale",
+        `Task '${options.taskId}' Candidate is not frozen in current Run state`,
+      );
+    }
+    if (
+      current.status === "checking" &&
+      current.implementation_attempts >= options.attempt
+    ) {
+      return run;
+    }
+    if (current.status !== "active") {
+      throw new OrchestratorError(
+        "task_not_active",
+        `Task '${options.taskId}' cannot enter checking while ${current.status}`,
+      );
     }
     return {
       ...run,
       tasks: {
         ...run.tasks,
-        [options.taskId]: { ...current, status: "rework" },
+        [options.taskId]: {
+          ...current,
+          status: "checking",
+          implementation_attempts: Math.max(
+            current.implementation_attempts,
+            options.attempt,
+          ),
+        },
       },
     };
   });
+  return updated.tasks[options.taskId]!;
 }
 
 async function failSession(
@@ -663,9 +798,15 @@ async function settleAppliedSession(options: {
   });
 }
 
-export async function runImplementation(
+async function runLegacyImplementation(
   options: RunImplementationOptions,
-): Promise<RunImplementationResult> {
+): Promise<{
+  readonly application: ApplyTaskPatchResult["application"];
+  readonly report: Report;
+  readonly reused: boolean;
+  readonly task: TaskRecord;
+  readonly identity: SessionIdentity;
+}> {
   const now = options.now ?? (() => new Date());
   const [projectRecord, initialRun, current] = await Promise.all([
     options.store.read(),
@@ -975,5 +1116,1003 @@ export async function runImplementation(
     throw error;
   } finally {
     await snapshot.dispose();
+  }
+}
+
+void runLegacyImplementation;
+
+function workspaceManifest(source: WorkspaceSourceManifest): WorkspaceManifest {
+  return createWorkspaceManifestFromEntries(source.entries);
+}
+
+function implementationAttempt(id: string, fallback: number): number {
+  const match = /-(\d+)$/u.exec(id);
+  const parsed = match ? Number.parseInt(match[1]!, 10) : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function implementationIds(task: string, attempt: number) {
+  const suffix = `${task}-${attempt}`;
+  return Object.freeze({
+    session: IdentifierSchema.parse(`implementation-${suffix}`),
+    request: IdentifierSchema.parse(`implementation-request-${suffix}`),
+    report: IdentifierSchema.parse(`implementation-${suffix}`),
+    lease: IdentifierSchema.parse(`lease-${suffix}`),
+    changeSet: IdentifierSchema.parse(`change-${suffix}`),
+    candidate: IdentifierSchema.parse(`candidate-${suffix}`),
+    sandbox: `pio-w-${sha256(suffix).slice("sha256:".length, 19)}`,
+  });
+}
+
+function sandboxProvenanceDigest(
+  sandbox: ReturnType<typeof SessionSandboxSchema.parse>,
+): Digest {
+  return digestParts("pi-orchestrator/writable-sandbox/v1", [
+    ["sandbox", canonicalJson(sandbox)],
+  ]);
+}
+
+async function writableSandboxes(
+  client: ImplementationOpenShell,
+  runId: string,
+): Promise<OpenShellSandbox[]> {
+  return (await client.listSandboxes()).filter(
+    (sandbox) =>
+      sandbox.labels["pio.run"] === runId &&
+      sandbox.labels["pio.access"] === "write",
+  );
+}
+
+async function requireWriterAbsence(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly lease: WriteLease;
+  readonly sandboxes: readonly OpenShellSandbox[];
+}): Promise<void> {
+  if (options.sandboxes.length === 0) return;
+  const reason = `Writable Sandboxes remain after revocation: ${options.sandboxes
+    .map((sandbox) => sandbox.id)
+    .join(", ")}`;
+  await options.lifecycle.block(options.lease.id, reason);
+  throw new OrchestratorError("writable_sandbox_present", reason);
+}
+
+async function stopPersistedWriter(options: {
+  readonly client: ImplementationOpenShell;
+  readonly lease: WriteLease;
+  readonly session?: ImplementationSession;
+}): Promise<void> {
+  let stopError: unknown;
+  if (options.session) {
+    try {
+      await options.session.stop();
+    } catch (error) {
+      stopError = error;
+    }
+  }
+  await options.client.deleteSandbox(options.lease.sandbox_name, {
+    missingOk: true,
+  });
+  if (stopError) throw stopError;
+}
+
+async function settleSession(options: {
+  readonly registry: AgentRegistry;
+  readonly identity: SessionIdentity;
+  readonly status: "stopped" | "failed";
+  readonly reason: string;
+}): Promise<void> {
+  const current = await options.registry
+    .requireCurrent(options.identity)
+    .catch(() => undefined);
+  if (!current || ["stopped", "failed"].includes(current.status)) return;
+  await options.registry.transition(options.identity, {
+    status: options.status,
+    reason: options.reason,
+  });
+}
+
+async function settleOrphanedImplementer(options: {
+  readonly registry: AgentRegistry;
+  readonly store: ProjectStore;
+  readonly run: RunState;
+  readonly task: PlanTask;
+}): Promise<void> {
+  if (options.run.workspace?.active_lease) return;
+  const agent = options.run.agents.implementer;
+  if (!agent?.session) return;
+  const session = options.run.sessions[agent.session];
+  if (!session || ["stopped", "failed"].includes(session.status)) return;
+  if (
+    !session.identity.session.startsWith(`implementation-${options.task.id}-`)
+  ) {
+    throw new OrchestratorError(
+      "implementation_session_active",
+      `Orphaned Implementer Session '${session.identity.session}' does not belong to Task '${options.task.id}'`,
+    );
+  }
+  const attempt = implementationAttempt(
+    session.identity.session,
+    options.run.tasks[options.task.id]!.implementation_attempts + 1,
+  );
+  await settleSession({
+    registry: options.registry,
+    identity: session.identity,
+    status: "failed",
+    reason: "Implementation Session had no durable Write Lease",
+  });
+  await markTaskRework({
+    store: options.store,
+    runId: options.run.id,
+    taskId: options.task.id,
+    attempt,
+  });
+}
+
+async function exactCandidateResult(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly reports: ReportStore;
+  readonly candidate: Candidate;
+  readonly task: TaskRecord;
+}): Promise<RunImplementationResult> {
+  const reference = options.candidate.change_sets.at(-1);
+  if (!reference) {
+    throw new OrchestratorError(
+      "implementation_evidence_incomplete",
+      `Candidate '${options.candidate.id}' has no Change Set`,
+    );
+  }
+  const changeSet = await options.lifecycle.changes.get(reference);
+  if (!changeSet.report) {
+    throw new OrchestratorError(
+      "implementation_evidence_incomplete",
+      `Candidate '${options.candidate.id}' has no implementation Report`,
+    );
+  }
+  return {
+    candidate: options.candidate,
+    changeSet,
+    report: await options.reports.get(changeSet.report),
+    reused: true,
+    task: options.task,
+    identity: changeSet.identity,
+  };
+}
+
+async function emitWorkspaceChanged(options: {
+  readonly store: ProjectStore;
+  readonly mailbox: Mailbox;
+  readonly runId: string;
+  readonly source: WorkspaceSourceManifest;
+  readonly changeSet: ChangeSet;
+  readonly candidate: Candidate;
+  readonly sender: string;
+  readonly createdAt: string;
+}): Promise<void> {
+  const run = await options.store.readRun(options.runId);
+  const references = changedPaths(options.changeSet.changes);
+  await Promise.all(
+    Object.entries(run.agents).map(async ([agent, record]) => {
+      if (agent === options.sender || !record.session) return;
+      const session = run.sessions[record.session];
+      if (!session || ["stopped", "failed"].includes(session.status)) return;
+      await options.mailbox.put(
+        MessageSchema.parse({
+          version: 2,
+          id: `workspace-changed-${options.source.workspace_generation}-${agent}`,
+          run: run.id,
+          from: { host: true },
+          to: {
+            agent,
+            session: record.session,
+            generation: record.generation,
+          },
+          type: "workspace-changed",
+          priority: "normal",
+          reply_to: null,
+          body: {
+            workspace_generation: options.source.workspace_generation,
+            source_digest: options.source.source_digest,
+            manifest_digest: options.source.manifest_digest,
+            change_set: options.changeSet.id,
+            change_set_digest: options.changeSet.digest,
+            candidate: options.candidate.id,
+            candidate_digest: options.candidate.digest,
+          },
+          references,
+          created_at: options.createdAt,
+        }),
+      );
+    }),
+  );
+}
+
+export async function runImplementation(
+  options: RunImplementationOptions,
+): Promise<RunImplementationResult> {
+  if (options.imageContext) {
+    throw new OrchestratorError(
+      "derived_writer_disabled",
+      "Shared-Workspace Implementers require the configured pinned image; derived writer images are disabled",
+    );
+  }
+  const now = options.now ?? (() => new Date());
+  const [projectRecord, initialRun, current] = await Promise.all([
+    options.store.read(),
+    options.store.readRun(options.runId),
+    currentProjectAndPlan({ project: options.project, plan: options.plan }),
+  ]);
+  requireRunBinding({
+    run: initialRun,
+    project: current.project,
+    plan: current.plan,
+    projectRecord,
+  });
+  const task = findTask(current.plan, options.taskId);
+  let taskState = initialRun.tasks[task.id];
+  if (!taskState) {
+    throw new OrchestratorError(
+      "task_not_found",
+      `Run '${initialRun.id}' has no Task '${task.id}'`,
+    );
+  }
+  if (!taskState.input_commit) {
+    throw new OrchestratorError(
+      "task_input_missing",
+      `Task '${task.id}' has no accepted input commit`,
+    );
+  }
+
+  const lifecycle = new WorkspaceLifecycle(options.store, initialRun.id, now);
+  const registry = new AgentRegistry(options.store, initialRun.id, now);
+  const reports = new ReportStore(options.store.runDirectory(initialRun.id));
+  const mailbox = new Mailbox(options.store.runDirectory(initialRun.id));
+  const metrics = new MetricStore(
+    options.store.runDirectory(initialRun.id),
+    initialRun.id,
+  );
+  const protectedPatterns = current.project.config.protected;
+  const restrictedPatterns = effectiveRestrictedPaths(
+    current.project.config.restricted_paths,
+    options.local.workspace.restricted_paths,
+  );
+  const workspace = await (
+    options.workspaceFactory ?? createRunSourceWorkspace
+  )({
+    projectRoot: current.project.root,
+    projectId: current.project.config.project.id,
+    runId: initialRun.id,
+    commit: initialRun.base_commit,
+    local: options.local,
+    ...(initialRun.workspace
+      ? {
+          binding: {
+            volumeName: initialRun.workspace.volume_name,
+            volumeDigest: initialRun.workspace.volume_digest,
+          },
+        }
+      : {}),
+  });
+
+  let run = await options.store.readRun(initialRun.id);
+  let source!: WorkspaceSourceManifest;
+  let manifest!: WorkspaceManifest;
+  let gitDiff!: Awaited<ReturnType<RunSourceWorkspace["gitDiff"]>>;
+  let writers = await writableSandboxes(options.client, initialRun.id);
+  if (writers.length > 0 && !run.workspace?.active_lease) {
+    if (run.workspace) {
+      await lifecycle.blockUnleasedWriters(writers.map((entry) => entry.id));
+    }
+    await options.store.updateRun(run.id, (currentRun) => ({
+      ...currentRun,
+      status: "blocked",
+    }));
+    throw new OrchestratorError(
+      "writable_sandbox_without_lease",
+      "A writable Sandbox exists before Run Workspace initialization",
+    );
+  }
+  if (!run.workspace || !run.workspace.active_lease) {
+    source = await workspace.inspect(run.workspace?.generation ?? 0);
+    manifest = workspaceManifest(source);
+    gitDiff = await workspace.gitDiff(source);
+  }
+  if (!run.workspace) {
+    if (gitDiff.changes.length > 0) {
+      throw new OrchestratorError(
+        "workspace_seed_mismatch",
+        "The initial Run Workspace differs from its approved base commit",
+      );
+    }
+    run = await lifecycle.initialize({
+      volumeName: workspace.volume.name,
+      volumeDigest: workspace.volume.digest,
+      manifest,
+      gitDiff,
+    });
+  } else if (!run.workspace.active_lease) {
+    await lifecycle.observe({
+      manifest,
+      gitDiff,
+      writableSandboxIds: writers.map((entry) => entry.id),
+    });
+  }
+
+  run = await options.store.readRun(initialRun.id);
+  taskState = run.tasks[task.id]!;
+  let correction: ImplementationCorrectionEvidence | undefined;
+  if (
+    taskState.status === "rework" &&
+    run.workspace?.candidate?.status === "frozen"
+  ) {
+    const frozen = await lifecycle.candidates.get(run.workspace.candidate);
+    if (frozen.task !== task.id) {
+      throw new OrchestratorError(
+        "candidate_frozen",
+        `Run '${run.id}' has a frozen Candidate for Task '${frozen.task}'`,
+      );
+    }
+    correction = {
+      candidate: {
+        id: frozen.id,
+        digest: frozen.digest,
+        manifest_digest: frozen.manifest_digest,
+        git_diff_digest: frozen.git_diff_digest,
+        change_sets: frozen.change_sets,
+      },
+      gates: taskState.gates,
+    };
+    await lifecycle.transitionCandidate(
+      frozen.id,
+      "discarded",
+      "Task entered rework",
+    );
+    run = await options.store.readRun(initialRun.id);
+  } else if (run.workspace?.candidate?.status === "frozen") {
+    const candidate = await lifecycle.candidates.get(run.workspace.candidate);
+    if (candidate.task !== task.id) {
+      throw new OrchestratorError(
+        "candidate_frozen",
+        `Run '${run.id}' has a frozen Candidate for Task '${candidate.task}'`,
+      );
+    }
+    if (taskState.status === "active") {
+      taskState = await markTaskChecking({
+        store: options.store,
+        runId: run.id,
+        taskId: task.id,
+        attempt: implementationAttempt(
+          candidate.id,
+          taskState.implementation_attempts + 1,
+        ),
+        candidate,
+      });
+    }
+    const result = await exactCandidateResult({
+      lifecycle,
+      reports,
+      candidate,
+      task: taskState,
+    });
+    await settleSession({
+      registry,
+      identity: result.identity,
+      status: "stopped",
+      reason: "Implementation recovered from a frozen Candidate",
+    });
+    await emitWorkspaceChanged({
+      store: options.store,
+      mailbox,
+      runId: run.id,
+      source,
+      changeSet: result.changeSet,
+      candidate,
+      sender: result.identity.agent,
+      createdAt: candidate.frozen_at,
+    });
+    return result;
+  }
+
+  const activeReference = run.workspace?.active_lease;
+  if (activeReference) {
+    let lease = await lifecycle.leases.get(activeReference);
+    if (lease.task !== task.id) {
+      throw new OrchestratorError(
+        "active_writer_conflict",
+        `Task '${lease.task}' owns the active Write Lease`,
+      );
+    }
+    const attempt = implementationAttempt(
+      lease.id,
+      taskState.implementation_attempts + 1,
+    );
+    const ids = implementationIds(task.id, attempt);
+    const wasPreparing = lease.status === "preparing";
+    const baseline = await lifecycle.manifests.get(
+      lease.baseline_manifest_digest,
+    );
+    lease = await lifecycle.beginRevocation(lease.id);
+    await stopPersistedWriter({ client: options.client, lease });
+    writers = await writableSandboxes(options.client, run.id);
+    await requireWriterAbsence({ lifecycle, lease, sandboxes: writers });
+    source = await workspace.inspect(lease.workspace_generation + 1);
+    manifest = workspaceManifest(source);
+    gitDiff = await workspace.gitDiff(source);
+    const delta = compareWorkspaceManifests(baseline, manifest);
+    if (wasPreparing && delta.length > 0) {
+      await lifecycle.block(
+        lease.id,
+        "Workspace changed before writable Sandbox activation",
+        now().toISOString(),
+      );
+      throw new OrchestratorError(
+        "write_lease_provenance_mismatch",
+        "A preparing Write Lease cannot explain Workspace changes",
+      );
+    }
+    const report = (await reports.list()).find(
+      (entry) =>
+        entry.id === ids.report &&
+        entry.run === run.id &&
+        entry.kind === "implementation" &&
+        entry.task === task.id &&
+        entry.agent === lease.identity.agent &&
+        entry.session === lease.identity.session &&
+        entry.generation === lease.identity.generation &&
+        entry.patch_digest === gitDiff.digest,
+    );
+    const changeSet = await lifecycle.release({
+      leaseId: lease.id,
+      changeSetId: ids.changeSet,
+      task,
+      baselineManifest: baseline,
+      resultManifest: manifest,
+      gitDiff,
+      protectedPatterns,
+      restrictedPatterns,
+      deletedSandboxId: lease.sandbox_id,
+      writableSandboxIds: writers.map((entry) => entry.id),
+      ...(report ? { report: report.id } : {}),
+    });
+    await moveMessageIfPresent(mailbox, ids.request, "expired").catch(
+      () => undefined,
+    );
+    if (!report) {
+      await settleSession({
+        registry,
+        identity: lease.identity,
+        status: "failed",
+        reason: "Interrupted Implementer was revoked without a durable Report",
+      });
+      await markTaskRework({
+        store: options.store,
+        runId: run.id,
+        taskId: task.id,
+        attempt,
+      });
+      run = await options.store.readRun(run.id);
+      taskState = run.tasks[task.id]!;
+    } else {
+      await settleSession({
+        registry,
+        identity: lease.identity,
+        status: "stopped",
+        reason: "Implementation recovered from durable Workspace evidence",
+      });
+      const candidate = await lifecycle.freeze({
+        id: ids.candidate,
+        task,
+        manifest,
+        gitDiff,
+        protectedPatterns,
+        restrictedPatterns,
+        writableSandboxIds: [],
+      });
+      taskState = await markTaskChecking({
+        store: options.store,
+        runId: run.id,
+        taskId: task.id,
+        attempt,
+        candidate,
+      });
+      await emitWorkspaceChanged({
+        store: options.store,
+        mailbox,
+        runId: run.id,
+        source,
+        changeSet,
+        candidate,
+        sender: lease.identity.agent,
+        createdAt: candidate.frozen_at,
+      });
+      return {
+        candidate,
+        changeSet,
+        report,
+        reused: true,
+        task: taskState,
+        identity: lease.identity,
+      };
+    }
+  }
+
+  run = await options.store.readRun(initialRun.id);
+  taskState = run.tasks[task.id]!;
+  source = await workspace.inspect(run.workspace!.generation);
+  manifest = workspaceManifest(source);
+  gitDiff = await workspace.gitDiff(source);
+  writers = await writableSandboxes(options.client, run.id);
+  await lifecycle.observe({
+    manifest,
+    gitDiff,
+    writableSandboxIds: writers.map((entry) => entry.id),
+  });
+
+  if (taskState.status === "active" && run.workspace?.phase === "stable") {
+    const reference = run.workspace.change_sets.at(-1);
+    if (reference) {
+      const changeSet = await lifecycle.changes.get(reference);
+      if (
+        changeSet.task === task.id &&
+        changeSet.result_generation === run.workspace.generation &&
+        changeSet.result_manifest_digest === manifest.digest &&
+        changeSet.report
+      ) {
+        const attempt = implementationAttempt(
+          changeSet.lease.id,
+          taskState.implementation_attempts + 1,
+        );
+        const candidate = await lifecycle.freeze({
+          id: implementationIds(task.id, attempt).candidate,
+          task,
+          manifest,
+          gitDiff,
+          protectedPatterns,
+          restrictedPatterns,
+          writableSandboxIds: [],
+        });
+        taskState = await markTaskChecking({
+          store: options.store,
+          runId: run.id,
+          taskId: task.id,
+          attempt,
+          candidate,
+        });
+        await settleSession({
+          registry,
+          identity: changeSet.identity,
+          status: "stopped",
+          reason: "Implementation recovered from a durable Change Set",
+        });
+        await emitWorkspaceChanged({
+          store: options.store,
+          mailbox,
+          runId: run.id,
+          source,
+          changeSet,
+          candidate,
+          sender: changeSet.identity.agent,
+          createdAt: candidate.frozen_at,
+        });
+        return {
+          candidate,
+          changeSet,
+          report: await reports.get(changeSet.report),
+          reused: true,
+          task: taskState,
+          identity: changeSet.identity,
+        };
+      }
+    }
+  }
+
+  run = await options.store.readRun(initialRun.id);
+  await settleOrphanedImplementer({
+    registry,
+    store: options.store,
+    run,
+    task,
+  });
+  run = await options.store.readRun(initialRun.id);
+  taskState = run.tasks[task.id]!;
+  requireTaskReady(
+    taskState,
+    task,
+    current.project.config.attempts.implementation,
+  );
+  const role = requireImplementerRole(current.project, task);
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "task", task: task.id },
+    localPolicy: options.local.permissions,
+  });
+  const model = resolveRoleModelRoute(
+    current.project.config,
+    options.local,
+    task.role,
+  );
+  const preflight = await options.client.preflight();
+  requirePinnedPreflight(preflight, model);
+  if (
+    !options.client.gateway ||
+    !options.client.listGateways ||
+    !options.client.getGatewayInfo
+  ) {
+    throw new OrchestratorError(
+      "workspace_gateway_uninspectable",
+      "Writable Workspace Sessions require inspectable local gateway provenance",
+    );
+  }
+  const gateway = await verifyWorkspaceGateway(
+    workspace,
+    {
+      gateway: options.client.gateway,
+      listGateways: options.client.listGateways.bind(options.client),
+      getGatewayInfo: options.client.getGatewayInfo.bind(options.client),
+    },
+    preflight,
+  );
+  const policyDirectory = path.resolve(
+    options.policyDirectory ?? bundledPiPolicyDirectory(),
+  );
+  const policy = await loadSandboxPolicy(
+    "write",
+    path.join(policyDirectory, "write.yaml"),
+  );
+  const writePolicy = validateTaskWritePaths({
+    task,
+    protectedPatterns,
+    restrictedPatterns,
+  });
+  const mountSet = workspace.writeMountSet({
+    source,
+    writePaths: writePolicy.writePaths,
+    protectedPatterns,
+    restrictedPatterns,
+  });
+  const attempt = taskState.implementation_attempts + 1;
+  const ids = implementationIds(task.id, attempt);
+  const dependencies = await dependencyReports(reports, run.id, task);
+  const sessionRecord = await allocateSession({
+    registry,
+    task,
+    model,
+    permissionCeiling,
+    attempt,
+  });
+  const identity = sessionRecord.identity;
+  let brief: CompiledBrief;
+  let message: ReturnType<typeof MessageSchema.parse>;
+  try {
+    brief = compileImplementationBrief({
+      identity,
+      project: current.project,
+      role,
+      permissionCeiling,
+      task,
+      plan: current.plan,
+      model,
+      sourceDigest: source.source_digest,
+      dependencies,
+      ...(correction ? { correction } : {}),
+    });
+    message = MessageSchema.parse({
+      version: 2,
+      id: ids.request,
+      run: run.id,
+      from: { host: true },
+      to: {
+        agent: identity.agent,
+        session: identity.session,
+        generation: identity.generation,
+      },
+      type: "implementation-request",
+      priority: "normal",
+      reply_to: null,
+      body: {
+        action: "implement",
+        task: task.id,
+        brief_digest: brief.digest,
+        workspace_generation: source.workspace_generation,
+        instruction:
+          "Implement exactly the approved Task in /workspace/project and return the required structured object.",
+      },
+      references: [...task.scope],
+      created_at: now().toISOString(),
+    });
+  } catch (error) {
+    await settleSession({
+      registry,
+      identity,
+      status: "failed",
+      reason: `Implementation Brief failed: ${formatUnknownError(error)}`,
+    });
+    await markTaskRework({
+      store: options.store,
+      runId: run.id,
+      taskId: task.id,
+      attempt,
+    });
+    throw error;
+  }
+
+  let lease: WriteLease | undefined;
+  let session: ImplementationSession | undefined;
+  let report: Report | undefined;
+  let released = false;
+  let completed = false;
+  try {
+    lease = await lifecycle.acquire({
+      id: ids.lease,
+      task,
+      identity,
+      permissionCeiling,
+      baselineManifest: manifest,
+      protectedPatterns,
+      restrictedPatterns,
+      expiresAt: new Date(
+        now().getTime() + (options.leaseDurationMs ?? 30 * 60_000),
+      ).toISOString(),
+      sandboxName: ids.sandbox,
+      sandboxWorkspace: "default",
+      policyDigest: policy.digest,
+      imageDigest: workspace.imageDigest,
+      gatewayDigest: gateway.digest,
+      mountSetDigest: mountSet.digest,
+    });
+    taskState = await activateTask({
+      store: options.store,
+      runId: run.id,
+      task,
+      attemptLimit: current.project.config.attempts.implementation,
+    });
+    const writer = workspace.bindWriter({
+      source,
+      mountSet,
+      lease,
+      gatewayDigest: gateway.digest,
+    });
+    session = await (options.launchSession ?? startWriteSession)({
+      client: options.client,
+      identity,
+      workspace: writer,
+      permissionCeiling,
+      writeGrant: { task: task.id },
+      model,
+      brief,
+      context: current.project.config.context,
+      metrics,
+      task: task.id,
+      currentActionState: async () =>
+        permissionRuntimeState({
+          ceiling: permissionCeiling,
+          identity,
+          run: await options.store.readRun(run.id),
+        }),
+      now,
+      policyDirectory,
+      sandboxName: ids.sandbox,
+      ...(options.startupTimeoutMs
+        ? { startupTimeoutMs: options.startupTimeoutMs }
+        : {}),
+      ...(options.turnTimeoutMs
+        ? { turnTimeoutMs: options.turnTimeoutMs }
+        : {}),
+    });
+    const projection = WritableWorkspaceSessionProjectionSchema.parse(
+      session.info.workspaceProjection,
+    );
+    if (
+      session.info.profile !== "write" ||
+      session.info.permissionCeiling.permission_ceiling_digest !==
+        permissionCeiling.permission_ceiling_digest ||
+      canonicalJson(session.info.identity) !== canonicalJson(identity) ||
+      session.info.sourceDigest !== source.source_digest ||
+      session.info.policyDigest !== policy.digest ||
+      session.info.briefDigest !== brief.digest ||
+      canonicalJson(session.info.model) !== canonicalJson(model) ||
+      session.info.inference?.model !== model.pi_model ||
+      session.info.sandbox.name !== ids.sandbox ||
+      session.info.sandbox.workspace !== lease.sandbox_workspace ||
+      projection.lease_id !== lease.id ||
+      projection.lease_digest !== lease.digest ||
+      projection.mount_set_digest !== mountSet.digest ||
+      projection.gateway_digest !== gateway.digest ||
+      projection.source_digest !== source.source_digest
+    ) {
+      throw new OrchestratorError(
+        "implementation_session_mismatch",
+        "Writable implementation Session does not match its Lease, Workspace, Brief, model, or policy",
+      );
+    }
+    requirePinnedPreflight(session.info.openshell, model);
+    const sandbox = SessionSandboxSchema.parse({
+      id: session.info.sandbox.id,
+      name: session.info.sandbox.name,
+      workspace: session.info.sandbox.workspace,
+      projection,
+    });
+    await registry.bindSandbox(identity, sandbox);
+    const provenance: WritableSandboxProvenance = {
+      id: sandbox.id,
+      name: sandbox.name,
+      workspace: sandbox.workspace,
+      gatewayDigest: gateway.digest,
+      mountSetDigest: projection.mount_set_digest,
+      mountTableDigest: projection.mount_table_digest,
+      sandboxDigest: sandboxProvenanceDigest(sandbox),
+    };
+    lease = await lifecycle.activate(lease.id, provenance);
+    await registry.transition(identity, { status: "active" });
+    await mailbox.put(message);
+    const turn = ModelTurnResultSchema.parse(
+      await session.run(message, options.turnTimeoutMs),
+    );
+    await moveMessageIfPresent(mailbox, message.id, "queued");
+    if (turn.truncated) {
+      throw new OrchestratorError(
+        "implementation_output_truncated",
+        `Implementer output exceeded the Link result limit for Task '${task.id}'`,
+      );
+    }
+    const assessment = parseImplementationAssessment(turn.text);
+
+    lease = await lifecycle.beginRevocation(lease.id);
+    await stopPersistedWriter({ client: options.client, lease, session });
+    session = undefined;
+    writers = await writableSandboxes(options.client, run.id);
+    await requireWriterAbsence({ lifecycle, lease, sandboxes: writers });
+    const resultSource = await workspace.inspect(
+      lease.workspace_generation + 1,
+    );
+    const resultManifest = workspaceManifest(resultSource);
+    const resultGitDiff = await workspace.gitDiff(resultSource);
+    const changes = compareWorkspaceManifests(manifest, resultManifest);
+    report = createReport({
+      id: ids.report,
+      kind: "implementation",
+      run: run.id,
+      agent: identity.agent,
+      session: identity.session,
+      generation: identity.generation,
+      permission_ceiling_digest: permissionCeiling.permission_ceiling_digest,
+      model_profile: model.profile,
+      route_digest: model.route_digest,
+      task: task.id,
+      source_digest: source.source_digest,
+      patch_digest: resultGitDiff.digest,
+      content: renderReport({
+        assessment,
+        changes: changedPaths(changes),
+      }),
+      created_at: now().toISOString(),
+    });
+    await reports.put(report);
+    const changeSet = await lifecycle.release({
+      leaseId: lease.id,
+      changeSetId: ids.changeSet,
+      task,
+      baselineManifest: manifest,
+      resultManifest,
+      gitDiff: resultGitDiff,
+      protectedPatterns,
+      restrictedPatterns,
+      deletedSandboxId: lease.sandbox_id,
+      writableSandboxIds: writers.map((entry) => entry.id),
+      report: report.id,
+    });
+    released = true;
+    const candidate = await lifecycle.freeze({
+      id: ids.candidate,
+      task,
+      manifest: resultManifest,
+      gitDiff: resultGitDiff,
+      protectedPatterns,
+      restrictedPatterns,
+      writableSandboxIds: [],
+    });
+    taskState = await markTaskChecking({
+      store: options.store,
+      runId: run.id,
+      taskId: task.id,
+      attempt,
+      candidate,
+    });
+    await moveMessageIfPresent(mailbox, message.id, "answered");
+    await settleSession({
+      registry,
+      identity,
+      status: "stopped",
+      reason: "Implementation produced a frozen Candidate",
+    });
+    await emitWorkspaceChanged({
+      store: options.store,
+      mailbox,
+      runId: run.id,
+      source: resultSource,
+      changeSet,
+      candidate,
+      sender: identity.agent,
+      createdAt: candidate.frozen_at,
+    });
+    completed = true;
+    return {
+      candidate,
+      changeSet,
+      report,
+      reused: false,
+      task: taskState,
+      identity,
+    };
+  } catch (error) {
+    const cleanup: string[] = [];
+    await moveMessageIfPresent(mailbox, message.id, "expired").catch(
+      (cleanupError: unknown) => {
+        cleanup.push(`Message: ${formatUnknownError(cleanupError)}`);
+      },
+    );
+    if (lease && !released && !completed) {
+      try {
+        lease = await lifecycle.beginRevocation(lease.id);
+        await stopPersistedWriter({
+          client: options.client,
+          lease,
+          ...(session ? { session } : {}),
+        });
+        session = undefined;
+        writers = await writableSandboxes(options.client, run.id);
+        await requireWriterAbsence({ lifecycle, lease, sandboxes: writers });
+        const resultSource = await workspace.inspect(
+          lease.workspace_generation + 1,
+        );
+        const resultManifest = workspaceManifest(resultSource);
+        const resultGitDiff = await workspace.gitDiff(resultSource);
+        await lifecycle.release({
+          leaseId: lease.id,
+          changeSetId: ids.changeSet,
+          task,
+          baselineManifest: manifest,
+          resultManifest,
+          gitDiff: resultGitDiff,
+          protectedPatterns,
+          restrictedPatterns,
+          deletedSandboxId: lease.sandbox_id,
+          writableSandboxIds: writers.map((entry) => entry.id),
+          ...(report ? { report: report.id } : {}),
+        });
+        released = true;
+      } catch (cleanupError) {
+        cleanup.push(`Write Lease: ${formatUnknownError(cleanupError)}`);
+      }
+    }
+    if (session) {
+      await session.stop().catch((cleanupError: unknown) => {
+        cleanup.push(`Sandbox: ${formatUnknownError(cleanupError)}`);
+      });
+    }
+    await failSession(
+      registry,
+      identity,
+      `Implementation failed: ${formatUnknownError(error)}`,
+    ).catch((cleanupError: unknown) => {
+      cleanup.push(`Session: ${formatUnknownError(cleanupError)}`);
+    });
+    if (!report) {
+      await markTaskRework({
+        store: options.store,
+        runId: run.id,
+        taskId: task.id,
+        attempt,
+      }).catch((cleanupError: unknown) => {
+        cleanup.push(`Task: ${formatUnknownError(cleanupError)}`);
+      });
+    }
+    if (cleanup.length > 0) {
+      throw new OrchestratorError(
+        "implementation_cleanup_failed",
+        `Implementation failed (${formatUnknownError(error)}); cleanup also failed: ${cleanup.join("; ")}`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 }

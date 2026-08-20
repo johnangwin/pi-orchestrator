@@ -115,6 +115,50 @@ function execute(command, args, options = {}) {
   });
 }
 
+function executeInput(command, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: {
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        HOME: "/tmp",
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_REPLACE_OBJECTS: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    child.stdout.on("data", (chunk) => {
+      outputBytes += chunk.byteLength;
+      if (outputBytes > 256 * 1024 * 1024) {
+        child.kill("SIGKILL");
+        return;
+      }
+      stdout.push(Buffer.from(chunk));
+    });
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (outputBytes > 256 * 1024 * 1024) {
+        reject(new Error(`${command} output exceeded the helper limit`));
+        return;
+      }
+      resolve({
+        code: code ?? 1,
+        stdout: Buffer.concat(stdout),
+        stderr: Buffer.concat(stderr),
+      });
+    });
+    child.stdin.end(input);
+  });
+}
+
 function gitArgs(gitDirectory, args) {
   return [`--git-dir=${gitDirectory}`, "-c", "core.fsmonitor=false", ...args];
 }
@@ -248,7 +292,7 @@ function directoryEntries(entries) {
   );
 }
 
-async function gitManifest(gitDirectory, requestedCommit) {
+async function buildGitManifest(gitDirectory, requestedCommit) {
   const gitRoot = await realpath(gitDirectory);
   const commit = Buffer.from(
     await execute(
@@ -314,8 +358,20 @@ async function gitManifest(gitDirectory, requestedCommit) {
   entries.sort((left, right) =>
     Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)),
   );
+  return {
+    commit,
+    manifest: {
+      version: 2,
+      entry_count: entries.length,
+      byte_count: byteCount,
+      entries,
+    },
+  };
+}
+
+async function gitManifest(gitDirectory, requestedCommit) {
   process.stdout.write(
-    `${JSON.stringify({ commit, manifest: { version: 2, entry_count: entries.length, byte_count: byteCount, entries } })}\n`,
+    `${JSON.stringify(await buildGitManifest(gitDirectory, requestedCommit))}\n`,
   );
 }
 
@@ -423,7 +479,7 @@ function sameState(left, right) {
   );
 }
 
-async function inspect(root) {
+async function buildWorkspaceManifest(root) {
   const requestedRoot = await lstat(root, { bigint: true });
   if (!requestedRoot.isDirectory() || requestedRoot.isSymbolicLink()) {
     fail("Workspace Project root is not a real directory");
@@ -513,8 +569,120 @@ async function inspect(root) {
   entries.sort((left, right) =>
     Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)),
   );
+  return {
+    version: 2,
+    entry_count: entries.length,
+    byte_count: byteCount,
+    entries,
+  };
+}
+
+async function inspect(root) {
   process.stdout.write(
-    `${JSON.stringify({ version: 2, entry_count: entries.length, byte_count: byteCount, entries })}\n`,
+    `${JSON.stringify(await buildWorkspaceManifest(root))}\n`,
+  );
+}
+
+function sameEntry(left, right) {
+  if (!left || !right || left.type !== right.type) return false;
+  if (left.type === "directory") return true;
+  if (left.type === "symlink") {
+    return (
+      left.byte_count === right.byte_count &&
+      left.link_target_digest === right.link_target_digest &&
+      left.link_target_base64 === right.link_target_base64
+    );
+  }
+  return (
+    left.byte_count === right.byte_count &&
+    left.content_digest === right.content_digest
+  );
+}
+
+async function ignoredPaths(gitDirectory, root, candidates) {
+  if (candidates.length === 0) return new Set();
+  const input = Buffer.from(`${candidates.join("\0")}\0`, "utf8");
+  const result = await executeInput(
+    "git",
+    gitArgs(gitDirectory, [
+      `--work-tree=${root}`,
+      "-c",
+      "core.excludesFile=/dev/null",
+      "check-ignore",
+      "--no-index",
+      "-z",
+      "--stdin",
+    ]),
+    input,
+  );
+  if (result.code !== 0 && result.code !== 1) {
+    fail(
+      `git check-ignore failed with exit ${result.code}: ${result.stderr.toString("utf8").slice(0, 2_000)}`,
+    );
+  }
+  const ignored = new Set();
+  for (const record of result.stdout.toString("binary").split("\0")) {
+    if (!record) continue;
+    const value = relativePath(
+      decode(Buffer.from(record, "binary"), "ignored Git path"),
+    );
+    if (!candidates.includes(value)) {
+      fail(`git check-ignore returned unexpected path '${value}'`);
+    }
+    ignored.add(value);
+  }
+  return ignored;
+}
+
+async function gitStatus(gitDirectory, requestedCommit, root) {
+  const gitRoot = await realpath(gitDirectory);
+  const workspaceRoot = await realpath(root);
+  const baseline = await buildGitManifest(gitRoot, requestedCommit);
+  const current = await buildWorkspaceManifest(workspaceRoot);
+  const baselineFiles = new Map(
+    baseline.manifest.entries
+      .filter((entry) => entry.type !== "directory")
+      .map((entry) => [entry.path, entry]),
+  );
+  const currentEntries = new Map(
+    current.entries.map((entry) => [entry.path, entry]),
+  );
+  const additions = current.entries
+    .filter(
+      (entry) => entry.type !== "directory" && !baselineFiles.has(entry.path),
+    )
+    .map((entry) => entry.path);
+  const ignored = await ignoredPaths(gitRoot, workspaceRoot, additions);
+  const changes = [];
+  for (const [entryPath, entry] of baselineFiles) {
+    const observed = currentEntries.get(entryPath);
+    if (!observed || observed.type === "directory") {
+      changes.push({
+        path: entryPath,
+        index_status: " ",
+        worktree_status: "D",
+      });
+    } else if (!sameEntry(entry, observed)) {
+      changes.push({
+        path: entryPath,
+        index_status: " ",
+        worktree_status: "M",
+      });
+    }
+  }
+  for (const entryPath of additions) {
+    if (ignored.has(entryPath)) continue;
+    changes.push({
+      path: entryPath,
+      index_status: "?",
+      worktree_status: "?",
+    });
+  }
+  changes.sort((left, right) =>
+    Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)),
+  );
+  process.stdout.write(
+    `${JSON.stringify({ commit: baseline.commit, changes })}\n`,
   );
 }
 
@@ -526,9 +694,11 @@ try {
     await gitManifest(args[0], args[1]);
   } else if (operation === "inspect" && args.length === 1) {
     await inspect(args[0]);
+  } else if (operation === "git-status" && args.length === 3) {
+    await gitStatus(args[0], args[1], args[2]);
   } else {
     fail(
-      "usage: workspace.mjs seed <git-dir> <commit> <volume-root> | git-manifest <git-dir> <commit> | inspect <project-root>",
+      "usage: workspace.mjs seed <git-dir> <commit> <volume-root> | git-manifest <git-dir> <commit> | inspect <project-root> | git-status <git-dir> <commit> <project-root>",
     );
   }
 } catch (error) {

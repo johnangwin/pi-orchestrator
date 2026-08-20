@@ -140,7 +140,7 @@ The live test exercises the real OpenShell file-transfer path and removes its di
 PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 ```
 
-Write Sessions expand the same verified archive into immutable `/workspace/base` and writable `/workspace/project` trees. `/usr/local/bin/orchestrator-export-patch` compares them and emits a canonical Patch Artifact. The host independently reconstructs the source, applies the binary-capable patch in disposable staging, and verifies the claimed result before publication.
+Leased Write Sessions use the pinned static Pi image and persistent Run volume. `/workspace/project` is read-only, and only validated Task `write_paths` are reopened through nested read-write volume mounts. The immutable Session configuration binds the preparing lease and requested mount set; activation adds the observed Linux mount table and Sandbox provenance. The host deletes the writer before computing complete before-and-after manifests and raw Git evidence, then records a Change Set and freezes a Candidate. No implementation Patch is exported or replayed.
 
 The image retains `/sandbox` as its OCI working directory because OpenShell 0.0.106 confines `sandbox download` to that tree. The Pi daemon still launches Pi with `/workspace/project` as its explicit working directory.
 
@@ -165,7 +165,7 @@ The test builds the pinned baseline Check image, transfers a real source package
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
-Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions start directly under the final policy from the pinned static Pi image, mount a verified named-volume source projection, and upload only their immutable input files. The old derived-image path remains only for phases awaiting migration.
+Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions and Implementers start directly under their final policies from the pinned static Pi image, mount verified named-volume projections, and upload only immutable input files. The old derived-image path remains only for Checks and Reviews awaiting migration.
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 

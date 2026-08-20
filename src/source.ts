@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
-import { GitCommitSchema } from "./git.js";
+import {
+  createWorkspaceDiff,
+  GitCommitSchema,
+  WorkspaceGitChangeSchema,
+  type WorkspaceDiff,
+} from "./git.js";
 import {
   PinnedImageReferenceSchema,
   VersionSchema,
@@ -22,6 +27,7 @@ import type {
 } from "./openshell.js";
 import { gitOutput } from "./project.js";
 import { pathMatchesPatterns } from "./scope.js";
+import type { WriteLease } from "./lease.js";
 import {
   DockerVolumeCapability,
   DockerVolumeClient,
@@ -61,6 +67,25 @@ export const WorkspaceSessionProjectionSchema = z
   .strict();
 export type WorkspaceSessionProjection = z.infer<
   typeof WorkspaceSessionProjectionSchema
+>;
+
+export const WritableWorkspaceSessionProjectionSchema =
+  WorkspaceSessionProjectionSchema.extend({
+    lease_id: z.string().min(1),
+    lease_digest: DigestSchema,
+    write_roots_digest: DigestSchema,
+    gateway_digest: DigestSchema,
+  }).strict();
+export type WritableWorkspaceSessionProjection = z.infer<
+  typeof WritableWorkspaceSessionProjectionSchema
+>;
+
+export const SessionWorkspaceProjectionSchema = z.union([
+  WorkspaceSessionProjectionSchema,
+  WritableWorkspaceSessionProjectionSchema,
+]);
+export type SessionWorkspaceProjection = z.infer<
+  typeof SessionWorkspaceProjectionSchema
 >;
 
 const WorkspaceSourceRecordSchema = z
@@ -118,6 +143,13 @@ const HelperWorkspaceManifestSchema = z
   })
   .strict();
 
+const HelperGitStatusSchema = z
+  .object({
+    commit: GitCommitSchema,
+    changes: z.array(WorkspaceGitChangeSchema).max(1_000_000),
+  })
+  .strict();
+
 export interface WorkspaceSourceDocker {
   readonly command: string;
   version(): Promise<string>;
@@ -143,6 +175,13 @@ export interface WorkspaceSourceDocker {
     readonly stderr: string;
     readonly exitCode: number;
   }>;
+  inspectWorkspaceGitStatus(
+    options: Parameters<DockerVolumeClient["inspectWorkspaceGitStatus"]>[0],
+  ): Promise<{
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly exitCode: number;
+  }>;
   removeVolume(name: string, missingOk?: boolean): Promise<void>;
 }
 
@@ -150,6 +189,15 @@ export interface WorkspaceGatewayClient {
   readonly gateway?: string;
   listGateways(): Promise<OpenShellGatewayRegistration[]>;
   getGatewayInfo(): Promise<OpenShellGatewayInfo>;
+}
+
+export interface WorkspaceGatewayEvidence {
+  readonly digest: Digest;
+  readonly gateway: string;
+  readonly endpoint: string;
+  readonly openshellVersion: string;
+  readonly driver: "docker";
+  readonly driverVersion: string;
 }
 
 export interface CreateSourceWorkspaceOptions {
@@ -451,6 +499,7 @@ export class ReadOnlySourceWorkspace {
     readonly driverVersion: string,
     readonly labels: Readonly<Record<string, string>>,
     private readonly docker: WorkspaceSourceDocker,
+    private readonly removeOnDispose = true,
   ) {
     this.manifest = validateWorkspaceSourceManifest(manifest);
     if (!(volume instanceof DockerVolumeCapability)) {
@@ -553,7 +602,7 @@ export class ReadOnlySourceWorkspace {
   }
 
   async dispose(): Promise<void> {
-    if (this.removed) return;
+    if (this.removed || !this.removeOnDispose) return;
     await this.docker.removeVolume(this.volume.name, true);
     this.removed = true;
   }
@@ -650,6 +699,538 @@ export async function createReadOnlySourceWorkspace(
     );
   } catch (error) {
     if (volume)
+      await docker.removeVolume(volume.name, true).catch(() => undefined);
+    throw error;
+  }
+}
+
+export interface RunWorkspaceBinding {
+  readonly volumeName: string;
+  readonly volumeDigest: Digest;
+}
+
+export interface CreateRunSourceWorkspaceOptions {
+  readonly projectRoot: string;
+  readonly projectId: string;
+  readonly runId: string;
+  readonly commit: string;
+  readonly local: LocalConfig;
+  readonly binding?: RunWorkspaceBinding;
+  readonly docker?: WorkspaceSourceDocker;
+}
+
+function runVolumeLabels(
+  projectId: string,
+  runId: string,
+  commit: string,
+): Readonly<Record<string, string>> {
+  return Object.freeze({
+    "pio.kind": "run-workspace",
+    "pio.project": projectId,
+    "pio.run": runId,
+    "pio.commit": commit.slice(0, 63),
+  });
+}
+
+function runVolumeName(prefix: string, projectId: string, runId: string) {
+  const requested = `${prefix}-${projectId}-${runId}`
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 255)
+    .replace(/[.-]+$/g, "");
+  return DockerVolumeNameSchema.parse(requested);
+}
+
+function collapsedMountPaths(
+  manifest: WorkspaceManifest,
+  patterns: readonly string[],
+): {
+  readonly files: readonly string[];
+  readonly directories: readonly string[];
+} {
+  const matched = manifest.entries.filter((entry) =>
+    pathMatchesPatterns(entry.path, patterns),
+  );
+  const directories = matched
+    .filter((entry) => entry.type === "directory")
+    .map((entry) => entry.path)
+    .filter(
+      (candidate, index, all) =>
+        !all.some(
+          (parent, parentIndex) =>
+            parentIndex !== index && candidate.startsWith(`${parent}/`),
+        ),
+    );
+  const files: string[] = [];
+  for (const entry of matched) {
+    if (
+      entry.type === "directory" ||
+      directories.some((directory) => entry.path.startsWith(`${directory}/`))
+    ) {
+      continue;
+    }
+    if (entry.type === "symlink") {
+      throw new OrchestratorError(
+        "unsupported_projected_path",
+        `Policy path '${entry.path}' is a symlink and cannot be projected safely`,
+      );
+    }
+    files.push(entry.path);
+  }
+  return {
+    files: Object.freeze(files),
+    directories: Object.freeze(directories),
+  };
+}
+
+function containsPath(parent: string, candidate: string): boolean {
+  return candidate === parent || candidate.startsWith(`${parent}/`);
+}
+
+export class RunSourceWorkspace {
+  readonly kind = "run-workspace" as const;
+  readonly imageDigest: Digest;
+
+  constructor(
+    readonly projectId: string,
+    readonly runId: string,
+    readonly inputCommit: string,
+    readonly volume: DockerVolumeCapability,
+    readonly image: PinnedImageReference,
+    readonly driverVersion: string,
+    readonly labels: Readonly<Record<string, string>>,
+    readonly gitDirectory: string,
+    private readonly docker: WorkspaceSourceDocker,
+  ) {
+    this.inputCommit = GitCommitSchema.parse(inputCommit);
+    if (!(volume instanceof DockerVolumeCapability)) {
+      throw new OrchestratorError(
+        "invalid_docker_volume",
+        "Run Workspace requires an inspected volume capability",
+      );
+    }
+    for (const [key, value] of Object.entries(labels)) {
+      if (volume.labels[key] !== value) {
+        throw new OrchestratorError(
+          "docker_volume_label_mismatch",
+          `Run Workspace volume '${volume.name}' does not match label '${key}'`,
+        );
+      }
+    }
+    this.image = PinnedImageReferenceSchema.parse(image);
+    this.driverVersion = VersionSchema.parse(driverVersion);
+    this.imageDigest = pinnedImageDigest(this.image);
+    Object.freeze(this.labels);
+  }
+
+  private async requireVolume(): Promise<void> {
+    const inspected = await this.docker.inspectVolume(
+      this.volume.name,
+      this.labels,
+    );
+    if (!inspected || inspected.digest !== this.volume.digest) {
+      throw new OrchestratorError(
+        "workspace_volume_changed",
+        `Run Workspace volume '${this.volume.name}' no longer matches durable identity`,
+      );
+    }
+  }
+
+  async inspect(generation: number): Promise<WorkspaceSourceManifest> {
+    await this.requireVolume();
+    const result = await this.docker.inspectWorkspaceVolume({
+      volume: this.volume,
+      image: this.image,
+    });
+    if (result.exitCode !== 0) {
+      throw new OrchestratorError(
+        "workspace_inspection_failed",
+        result.stderr.trim() ||
+          `Workspace inspection exited ${result.exitCode}`,
+      );
+    }
+    return createWorkspaceSourceManifest(
+      this.inputCommit,
+      generation,
+      parseInspectedManifest(result.stdout),
+    );
+  }
+
+  async gitDiff(source: WorkspaceSourceManifest): Promise<WorkspaceDiff> {
+    const manifest = validateWorkspaceSourceManifest(source);
+    if (manifest.commit !== this.inputCommit) {
+      throw new OrchestratorError(
+        "workspace_base_mismatch",
+        "Workspace source uses another input commit",
+      );
+    }
+    await this.requireVolume();
+    const result = await this.docker.inspectWorkspaceGitStatus({
+      volume: this.volume,
+      image: this.image,
+      gitDirectory: this.gitDirectory,
+      commit: this.inputCommit,
+    });
+    if (result.exitCode !== 0) {
+      throw new OrchestratorError(
+        "workspace_git_inspection_failed",
+        result.stderr.trim() ||
+          `Workspace Git inspection exited ${result.exitCode}`,
+      );
+    }
+    let parsed: z.infer<typeof HelperGitStatusSchema>;
+    try {
+      parsed = HelperGitStatusSchema.parse(JSON.parse(result.stdout));
+    } catch (error) {
+      throw new OrchestratorError(
+        "invalid_workspace_helper_output",
+        "Workspace Git helper returned invalid status evidence",
+        { cause: error },
+      );
+    }
+    if (parsed.commit !== this.inputCommit) {
+      throw new OrchestratorError(
+        "workspace_base_mismatch",
+        "Workspace Git helper inspected another input commit",
+      );
+    }
+    return createWorkspaceDiff({
+      inputCommit: this.inputCommit,
+      manifestDigest: manifest.manifest_digest,
+      changes: parsed.changes,
+    });
+  }
+
+  bindReader(options: {
+    readonly source: WorkspaceSourceManifest;
+    readonly restrictedPatterns: readonly string[];
+  }): ReadOnlySourceWorkspace {
+    const source = validateWorkspaceSourceManifest(options.source);
+    if (source.commit !== this.inputCommit) {
+      throw new OrchestratorError(
+        "workspace_base_mismatch",
+        "Read projection uses another Run input commit",
+      );
+    }
+    const complete = createWorkspaceManifestFromEntries(source.entries);
+    const restricted = restrictedMounts(complete, options.restrictedPatterns);
+    return new ReadOnlySourceWorkspace(
+      source,
+      this.volume,
+      OpenShellMountSet.forVolume({
+        volume: this.volume,
+        restrictedFiles: restricted.files,
+        restrictedDirectories: restricted.directories,
+      }),
+      this.image,
+      this.driverVersion,
+      this.labels,
+      this.docker,
+      false,
+    );
+  }
+
+  writeMountSet(options: {
+    readonly source: WorkspaceSourceManifest;
+    readonly writePaths: readonly string[];
+    readonly protectedPatterns: readonly string[];
+    readonly restrictedPatterns: readonly string[];
+  }): OpenShellMountSet {
+    const source = validateWorkspaceSourceManifest(options.source);
+    const manifest = createWorkspaceManifestFromEntries(source.entries);
+    const entries = new Map(
+      manifest.entries.map((entry) => [entry.path, entry]),
+    );
+    for (const writePath of options.writePaths) {
+      const entry = entries.get(writePath);
+      if (
+        !entry ||
+        !["directory", "regular", "executable"].includes(entry.type)
+      ) {
+        throw new OrchestratorError(
+          "invalid_write_path",
+          `Write path '${writePath}' must identify an existing real file or directory`,
+        );
+      }
+    }
+    const restricted = collapsedMountPaths(
+      manifest,
+      options.restrictedPatterns,
+    );
+    const restrictedRoots = [...restricted.files, ...restricted.directories];
+    const protectedMatches = collapsedMountPaths(
+      manifest,
+      options.protectedPatterns,
+    );
+    const protectedPaths = [
+      ...protectedMatches.files,
+      ...protectedMatches.directories,
+    ].filter(
+      (entryPath) =>
+        options.writePaths.some((root) => containsPath(root, entryPath)) &&
+        !restrictedRoots.some((root) => containsPath(root, entryPath)),
+    );
+    return OpenShellMountSet.forVolume({
+      volume: this.volume,
+      writePaths: options.writePaths,
+      protectedPaths,
+      restrictedFiles: restricted.files,
+      restrictedDirectories: restricted.directories,
+    });
+  }
+
+  bindWriter(options: {
+    readonly source: WorkspaceSourceManifest;
+    readonly mountSet: OpenShellMountSet;
+    readonly lease: WriteLease;
+    readonly gatewayDigest: Digest;
+  }): WritableSourceWorkspace {
+    return new WritableSourceWorkspace(
+      options.source,
+      this.volume,
+      options.mountSet,
+      this.image,
+      this.driverVersion,
+      this.labels,
+      options.lease,
+      options.gatewayDigest,
+      this.docker,
+    );
+  }
+}
+
+export class WritableSourceWorkspace {
+  readonly kind = "writable-workspace" as const;
+  readonly imageDigest: Digest;
+  readonly projectionDigest: Digest;
+
+  constructor(
+    readonly manifest: WorkspaceSourceManifest,
+    readonly volume: DockerVolumeCapability,
+    readonly mountSet: OpenShellMountSet,
+    readonly image: PinnedImageReference,
+    readonly driverVersion: string,
+    readonly labels: Readonly<Record<string, string>>,
+    readonly lease: WriteLease,
+    readonly gatewayDigest: Digest,
+    private readonly docker: WorkspaceSourceDocker,
+  ) {
+    this.manifest = validateWorkspaceSourceManifest(manifest);
+    if (
+      !(volume instanceof DockerVolumeCapability) ||
+      !(mountSet instanceof OpenShellMountSet) ||
+      mountSet.volume !== volume
+    ) {
+      throw new OrchestratorError(
+        "invalid_openshell_mount_set",
+        "Writable Workspace requires one inspected volume and mount capability",
+      );
+    }
+    const writes = mountSet.mounts.filter((mount) => mount.purpose === "write");
+    if (
+      mountSet.mounts.filter((mount) => mount.purpose === "workspace")
+        .length !== 1 ||
+      mountSet.mounts.some((mount) =>
+        mount.purpose === "write" ? mount.readOnly : !mount.readOnly,
+      ) ||
+      canonicalJson(
+        writes.map((mount) => mount.subpath.slice("project/".length)),
+      ) !== canonicalJson(lease.write_roots) ||
+      mountSet.digest !== lease.mount_set_digest ||
+      lease.status !== "preparing" ||
+      lease.workspace_generation !== this.manifest.workspace_generation ||
+      lease.baseline_manifest_digest !== this.manifest.manifest_digest ||
+      lease.image_digest !== pinnedImageDigest(image) ||
+      lease.gateway_digest !== gatewayDigest
+    ) {
+      throw new OrchestratorError(
+        "write_lease_projection_mismatch",
+        "Writable Workspace projection exceeds or differs from its preparing lease",
+      );
+    }
+    for (const [key, value] of Object.entries(labels)) {
+      if (volume.labels[key] !== value) {
+        throw new OrchestratorError(
+          "docker_volume_label_mismatch",
+          `Writable Workspace volume '${volume.name}' does not match label '${key}'`,
+        );
+      }
+    }
+    this.image = PinnedImageReferenceSchema.parse(image);
+    this.driverVersion = VersionSchema.parse(driverVersion);
+    this.gatewayDigest = DigestSchema.parse(gatewayDigest);
+    this.imageDigest = pinnedImageDigest(this.image);
+    this.projectionDigest = digestParts(
+      "pi-orchestrator/write-workspace-projection/v1",
+      [
+        ["source", this.manifest.source_digest],
+        ["generation", String(this.manifest.workspace_generation)],
+        ["volume", this.volume.digest],
+        ["mount-set", this.mountSet.digest],
+        ["image", this.imageDigest],
+        ["driver-version", this.driverVersion],
+        ["gateway", this.gatewayDigest],
+        ["lease", this.lease.digest],
+      ],
+    );
+    Object.freeze(this.labels);
+  }
+
+  async verify(): Promise<WorkspaceSourceManifest> {
+    const inspected = await this.docker.inspectVolume(
+      this.volume.name,
+      this.labels,
+    );
+    if (!inspected || inspected.digest !== this.volume.digest) {
+      throw new OrchestratorError(
+        "workspace_volume_changed",
+        `Writable Workspace volume '${this.volume.name}' changed identity`,
+      );
+    }
+    const result = await this.docker.inspectWorkspaceVolume({
+      volume: this.volume,
+      image: this.image,
+    });
+    if (result.exitCode !== 0) {
+      throw new OrchestratorError(
+        "workspace_inspection_failed",
+        result.stderr.trim() ||
+          `Workspace inspection exited ${result.exitCode}`,
+      );
+    }
+    const observed = parseInspectedManifest(result.stdout);
+    if (
+      observed.digest !== this.manifest.manifest_digest ||
+      canonicalJson(observed.entries) !== canonicalJson(this.manifest.entries)
+    ) {
+      throw new OrchestratorError(
+        "write_lease_baseline_stale",
+        "Writable Workspace changed before its Sandbox was created",
+      );
+    }
+    return this.manifest;
+  }
+}
+
+export async function createRunSourceWorkspace(
+  options: CreateRunSourceWorkspaceOptions,
+): Promise<RunSourceWorkspace> {
+  const { settings, image } = enabledWorkspace(options.local);
+  const docker =
+    options.docker ??
+    new DockerVolumeClient({
+      command: settings.docker_command,
+      requiredVersion: settings.driver_version,
+    });
+  const dockerVersion = await docker.version();
+  if (dockerVersion !== settings.driver_version) {
+    throw new OrchestratorError(
+      "docker_version_mismatch",
+      `Docker ${dockerVersion} does not match configured driver ${settings.driver_version}`,
+    );
+  }
+  const expected = await expectedSource(
+    path.resolve(options.projectRoot),
+    GitCommitSchema.parse(options.commit),
+  );
+  const name = runVolumeName(
+    options.local.workspace.volume_prefix,
+    options.projectId,
+    options.runId,
+  );
+  const labels = runVolumeLabels(
+    options.projectId,
+    options.runId,
+    expected.source.commit,
+  );
+  if (options.binding && options.binding.volumeName !== name) {
+    throw new OrchestratorError(
+      "workspace_volume_changed",
+      `Run Workspace state names '${options.binding.volumeName}', not '${name}'`,
+    );
+  }
+  let volume = await docker.inspectVolume(name, labels);
+  let created = false;
+  if (!volume) {
+    if (options.binding) {
+      throw new OrchestratorError(
+        "workspace_volume_changed",
+        `Run Workspace volume '${name}' is missing`,
+      );
+    }
+    volume = await docker.createVolume(name, labels);
+    created = true;
+  }
+  if (
+    options.binding &&
+    volume.digest !== DigestSchema.parse(options.binding.volumeDigest)
+  ) {
+    throw new OrchestratorError(
+      "workspace_volume_changed",
+      `Run Workspace volume '${name}' does not match durable identity`,
+    );
+  }
+  try {
+    if (options.binding) {
+      return new RunSourceWorkspace(
+        options.projectId,
+        options.runId,
+        expected.source.commit,
+        volume,
+        image,
+        settings.driver_version,
+        labels,
+        expected.gitDirectory,
+        docker,
+      );
+    }
+    let inspected = await docker.inspectWorkspaceVolume({ volume, image });
+    if (inspected.exitCode !== 0) {
+      const seeded = await docker.seedGitWorkspace({
+        volume,
+        image,
+        gitDirectory: expected.gitDirectory,
+        commit: expected.source.commit,
+      });
+      if (seeded.exitCode !== 0) {
+        throw new OrchestratorError(
+          "workspace_seed_failed",
+          seeded.stderr.trim() || `Workspace seeding exited ${seeded.exitCode}`,
+        );
+      }
+      inspected = await docker.inspectWorkspaceVolume({ volume, image });
+    }
+    if (inspected.exitCode !== 0) {
+      throw new OrchestratorError(
+        "workspace_inspection_failed",
+        inspected.stderr.trim() ||
+          `Workspace inspection exited ${inspected.exitCode}`,
+      );
+    }
+    const observed = parseInspectedManifest(inspected.stdout);
+    if (
+      observed.digest !== expected.source.manifest_digest ||
+      canonicalJson(observed.entries) !== canonicalJson(expected.source.entries)
+    ) {
+      throw new OrchestratorError(
+        "workspace_seed_mismatch",
+        "Run Workspace does not equal the exact approved commit",
+      );
+    }
+    return new RunSourceWorkspace(
+      options.projectId,
+      options.runId,
+      expected.source.commit,
+      volume,
+      image,
+      settings.driver_version,
+      labels,
+      expected.gitDirectory,
+      docker,
+    );
+  } catch (error) {
+    if (created)
       await docker.removeVolume(volume.name, true).catch(() => undefined);
     throw error;
   }
@@ -805,11 +1386,16 @@ export function verifyPlanningSource(
 }
 
 export async function verifyWorkspaceGateway(
-  workspace: ReadOnlySourceWorkspace,
+  workspace:
+    ReadOnlySourceWorkspace | WritableSourceWorkspace | RunSourceWorkspace,
   client: WorkspaceGatewayClient,
   preflight: OpenShellPreflight,
-): Promise<void> {
-  if (!(workspace instanceof ReadOnlySourceWorkspace)) {
+): Promise<WorkspaceGatewayEvidence> {
+  if (
+    !(workspace instanceof ReadOnlySourceWorkspace) &&
+    !(workspace instanceof WritableSourceWorkspace) &&
+    !(workspace instanceof RunSourceWorkspace)
+  ) {
     throw new OrchestratorError(
       "invalid_workspace_projection",
       "Read-only Session requires a trusted Workspace projection",
@@ -852,4 +1438,17 @@ export async function verifyWorkspaceGateway(
       `Gateway '${client.gateway}' is not the required local Docker ${workspace.driverVersion} substrate`,
     );
   }
+  const evidence = {
+    gateway: client.gateway,
+    endpoint: info.server,
+    openshellVersion: info.version,
+    driver: "docker" as const,
+    driverVersion: driver.capabilities.driver_version,
+  };
+  return Object.freeze({
+    ...evidence,
+    digest: digestParts("pi-orchestrator/workspace-gateway/v1", [
+      ["evidence", canonicalJson(evidence)],
+    ]),
+  });
 }

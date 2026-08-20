@@ -215,6 +215,11 @@ export interface InspectWorkspaceVolumeOptions {
   readonly timeoutMs?: number;
 }
 
+export interface InspectWorkspaceGitStatusOptions extends InspectWorkspaceVolumeOptions {
+  readonly gitDirectory: string;
+  readonly commit: string;
+}
+
 export class DockerVolumeClient {
   readonly command: string;
   readonly requiredVersion: string | undefined;
@@ -452,6 +457,67 @@ export class DockerVolumeClient {
         "/usr/bin/node",
         "/usr/local/lib/pi-orchestrator/workspace.mjs",
         "inspect",
+        "/run-volume/project",
+      ],
+      { timeoutMs: options.timeoutMs ?? 10 * 60_000 },
+    );
+  }
+
+  async inspectWorkspaceGitStatus(
+    options: InspectWorkspaceGitStatusOptions,
+  ): Promise<ProcessResult> {
+    if (!(options.volume instanceof DockerVolumeCapability)) {
+      throw new OrchestratorError(
+        "invalid_docker_volume",
+        "Workspace Git inspection requires an inspected named-volume capability",
+      );
+    }
+    const image = PinnedImageReferenceSchema.parse(options.image);
+    const commit = z
+      .string()
+      .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
+      .parse(options.commit);
+    const gitDirectory = await realpath(options.gitDirectory).catch(
+      (error: unknown) => {
+        throw new OrchestratorError(
+          "invalid_git_directory",
+          "Workspace Git inspection directory is not accessible",
+          { cause: error },
+        );
+      },
+    );
+    const state = await stat(gitDirectory);
+    if (!state.isDirectory() || gitDirectory.includes(",")) {
+      throw new OrchestratorError(
+        "invalid_git_directory",
+        "Workspace Git inspection requires a real Git directory without Docker mount delimiters",
+      );
+    }
+    return this.execute(
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "0:0",
+        "--env",
+        "HOME=/tmp",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=268435456",
+        "--mount",
+        `type=volume,source=${options.volume.name},target=/run-volume,readonly`,
+        "--mount",
+        `type=bind,source=${gitDirectory},target=/repository.git,readonly`,
+        image,
+        "/usr/bin/node",
+        "/usr/local/lib/pi-orchestrator/workspace.mjs",
+        "git-status",
+        "/repository.git",
+        commit,
         "/run-volume/project",
       ],
       { timeoutMs: options.timeoutMs ?? 10 * 60_000 },

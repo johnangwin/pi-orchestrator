@@ -549,12 +549,12 @@ Workspace generation and baseline manifest digest
 literal write roots
 semantic scope and protected/restricted policy digests
 permission-ceiling and resolved-route digests
-policy, image, Sandbox, gateway, and exact mount-table digests
+policy, image, gateway, requested mount-set, Sandbox, and observed mount-table digests
 creation and expiry timestamps
 status: preparing | active | releasing | released | blocked
 ```
 
-The lease is durable before any writable Sandbox exists. It becomes active only after the Supervisor verifies Sandbox provenance and the actual mount table. It cannot release until the writable Sandbox and mounts are absent.
+The lease is durable before any writable Sandbox exists, so its preparing version binds the requested mount set while Sandbox and mount-table fields remain empty. It becomes active only after the Supervisor verifies and records Sandbox provenance and the actual mount table. It cannot release until the writable Sandbox and mounts are absent.
 
 A Change Set compares two stable complete manifests and contains:
 

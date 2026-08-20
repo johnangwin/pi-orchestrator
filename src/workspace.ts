@@ -5,6 +5,7 @@ import path from "node:path";
 import { z } from "zod";
 import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
+import { ImmutableRecordStore } from "./record.js";
 
 export const MAX_WORKSPACE_ENTRIES = 1_000_000;
 export const MAX_WORKSPACE_BYTES = 32 * 1024 * 1024 * 1024;
@@ -168,6 +169,15 @@ export const WorkspaceManifestSchema = WorkspaceManifestRecordSchema.extend({
 }).strict();
 export type WorkspaceManifest = z.infer<typeof WorkspaceManifestSchema>;
 
+const StoredWorkspaceManifestSchema = z
+  .object({
+    id: z.literal("workspace"),
+    digest: DigestSchema,
+    manifest: WorkspaceManifestSchema,
+  })
+  .strict();
+type StoredWorkspaceManifest = z.infer<typeof StoredWorkspaceManifestSchema>;
+
 export const WorkspaceEntryModeSchema = z.enum([
   "040000",
   "100644",
@@ -299,6 +309,58 @@ export function validateWorkspaceManifest(value: unknown): WorkspaceManifest {
       manifest.data.entries.map((entry) => Object.freeze({ ...entry })),
     ),
   }) as WorkspaceManifest;
+}
+
+function validateStoredWorkspaceManifest(
+  value: unknown,
+): StoredWorkspaceManifest {
+  const parsed = StoredWorkspaceManifestSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestratorError(
+      "invalid_workspace_manifest_store",
+      `Stored Workspace manifest is invalid: ${parsed.error.message}`,
+    );
+  }
+  const manifest = validateWorkspaceManifest(parsed.data.manifest);
+  if (parsed.data.digest !== manifest.digest) {
+    throw new OrchestratorError(
+      "invalid_workspace_manifest_store",
+      "Stored Workspace manifest identity does not match its content",
+    );
+  }
+  return Object.freeze({
+    id: "workspace" as const,
+    digest: manifest.digest,
+    manifest,
+  });
+}
+
+export class WorkspaceManifestStore {
+  private readonly records: ImmutableRecordStore<StoredWorkspaceManifest>;
+
+  constructor(runDirectory: string) {
+    this.records = new ImmutableRecordStore(
+      path.join(runDirectory, "manifests"),
+      "Workspace manifest",
+      validateStoredWorkspaceManifest,
+    );
+  }
+
+  async put(manifest: WorkspaceManifest): Promise<WorkspaceManifest> {
+    const parsed = validateWorkspaceManifest(manifest);
+    return (
+      await this.records.put({
+        id: "workspace",
+        digest: parsed.digest,
+        manifest: parsed,
+      })
+    ).manifest;
+  }
+
+  async get(digest: string): Promise<WorkspaceManifest> {
+    return (await this.records.get("workspace", DigestSchema.parse(digest)))
+      .manifest;
+  }
 }
 
 function entryState(entry: WorkspaceManifestEntry): WorkspaceEntryState {

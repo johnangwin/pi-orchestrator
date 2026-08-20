@@ -20,6 +20,12 @@ Live tests are opt-in and use the machine-local `.pi/orchestrator.local.yaml`. R
 # OpenShell lifecycle and Link
 PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
 
+# Shared named-volume substrate
+PI_ORCHESTRATOR_LIVE_WORKSPACE_VOLUME=1 npm test -- test/proof.live.test.ts
+
+# Static-image Pi Session over a read-only Workspace volume
+PI_ORCHESTRATOR_LIVE_WORKSPACE_SESSION=1 npm test -- test/source.live.test.ts
+
 # Disposable workspace and local fake model
 PI_ORCHESTRATOR_LIVE_INFERENCE=1 npm test -- test/inference.live.test.ts
 

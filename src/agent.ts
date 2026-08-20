@@ -34,6 +34,13 @@ import type {
   OpenShellPreflight,
   OpenShellSandbox,
 } from "./openshell.js";
+import {
+  ReadOnlySourceWorkspace,
+  WorkspaceSessionProjectionSchema,
+  verifyWorkspaceGateway,
+  type WorkspaceSessionProjection,
+} from "./source.js";
+import { validateOpenShellMountTable } from "./mount.js";
 import { loadSandboxPolicy } from "./policy.js";
 import {
   PermissionCeilingSchema,
@@ -65,6 +72,7 @@ const PiSessionBriefSchema = z
   .object({
     path: z.literal("/workspace/input/brief.md"),
     digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    content_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
 
@@ -134,6 +142,7 @@ export const PiClientConfigSchema = z
     model: PiSessionModelSchema.optional(),
     brief: PiSessionBriefSchema.optional(),
     inputs: z.array(PiSessionInputSchema).max(16).default([]),
+    workspace_projection: WorkspaceSessionProjectionSchema.optional(),
   })
   .strict()
   .refine(
@@ -153,7 +162,12 @@ export type ReadSessionOpenShell = Pick<
   | "startServiceForward"
   | "waitForSandbox"
 > &
-  Partial<Pick<OpenShellClient, "getInferenceRoute">>;
+  Partial<
+    Pick<
+      OpenShellClient,
+      "getGatewayInfo" | "getInferenceRoute" | "listGateways" | "upload"
+    >
+  >;
 
 export type WriteSessionOpenShell = ReadSessionOpenShell;
 
@@ -165,13 +179,23 @@ export type ResumeReadSessionOpenShell = Pick<
   | "preflight"
   | "startServiceForward"
 > &
-  Partial<Pick<OpenShellClient, "getInferenceRoute">>;
+  Partial<
+    Pick<
+      OpenShellClient,
+      "getGatewayInfo" | "getInferenceRoute" | "listGateways"
+    >
+  >;
 
 export type ResumeWriteSessionOpenShell = ResumeReadSessionOpenShell;
 
 type ReadSessionCleanupOpenShell = Pick<OpenShellClient, "deleteSandbox">;
 type CurrentActionState = () =>
   PermissionRuntimeState | Promise<PermissionRuntimeState>;
+
+function clientGateway(client: object): string | undefined {
+  const value = (client as { readonly gateway?: unknown }).gateway;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
 
 interface StartSessionOptions {
   readonly client: ReadSessionOpenShell;
@@ -201,16 +225,24 @@ export type StartReadSessionOptions = StartSessionOptions &
     | {
         readonly snapshot: SourceSnapshot;
         readonly workspaceSource?: never;
+        readonly workspace?: never;
       }
     | {
         readonly snapshot?: never;
         readonly workspaceSource: WorkspaceSessionSource;
+        readonly workspace?: never;
+      }
+    | {
+        readonly snapshot?: never;
+        readonly workspaceSource?: never;
+        readonly workspace: ReadOnlySourceWorkspace;
       }
   );
 
 export type StartWriteSessionOptions = StartSessionOptions & {
   readonly snapshot: SourceSnapshot;
   readonly workspaceSource?: never;
+  readonly workspace?: never;
   readonly writeGrant: { readonly task: string };
 };
 
@@ -231,6 +263,7 @@ export interface ResumeReadSessionOptions {
   readonly metrics?: SessionMetricRecorder;
   readonly task?: string;
   readonly now?: () => Date;
+  readonly workspace?: ReadOnlySourceWorkspace;
 }
 
 export type ResumeWriteSessionOptions = ResumeReadSessionOptions;
@@ -238,7 +271,9 @@ export type ResumeWriteSessionOptions = ResumeReadSessionOptions;
 export type AgentSessionProfile = "read" | "write";
 
 export interface ReadSessionInfo {
-  readonly sandbox: OpenShellSandbox;
+  readonly sandbox: OpenShellSandbox & {
+    readonly projection?: WorkspaceSessionProjection;
+  };
   readonly identity: SessionIdentity;
   readonly sourceDigest: string;
   readonly profile: AgentSessionProfile;
@@ -253,6 +288,7 @@ export interface ReadSessionInfo {
   readonly inference?: OpenShellInferenceRoute;
   readonly briefDigest?: string;
   readonly inputs: readonly PiSessionInput[];
+  readonly workspaceProjection?: WorkspaceSessionProjection;
 }
 
 export type WriteSessionInfo = ReadSessionInfo;
@@ -284,6 +320,11 @@ type VerifiedSessionSource =
       readonly archivePath: string;
       readonly manifestPath: string;
       readonly verify: WorkspaceSessionSource["verify"];
+      readonly sourceDigest: string;
+    }
+  | {
+      readonly kind: "workspace-projection";
+      readonly workspace: ReadOnlySourceWorkspace;
       readonly sourceDigest: string;
     };
 
@@ -371,6 +412,26 @@ async function verifiedSessionSource(
       sourceDigest,
     };
   }
+  if (options.workspace) {
+    if (profile !== "read") {
+      throw new OrchestratorError(
+        "invalid_session_source",
+        "A shared Workspace projection may only initialize a read Session",
+      );
+    }
+    if (!(options.workspace instanceof ReadOnlySourceWorkspace)) {
+      throw new OrchestratorError(
+        "invalid_workspace_projection",
+        "Read Session Workspace source is not a trusted projection",
+      );
+    }
+    const source = await options.workspace.verify();
+    return {
+      kind: "workspace-projection",
+      workspace: options.workspace,
+      sourceDigest: source.source_digest,
+    };
+  }
   const manifest = await verifySourceSnapshot(options.snapshot);
   return {
     kind: "snapshot",
@@ -394,7 +455,10 @@ function hasWriteGrant(
 
 async function createSessionImageContext(options: {
   readonly image: string;
-  readonly source: VerifiedSessionSource;
+  readonly source: Exclude<
+    VerifiedSessionSource,
+    { readonly kind: "workspace-projection" }
+  >;
   readonly config: PiClientConfig;
   readonly profile: AgentSessionProfile;
   readonly brief?: Pick<CompiledBrief, "content" | "digest">;
@@ -457,6 +521,15 @@ async function createSessionImageContext(options: {
         encoding: "utf8",
         mode: 0o600,
       });
+      if (
+        sha256(await readFile(path.join(directory, "brief.md"))) !==
+        options.config.brief?.content_digest
+      ) {
+        throw new OrchestratorError(
+          "invalid_brief_digest",
+          "Staged Brief content does not match its content digest",
+        );
+      }
     }
     const extraInputDirectory = path.join(directory, "extra-inputs");
     if (options.inputs.length > 0) {
@@ -524,15 +597,89 @@ WORKDIR /sandbox
   }
 }
 
+async function createSessionInputDirectory(options: {
+  readonly config: PiClientConfig;
+  readonly brief?: Pick<CompiledBrief, "content" | "digest">;
+  readonly inputs: readonly ValidatedSessionInput[];
+}): Promise<string> {
+  const directory = await mkdtemp(
+    path.join(os.tmpdir(), "pi-orchestrator-input-"),
+  );
+  try {
+    await writeFile(
+      path.join(directory, "session.json"),
+      `${JSON.stringify(options.config, null, 2)}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    if (options.brief) {
+      await writeFile(path.join(directory, "brief.md"), options.brief.content, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      if (
+        sha256(await readFile(path.join(directory, "brief.md"))) !==
+        options.config.brief?.content_digest
+      ) {
+        throw new OrchestratorError(
+          "invalid_brief_digest",
+          "Staged Brief content does not match its content digest",
+        );
+      }
+    }
+    for (const input of options.inputs) {
+      const stagedPath = path.join(directory, input.name);
+      await writeFile(stagedPath, input.bytes, { mode: 0o600 });
+      if (sha256(await readFile(stagedPath)) !== input.config.digest) {
+        throw new OrchestratorError(
+          "invalid_session_input_digest",
+          `Staged Session input '${input.name}' changed before upload`,
+        );
+      }
+    }
+    return directory;
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function uploadSessionInputs(options: {
+  readonly client: ReadSessionOpenShell;
+  readonly sandbox: string;
+  readonly directory: string;
+  readonly brief: boolean;
+  readonly inputs: readonly ValidatedSessionInput[];
+}): Promise<void> {
+  if (!options.client.upload) {
+    throw new OrchestratorError(
+      "openshell_upload_unavailable",
+      "Static read Sessions require OpenShell immutable-input upload support",
+    );
+  }
+  const files = [
+    "session.json",
+    ...(options.brief ? ["brief.md"] : []),
+    ...options.inputs.map((input) => input.name),
+  ];
+  for (const name of files) {
+    await options.client.upload(
+      options.sandbox,
+      path.join(options.directory, name),
+      `/workspace/input/${name}`,
+    );
+  }
+}
+
 function generatedSandboxName(profile: AgentSessionProfile): string {
   return `pio-${profile === "read" ? "r" : "w"}-${randomBytes(4).toString("hex")}`;
 }
 
 function immutableInputVerification(
-  hasBrief: boolean,
+  briefContentDigest: string | undefined,
   inputs: readonly PiSessionInput[],
+  hasSnapshot = true,
 ): string {
-  return `test -r /workspace/input/session.json && test -r /workspace/input/snapshot.json${hasBrief ? " && test -r /workspace/input/brief.md" : ""}${inputs
+  return `test -r /workspace/input/session.json${hasSnapshot ? " && test -r /workspace/input/snapshot.json" : ""}${briefContentDigest ? ` && test -r /workspace/input/brief.md && test "$(sha256sum /workspace/input/brief.md | cut -d ' ' -f 1)" = "${briefContentDigest.slice("sha256:".length)}"` : ""}${inputs
     .map(
       (input) =>
         ` && test -r ${input.path} && test "$(stat -c %s ${input.path})" -eq ${input.byte_count} && test "$(sha256sum ${input.path} | cut -d ' ' -f 1)" = "${input.digest.slice("sha256:".length)}"`,
@@ -542,10 +689,15 @@ function immutableInputVerification(
 
 function boundaryVerification(
   profile: AgentSessionProfile,
-  hasBrief: boolean,
+  briefContentDigest: string | undefined,
   inputs: readonly PiSessionInput[],
+  hasSnapshot = true,
 ): string {
-  const inputChecks = immutableInputVerification(hasBrief, inputs);
+  const inputChecks = immutableInputVerification(
+    briefContentDigest,
+    inputs,
+    hasSnapshot,
+  );
   if (profile === "write") {
     return `${inputChecks} && test -n "$(find /workspace/base -mindepth 1 -print -quit)" && test -n "$(find /workspace/project -mindepth 1 -print -quit)" && test ! -e /workspace/base/.git && test ! -e /workspace/project/.git && ! touch /workspace/base/.orchestrator-write-probe && ! touch /workspace/input/.orchestrator-write-probe && probe_dir=$(find /workspace/project -mindepth 1 -type d -print -quit) && touch "\${probe_dir:-/workspace/project}/.orchestrator-write-probe" && rm "\${probe_dir:-/workspace/project}/.orchestrator-write-probe"`;
   }
@@ -1055,6 +1207,80 @@ async function resumeSession(
       "Recovered Session Brief does not match the expected digest",
     );
   }
+  const projected = config.workspace_projection;
+  if (
+    (projected === undefined) !== (expectedSandbox.projection === undefined) ||
+    (projected !== undefined) !== (options.workspace !== undefined)
+  ) {
+    throw new OrchestratorError(
+      "workspace_projection_mismatch",
+      "Recovered Session Workspace projection does not match durable state",
+    );
+  }
+  if (projected && expectedSandbox.projection && options.workspace) {
+    const gateway = clientGateway(options.client);
+    if (
+      profile !== "read" ||
+      canonicalJson(projected) !== canonicalJson(expectedSandbox.projection) ||
+      !(options.workspace instanceof ReadOnlySourceWorkspace) ||
+      projected.source_digest !== options.workspace.manifest.source_digest ||
+      projected.workspace_generation !==
+        options.workspace.manifest.workspace_generation ||
+      projected.manifest_digest !==
+        options.workspace.manifest.manifest_digest ||
+      projected.volume_name !== options.workspace.volume.name ||
+      projected.volume_digest !== options.workspace.volume.digest ||
+      projected.mount_set_digest !== options.workspace.mountSet.digest ||
+      projected.image_digest !== options.workspace.imageDigest ||
+      projected.projection_digest !== options.workspace.projectionDigest
+    ) {
+      throw new OrchestratorError(
+        "workspace_projection_mismatch",
+        "Recovered Session uses another Workspace source or projection capability",
+      );
+    }
+    await options.workspace.verify();
+    if (
+      !gateway ||
+      !options.client.listGateways ||
+      !options.client.getGatewayInfo
+    ) {
+      throw new OrchestratorError(
+        "workspace_gateway_uninspectable",
+        "Workspace recovery requires inspectable local OpenShell gateway provenance",
+      );
+    }
+    await verifyWorkspaceGateway(
+      options.workspace,
+      {
+        gateway,
+        listGateways: options.client.listGateways.bind(options.client),
+        getGatewayInfo: options.client.getGatewayInfo.bind(options.client),
+      },
+      preflight,
+    );
+    const mountInfo = await options.client.execSandbox(
+      expectedSandbox.name,
+      ["/usr/bin/cat", "/proc/self/mountinfo"],
+      { timeoutMs: 10_000 },
+    );
+    if (mountInfo.exitCode !== 0) {
+      throw new OrchestratorError(
+        "mount_table_unavailable",
+        `Cannot inspect recovered Workspace mounts: ${mountInfo.stderr.trim() || mountInfo.stdout.trim()}`,
+      );
+    }
+    const evidence = validateOpenShellMountTable(
+      mountInfo.stdout,
+      options.workspace.mountSet,
+    );
+    if (evidence.selectedDigest !== projected.mount_table_digest) {
+      throw new OrchestratorError(
+        "mount_table_mismatch",
+        "Recovered Workspace mount table changed from durable Session evidence",
+      );
+    }
+  }
   await requireSuccess(
     "immutable Session input verification",
     options.client.execSandbox(
@@ -1062,7 +1288,11 @@ async function resumeSession(
       [
         "/bin/sh",
         "-c",
-        immutableInputVerification(config.brief !== undefined, config.inputs),
+        immutableInputVerification(
+          config.brief?.content_digest,
+          config.inputs,
+          projected === undefined,
+        ),
       ],
       { timeoutMs: 10_000 },
     ),
@@ -1122,7 +1352,7 @@ async function resumeSession(
       forward,
       link,
       {
-        sandbox,
+        sandbox: projected ? { ...sandbox, projection: projected } : sandbox,
         identity,
         sourceDigest: config.source_digest,
         profile,
@@ -1137,6 +1367,7 @@ async function resumeSession(
         ...(inference ? { inference } : {}),
         ...(config.brief ? { briefDigest: config.brief.digest } : {}),
         inputs: config.inputs,
+        ...(projected ? { workspaceProjection: projected } : {}),
       },
       config.token,
       startupTimeoutMs,
@@ -1238,6 +1469,12 @@ async function startSession(
       "Compiled Brief content does not match its digest",
     );
   }
+  if (source.kind === "workspace-projection" && options.imageContext) {
+    throw new OrchestratorError(
+      "invalid_pi_image",
+      "Shared Workspace Sessions use only their configured pinned static image",
+    );
+  }
   const image = options.imageContext ?? bundledPiImageContext();
   const policyDirectory = options.policyDirectory ?? bundledPath("policies");
   if (model && !options.client.getInferenceRoute) {
@@ -1274,53 +1511,152 @@ async function startSession(
     }
   }
 
+  if (source.kind === "workspace-projection") {
+    const gateway = clientGateway(options.client);
+    if (
+      !gateway ||
+      !options.client.listGateways ||
+      !options.client.getGatewayInfo
+    ) {
+      throw new OrchestratorError(
+        "workspace_gateway_uninspectable",
+        "Shared Workspace Sessions require inspectable local OpenShell gateway provenance",
+      );
+    }
+    await verifyWorkspaceGateway(
+      source.workspace,
+      {
+        gateway,
+        listGateways: options.client.listGateways.bind(options.client),
+        getGatewayInfo: options.client.getGatewayInfo.bind(options.client),
+      },
+      preflight,
+    );
+  }
+
   const token = randomBytes(32).toString("hex");
-  const config = PiClientConfigSchema.parse({
-    version: PI_CLIENT_CONFIG_VERSION,
-    identity,
-    token,
-    listen: { host: "127.0.0.1", port: linkPort },
-    client_version: clientVersion,
-    pi_version: piVersion,
-    profile,
-    permission_ceiling: permissionCeiling,
-    context,
-    source_digest: source.sourceDigest,
-    policy_digest: policy.digest,
-    inputs: inputs.map((input) => input.config),
-    ...(model
-      ? {
-          model,
-          brief: {
-            path: "/workspace/input/brief.md" as const,
-            digest: options.brief!.digest,
-          },
-        }
-      : {}),
-  });
+  const sessionConfig = (
+    workspaceProjection?: WorkspaceSessionProjection,
+  ): PiClientConfig =>
+    PiClientConfigSchema.parse({
+      version: PI_CLIENT_CONFIG_VERSION,
+      identity,
+      token,
+      listen: { host: "127.0.0.1", port: linkPort },
+      client_version: clientVersion,
+      pi_version: piVersion,
+      profile,
+      permission_ceiling: permissionCeiling,
+      context,
+      source_digest: source.sourceDigest,
+      policy_digest: policy.digest,
+      inputs: inputs.map((input) => input.config),
+      ...(workspaceProjection
+        ? { workspace_projection: workspaceProjection }
+        : {}),
+      ...(model
+        ? {
+            model,
+            brief: {
+              path: "/workspace/input/brief.md" as const,
+              digest: options.brief!.digest,
+              content_digest: sha256(options.brief!.content),
+            },
+          }
+        : {}),
+    });
   const sandboxName = options.sandboxName ?? generatedSandboxName(profile);
-  const imageContext = await createSessionImageContext({
-    image,
-    source,
-    config,
-    profile,
-    inputs,
-    ...(options.brief ? { brief: options.brief } : {}),
-  });
 
   let sandbox: OpenShellSandbox | undefined;
   let forward: OpenShellForward | undefined;
   let link: HostLink | undefined;
+  let config: PiClientConfig | undefined;
+  let stagingDirectory: string | undefined;
   const startupStartedAt = now();
   try {
-    sandbox = await options.client.createSandbox({
-      name: sandboxName,
-      from: imageContext,
-      policyPath: policy.path,
-      command: ["/usr/bin/true"],
-    });
+    if (source.kind === "workspace-projection") {
+      sandbox = await options.client.createSandbox({
+        name: sandboxName,
+        from: source.workspace.image,
+        policyPath: policy.path,
+        mountSet: source.workspace.mountSet,
+        labels: {
+          "pio.purpose": "read-session",
+          "pio.projection": source.workspace.projectionDigest.slice(
+            "sha256:".length,
+            55,
+          ),
+        },
+        command: ["/usr/bin/true"],
+      });
+    } else {
+      config = sessionConfig();
+      stagingDirectory = await createSessionImageContext({
+        image,
+        source,
+        config,
+        profile,
+        inputs,
+        ...(options.brief ? { brief: options.brief } : {}),
+      });
+      sandbox = await options.client.createSandbox({
+        name: sandboxName,
+        from: stagingDirectory,
+        policyPath: policy.path,
+        command: ["/usr/bin/true"],
+      });
+    }
     if (sandbox.phase !== "Ready") {
       sandbox = await options.client.waitForSandbox(sandboxName);
+    }
+
+    let workspaceProjection: WorkspaceSessionProjection | undefined;
+    if (source.kind === "workspace-projection") {
+      const mountInfo = await options.client.execSandbox(
+        sandboxName,
+        ["/usr/bin/cat", "/proc/self/mountinfo"],
+        { timeoutMs: 10_000 },
+      );
+      if (mountInfo.exitCode !== 0) {
+        throw new OrchestratorError(
+          "mount_table_unavailable",
+          `Cannot inspect Workspace mounts: ${mountInfo.stderr.trim() || mountInfo.stdout.trim()}`,
+        );
+      }
+      const evidence = validateOpenShellMountTable(
+        mountInfo.stdout,
+        source.workspace.mountSet,
+      );
+      workspaceProjection = WorkspaceSessionProjectionSchema.parse({
+        source_digest: source.workspace.manifest.source_digest,
+        workspace_generation: source.workspace.manifest.workspace_generation,
+        manifest_digest: source.workspace.manifest.manifest_digest,
+        volume_name: source.workspace.volume.name,
+        volume_digest: source.workspace.volume.digest,
+        mount_set_digest: source.workspace.mountSet.digest,
+        mount_table_digest: evidence.selectedDigest,
+        image_digest: source.workspace.imageDigest,
+        projection_digest: source.workspace.projectionDigest,
+      });
+      config = sessionConfig(workspaceProjection);
+      stagingDirectory = await createSessionInputDirectory({
+        config,
+        inputs,
+        ...(options.brief ? { brief: options.brief } : {}),
+      });
+      await uploadSessionInputs({
+        client: options.client,
+        sandbox: sandboxName,
+        directory: stagingDirectory,
+        brief: !!options.brief,
+        inputs,
+      });
+    }
+    if (!config) {
+      throw new OrchestratorError(
+        "session_bootstrap_failed",
+        "Session immutable configuration was not prepared",
+      );
     }
 
     await requireSuccess(
@@ -1330,7 +1666,12 @@ async function startSession(
         [
           "/bin/sh",
           "-c",
-          boundaryVerification(profile, !!options.brief, config.inputs),
+          boundaryVerification(
+            profile,
+            config.brief?.content_digest,
+            config.inputs,
+            source.kind !== "workspace-projection",
+          ),
         ],
         { timeoutMs: 10_000 },
       ),
@@ -1372,7 +1713,9 @@ async function startSession(
       forward,
       link,
       {
-        sandbox,
+        sandbox: workspaceProjection
+          ? { ...sandbox, projection: workspaceProjection }
+          : sandbox,
         identity,
         sourceDigest: source.sourceDigest,
         profile,
@@ -1387,6 +1730,7 @@ async function startSession(
         ...(inference ? { inference } : {}),
         ...(options.brief ? { briefDigest: options.brief.digest } : {}),
         inputs: config.inputs,
+        ...(workspaceProjection ? { workspaceProjection } : {}),
       },
       token,
       startupTimeoutMs,
@@ -1438,7 +1782,9 @@ async function startSession(
     }
     throw error;
   } finally {
-    await rm(imageContext, { recursive: true, force: true });
+    if (stagingDirectory) {
+      await rm(stagingDirectory, { recursive: true, force: true });
+    }
   }
 }
 

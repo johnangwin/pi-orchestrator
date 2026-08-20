@@ -46,6 +46,7 @@ export * from "./scope.js";
 export * from "./agent.js";
 export * from "./session.js";
 export * from "./snapshot.js";
+export * from "./source.js";
 export * from "./state.js";
 export * from "./summary.js";
 export * from "./synthesis.js";

@@ -201,9 +201,10 @@ function validModel(value) {
 
 function validBrief(value) {
   return (
-    exactKeys(value, ["path", "digest"]) &&
+    exactKeys(value, ["path", "digest", "content_digest"]) &&
     value.path === "/workspace/input/brief.md" &&
-    digestPattern.test(value.digest)
+    digestPattern.test(value.digest) &&
+    digestPattern.test(value.content_digest)
   );
 }
 
@@ -227,6 +228,35 @@ function validInputs(value) {
     new Set(value.map((input) => input.path)).size === value.length &&
     value.reduce((total, input) => total + input.byte_count, 0) <=
       64 * 1024 * 1024
+  );
+}
+
+function validWorkspaceProjection(value) {
+  return (
+    exactKeys(value, [
+      "source_digest",
+      "workspace_generation",
+      "manifest_digest",
+      "volume_name",
+      "volume_digest",
+      "mount_set_digest",
+      "mount_table_digest",
+      "image_digest",
+      "projection_digest",
+    ]) &&
+    digestPattern.test(value.source_digest) &&
+    Number.isSafeInteger(value.workspace_generation) &&
+    value.workspace_generation >= 0 &&
+    typeof value.volume_name === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9_.-]{1,254}$/.test(value.volume_name) &&
+    [
+      value.manifest_digest,
+      value.volume_digest,
+      value.mount_set_digest,
+      value.mount_table_digest,
+      value.image_digest,
+      value.projection_digest,
+    ].every((digest) => digestPattern.test(digest))
   );
 }
 
@@ -319,6 +349,7 @@ function parseConfig(value) {
         "model",
         "brief",
         "inputs",
+        "workspace_projection",
       ],
     ) ||
     value.version !== CLIENT_CONFIG_VERSION ||
@@ -347,7 +378,10 @@ function parseConfig(value) {
     (value.model === undefined) !== (value.brief === undefined) ||
     (value.model !== undefined && !validModel(value.model)) ||
     (value.brief !== undefined && !validBrief(value.brief)) ||
-    (value.inputs !== undefined && !validInputs(value.inputs))
+    (value.inputs !== undefined && !validInputs(value.inputs)) ||
+    (value.workspace_projection !== undefined &&
+      !validWorkspaceProjection(value.workspace_projection)) ||
+    (value.workspace_projection !== undefined && value.profile !== "read")
   ) {
     throw new Error("Invalid Orchestrator client configuration");
   }

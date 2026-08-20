@@ -419,7 +419,10 @@ function decodePathName(name: Buffer): string {
   }
 }
 
-function requireSafeSymlink(relative: string, target: Buffer): void {
+export function requireSafeWorkspaceSymlink(
+  relative: string,
+  target: Buffer,
+): void {
   let decoded: string;
   try {
     decoded = decoder.decode(target);
@@ -601,7 +604,7 @@ export async function createWorkspaceManifest(
         `Workspace symlink '${relative}' changed during inspection`,
       );
     }
-    requireSafeSymlink(relative, target);
+    requireSafeWorkspaceSymlink(relative, target);
     add(
       WorkspaceManifestEntrySchema.parse({
         path: relative,
@@ -672,6 +675,44 @@ export async function createWorkspaceManifest(
 
   await visitDirectory(resolvedRoot, "", rootBefore);
   entries.sort((left, right) => compareUtf8(left.path, right.path));
+  const record = WorkspaceManifestRecordSchema.parse({
+    version: 2,
+    entry_count: entries.length,
+    byte_count: byteCount,
+    entries,
+  });
+  return validateWorkspaceManifest({
+    ...record,
+    digest: manifestDigest(record),
+  });
+}
+
+export function createWorkspaceManifestFromEntries(
+  values: readonly WorkspaceManifestEntry[],
+): WorkspaceManifest {
+  const entries = values
+    .map((entry) => WorkspaceManifestEntrySchema.parse(entry))
+    .sort((left, right) => compareUtf8(left.path, right.path));
+  for (let index = 1; index < entries.length; index += 1) {
+    if (entries[index - 1]!.path === entries[index]!.path) {
+      throw new OrchestratorError(
+        "duplicate_workspace_path",
+        `Workspace manifest repeats path '${entries[index]!.path}'`,
+      );
+    }
+  }
+  for (const entry of entries) {
+    if (entry.type === "symlink") {
+      requireSafeWorkspaceSymlink(
+        entry.path,
+        Buffer.from(entry.link_target_base64, "base64"),
+      );
+    }
+  }
+  const byteCount = entries.reduce(
+    (total, entry) => total + entry.byte_count,
+    0,
+  );
   const record = WorkspaceManifestRecordSchema.parse({
     version: 2,
     entry_count: entries.length,

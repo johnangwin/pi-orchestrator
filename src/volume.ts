@@ -1,8 +1,13 @@
 import { execFile } from "node:child_process";
+import { realpath, stat } from "node:fs/promises";
 import { z } from "zod";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
-import { VersionSchema } from "./local.js";
+import {
+  PinnedImageReferenceSchema,
+  VersionSchema,
+  type PinnedImageReference,
+} from "./local.js";
 import type {
   ProcessResult,
   ProcessRunOptions,
@@ -196,6 +201,20 @@ export interface RunVolumeOptions {
   readonly timeoutMs?: number;
 }
 
+export interface SeedGitWorkspaceOptions {
+  readonly volume: DockerVolumeCapability;
+  readonly image: PinnedImageReference;
+  readonly gitDirectory: string;
+  readonly commit: string;
+  readonly timeoutMs?: number;
+}
+
+export interface InspectWorkspaceVolumeOptions {
+  readonly volume: DockerVolumeCapability;
+  readonly image: PinnedImageReference;
+  readonly timeoutMs?: number;
+}
+
 export class DockerVolumeClient {
   readonly command: string;
   readonly requiredVersion: string | undefined;
@@ -338,6 +357,104 @@ export class DockerVolumeClient {
         ...options.command,
       ],
       { timeoutMs: options.timeoutMs ?? 2 * 60_000 },
+    );
+  }
+
+  async seedGitWorkspace(
+    options: SeedGitWorkspaceOptions,
+  ): Promise<ProcessResult> {
+    if (!(options.volume instanceof DockerVolumeCapability)) {
+      throw new OrchestratorError(
+        "invalid_docker_volume",
+        "Workspace seeding requires an inspected named-volume capability",
+      );
+    }
+    const image = PinnedImageReferenceSchema.parse(options.image);
+    const commit = z
+      .string()
+      .regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
+      .parse(options.commit);
+    const gitDirectory = await realpath(options.gitDirectory).catch(
+      (error: unknown) => {
+        throw new OrchestratorError(
+          "invalid_git_directory",
+          "Workspace seeding Git directory is not accessible",
+          { cause: error },
+        );
+      },
+    );
+    const state = await stat(gitDirectory);
+    if (!state.isDirectory() || gitDirectory.includes(",")) {
+      throw new OrchestratorError(
+        "invalid_git_directory",
+        "Workspace seeding requires a real Git directory without Docker mount delimiters",
+      );
+    }
+    return this.execute(
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "0:0",
+        "--env",
+        "HOME=/tmp",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=268435456",
+        "--mount",
+        `type=volume,source=${options.volume.name},target=/run-volume`,
+        "--mount",
+        `type=bind,source=${gitDirectory},target=/repository.git,readonly`,
+        image,
+        "/usr/bin/node",
+        "/usr/local/lib/pi-orchestrator/workspace.mjs",
+        "seed",
+        "/repository.git",
+        commit,
+        "/run-volume",
+      ],
+      { timeoutMs: options.timeoutMs ?? 10 * 60_000 },
+    );
+  }
+
+  async inspectWorkspaceVolume(
+    options: InspectWorkspaceVolumeOptions,
+  ): Promise<ProcessResult> {
+    if (!(options.volume instanceof DockerVolumeCapability)) {
+      throw new OrchestratorError(
+        "invalid_docker_volume",
+        "Workspace inspection requires an inspected named-volume capability",
+      );
+    }
+    const image = PinnedImageReferenceSchema.parse(options.image);
+    return this.execute(
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "0:0",
+        "--env",
+        "HOME=/tmp",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=67108864",
+        "--mount",
+        `type=volume,source=${options.volume.name},target=/run-volume,readonly`,
+        image,
+        "/usr/bin/node",
+        "/usr/local/lib/pi-orchestrator/workspace.mjs",
+        "inspect",
+        "/run-volume/project",
+      ],
+      { timeoutMs: options.timeoutMs ?? 10 * 60_000 },
     );
   }
 

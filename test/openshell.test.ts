@@ -596,6 +596,8 @@ models:
       parseLocalConfig(`version: 2
 openshell:
   required_version: "0.0.106"
+  images:
+    pi: pi-orchestrator-pi@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   shared_workspace:
     enabled: true
     gateway: openshell

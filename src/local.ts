@@ -18,6 +18,26 @@ export const VersionSchema = z
     "must be a semantic version without a leading v",
   );
 
+export const PinnedImageReferenceSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((value) => !value.includes("\0"), "must not contain NUL")
+  .refine(
+    (value) => /@sha256:[a-f0-9]{64}$/.test(value),
+    "must end with an exact sha256 image digest",
+  );
+export type PinnedImageReference = z.infer<typeof PinnedImageReferenceSchema>;
+
+export const OpenShellImagesSchema = z
+  .object({
+    pi: PinnedImageReferenceSchema,
+    check: PinnedImageReferenceSchema.optional(),
+  })
+  .strict();
+export type OpenShellImages = z.infer<typeof OpenShellImagesSchema>;
+
 export const SharedWorkspaceSettingsSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -49,9 +69,20 @@ const OpenShellSettingsSchema = z
     required_version: VersionSchema.optional(),
     workspace: z.string().min(1).default("default"),
     gateways: z.record(z.string(), z.string().min(1)).default({}),
+    images: OpenShellImagesSchema.optional(),
     shared_workspace: SharedWorkspaceSettingsSchema.optional(),
   })
-  .passthrough();
+  .passthrough()
+  .superRefine((settings, context) => {
+    if (settings.shared_workspace?.enabled && !settings.images?.pi) {
+      context.addIssue({
+        code: "custom",
+        path: ["images", "pi"],
+        message:
+          "is required as an exact digest when shared workspaces are enabled",
+      });
+    }
+  });
 
 export const CmuxSettingsSchema = z
   .object({

@@ -2,10 +2,15 @@ import { randomBytes } from "node:crypto";
 import { cp, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
+import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import type { SharedWorkspaceSettings } from "./local.js";
-import { OpenShellMountSet } from "./mount.js";
+import {
+  OpenShellMountSet,
+  validateOpenShellMountTable,
+  type MountTableEvidence,
+} from "./mount.js";
+export { parseLinuxMountInfo } from "./mount.js";
 import type {
   OpenShellClient,
   OpenShellGatewayInfo,
@@ -20,7 +25,6 @@ import { defaultOrchestratorHome } from "./state.js";
 import { DockerVolumeCapability, DockerVolumeClient } from "./volume.js";
 import { bundledCanaryImage, bundledPolicyDirectory } from "./canary.js";
 
-const PROJECT_TARGET = "/workspace/project";
 const VOLUME_HELPER_IMAGE =
   "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241";
 
@@ -71,25 +75,6 @@ export type WorkspaceVolumeDocker = Pick<
   DockerVolumeClient,
   "createVolume" | "inspectVolume" | "removeVolume" | "runVolume" | "version"
 > & { readonly command: string };
-
-export interface LinuxMountInfoEntry {
-  readonly id: number;
-  readonly parentId: number;
-  readonly device: string;
-  readonly root: string;
-  readonly mountPoint: string;
-  readonly mountOptions: readonly string[];
-  readonly optionalFields: readonly string[];
-  readonly filesystem: string;
-  readonly mountSource: string;
-  readonly superOptions: readonly string[];
-}
-
-export interface MountTableEvidence {
-  readonly rawDigest: Digest;
-  readonly selectedDigest: Digest;
-  readonly entries: readonly LinuxMountInfoEntry[];
-}
 
 export interface WorkspaceVolumeAssertion {
   readonly id: string;
@@ -226,119 +211,6 @@ function enabledSettings(
     driver: settings.driver,
     driverVersion: settings.driver_version,
     dockerCommand: settings.docker_command,
-  };
-}
-
-function decodeMountField(value: string): string {
-  return value.replace(/\\([0-7]{3})/g, (_match, octal: string) =>
-    String.fromCharCode(Number.parseInt(octal, 8)),
-  );
-}
-
-export function parseLinuxMountInfo(source: string): LinuxMountInfoEntry[] {
-  const entries: LinuxMountInfoEntry[] = [];
-  for (const [index, line] of source.trimEnd().split("\n").entries()) {
-    if (!line) continue;
-    const fields = line.split(" ");
-    const separator = fields.indexOf("-");
-    if (separator < 6 || fields.length < separator + 4) {
-      throw new OrchestratorError(
-        "invalid_mount_table",
-        `Mount table line ${index + 1} is malformed`,
-      );
-    }
-    const id = Number(fields[0]);
-    const parentId = Number(fields[1]);
-    const device = fields[2];
-    const root = fields[3];
-    const mountPoint = fields[4];
-    const mountOptions = fields[5];
-    const filesystem = fields[separator + 1];
-    const mountSource = fields[separator + 2];
-    const superOptions = fields[separator + 3];
-    if (
-      !Number.isSafeInteger(id) ||
-      !Number.isSafeInteger(parentId) ||
-      !device ||
-      !root ||
-      !mountPoint ||
-      !mountOptions ||
-      !filesystem ||
-      !mountSource ||
-      !superOptions
-    ) {
-      throw new OrchestratorError(
-        "invalid_mount_table",
-        `Mount table line ${index + 1} has invalid required fields`,
-      );
-    }
-    entries.push({
-      id,
-      parentId,
-      device,
-      root: decodeMountField(root),
-      mountPoint: decodeMountField(mountPoint),
-      mountOptions: mountOptions.split(","),
-      optionalFields: fields.slice(6, separator).map(decodeMountField),
-      filesystem,
-      mountSource: decodeMountField(mountSource),
-      superOptions: superOptions.split(","),
-    });
-  }
-  return entries;
-}
-
-function selectedMounts(
-  entries: readonly LinuxMountInfoEntry[],
-): LinuxMountInfoEntry[] {
-  return entries
-    .filter(
-      (entry) =>
-        entry.mountPoint === PROJECT_TARGET ||
-        entry.mountPoint.startsWith(`${PROJECT_TARGET}/`),
-    )
-    .sort((left, right) => left.mountPoint.localeCompare(right.mountPoint));
-}
-
-function validateMountTable(
-  source: string,
-  mountSet: OpenShellMountSet,
-): MountTableEvidence {
-  const entries = selectedMounts(parseLinuxMountInfo(source));
-  const expected = new Map(
-    mountSet.mounts.map((mount) => [mount.target, mount] as const),
-  );
-  if (entries.length !== expected.size) {
-    throw new OrchestratorError(
-      "mount_table_mismatch",
-      `Observed ${entries.length} Project mounts; expected ${expected.size}`,
-    );
-  }
-  for (const entry of entries) {
-    const requested = expected.get(entry.mountPoint);
-    if (!requested) {
-      throw new OrchestratorError(
-        "mount_table_mismatch",
-        `Unexpected Project mount '${entry.mountPoint}'`,
-      );
-    }
-    const expectedMode = requested.readOnly ? "ro" : "rw";
-    if (
-      !entry.mountOptions.includes(expectedMode) ||
-      entry.filesystem === "fakeowner"
-    ) {
-      throw new OrchestratorError(
-        "mount_table_mismatch",
-        `Project mount '${entry.mountPoint}' is not a ${expectedMode} native volume mount`,
-      );
-    }
-  }
-  return {
-    rawDigest: sha256(source),
-    selectedDigest: digestParts("pi-orchestrator/observed-mount-table/v1", [
-      ["entries", canonicalJson(entries)],
-    ]),
-    entries,
   };
 }
 
@@ -501,7 +373,7 @@ async function mountEvidence(
       `Cannot inspect mount table in '${sandbox}': ${result.stderr.trim() || result.stdout.trim()}`,
     );
   }
-  return validateMountTable(result.stdout, mountSet);
+  return validateOpenShellMountTable(result.stdout, mountSet);
 }
 
 async function stageImage(source: string): Promise<{

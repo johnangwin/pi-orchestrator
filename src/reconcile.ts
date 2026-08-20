@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdentifierSchema, type ContextThresholds } from "./config.js";
+import { canonicalJson } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { MailboxRouter, type MailboxLink } from "./mailbox.js";
 import { MetricStore, type SessionMetricRecorder } from "./metric.js";
@@ -26,6 +27,7 @@ import {
   type SessionSandbox,
 } from "./session.js";
 import type { ProjectStore } from "./state.js";
+import type { ReadOnlySourceWorkspace } from "./source.js";
 
 export const SessionRecoveryActionSchema = z.enum([
   "none",
@@ -71,7 +73,9 @@ export type SessionLifecycleOpenShell = ResumeReadSessionOpenShell &
 
 export interface SessionRuntime extends MailboxLink {
   readonly info: {
-    readonly sandbox: OpenShellSandbox;
+    readonly sandbox: OpenShellSandbox & {
+      readonly projection?: SessionSandbox["projection"];
+    };
     readonly permissionCeiling: PermissionCeiling;
     readonly model?: ResolvedModelRoute;
   };
@@ -96,6 +100,7 @@ export interface RecoverSessionOptions {
   readonly task?: string;
   readonly currentActionState?: () =>
     PermissionRuntimeState | Promise<PermissionRuntimeState>;
+  readonly workspace?: ReadOnlySourceWorkspace;
 }
 
 export interface ReplaceSessionOptions {
@@ -115,12 +120,16 @@ type LifecycleStore = Pick<
 
 function sameSandbox(
   expected: SessionSandbox,
-  actual: Pick<OpenShellSandbox, "id" | "name" | "workspace">,
+  actual: Pick<OpenShellSandbox, "id" | "name" | "workspace"> & {
+    readonly projection?: SessionSandbox["projection"];
+  },
 ): boolean {
   return (
     expected.id === actual.id &&
     expected.name === actual.name &&
-    expected.workspace === actual.workspace
+    expected.workspace === actual.workspace &&
+    canonicalJson(expected.projection ?? null) ===
+      canonicalJson(actual.projection ?? null)
   );
 }
 
@@ -371,6 +380,9 @@ export class SessionReconciler {
       id: session.info.sandbox.id,
       name: session.info.sandbox.name,
       workspace: session.info.sandbox.workspace,
+      ...(session.info.sandbox.projection
+        ? { projection: session.info.sandbox.projection }
+        : {}),
     });
     await this.mailbox.attach(session);
     if (pane) await this.projection.ensurePane({ ...pane, identity });
@@ -447,6 +459,7 @@ export class SessionReconciler {
       ...(options.currentActionState
         ? { currentActionState: options.currentActionState }
         : {}),
+      ...(options.workspace ? { workspace: options.workspace } : {}),
     });
     try {
       await this.mailbox.attach(recovered);

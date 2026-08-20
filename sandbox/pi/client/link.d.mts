@@ -74,6 +74,7 @@ export interface ClientConfig {
     | {
         readonly path: "/workspace/input/brief.md";
         readonly digest: string;
+        readonly content_digest: string;
       }
     | undefined;
   readonly inputs?:
@@ -82,6 +83,19 @@ export interface ClientConfig {
         readonly byte_count: number;
         readonly digest: string;
       }[]
+    | undefined;
+  readonly workspace_projection?:
+    | {
+        readonly source_digest: string;
+        readonly workspace_generation: number;
+        readonly manifest_digest: string;
+        readonly volume_name: string;
+        readonly volume_digest: string;
+        readonly mount_set_digest: string;
+        readonly mount_table_digest: string;
+        readonly image_digest: string;
+        readonly projection_digest: string;
+      }
     | undefined;
 }
 

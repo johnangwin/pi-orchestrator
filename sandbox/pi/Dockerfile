@@ -16,6 +16,7 @@ RUN apt-get update \
 COPY client/ /usr/local/lib/pi-orchestrator/client/
 COPY start.sh /usr/local/bin/orchestrator-start-pi
 COPY export.mjs /usr/local/bin/orchestrator-export-patch
+COPY workspace.mjs /usr/local/lib/pi-orchestrator/workspace.mjs
 
 RUN printf '{"client_version":"%s","pi_version":"%s"}\n' "$CLIENT_VERSION" "$PI_VERSION" > /usr/local/lib/pi-orchestrator/runtime.json \
     && chmod -R a-w /usr/local/lib/pi-orchestrator \

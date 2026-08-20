@@ -5,6 +5,7 @@ import {
   type ModelProfile,
 } from "./config.js";
 import { OrchestratorError } from "./error.js";
+import { canonicalJson } from "./digest.js";
 import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import {
   AgentRecordSchema,
@@ -131,7 +132,9 @@ function sameSandbox(left: SessionSandbox, right: SessionSandbox): boolean {
   return (
     left.id === right.id &&
     left.name === right.name &&
-    left.workspace === right.workspace
+    left.workspace === right.workspace &&
+    canonicalJson(left.projection ?? null) ===
+      canonicalJson(right.projection ?? null)
   );
 }
 

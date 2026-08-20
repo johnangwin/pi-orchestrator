@@ -353,6 +353,10 @@ openshell:
   command: openshell
   required_version: "0.0.106"
   workspace: default
+  # Required before enabling the shared Workspace. Use an immutable image
+  # reference built from sandbox/pi/Dockerfile.
+  # images:
+  #   pi: pi-orchestrator-pi@sha256:<64-hex-digest>
   gateways:
     frontier: openshell-frontier
     reasoning: openshell-reasoning

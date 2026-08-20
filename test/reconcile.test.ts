@@ -541,6 +541,7 @@ describe("Session lifecycle reconciliation", () => {
       brief: {
         path: "/workspace/input/brief.md",
         digest: fixtureDigest,
+        content_digest: fixtureDigest,
       },
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,

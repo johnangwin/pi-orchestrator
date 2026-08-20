@@ -39,12 +39,18 @@ import {
   type SessionIdentity,
 } from "./session.js";
 import {
-  createSourceSnapshot,
-  SourceSnapshotManifestSchema,
-  verifySourceSnapshot,
-  type SourceSnapshot,
-  type SourceSnapshotManifest,
-} from "./snapshot.js";
+  PlanningSourceManifestSchema,
+  createPlanningSource,
+  isReadOnlySourceWorkspace,
+  planningSourceBytes,
+  planningSourcePaths,
+  verifyPlanningSource,
+  workspaceProjectionMatches,
+  WorkspaceSessionProjectionSchema,
+  type PlanningSource,
+  type PlanningSourceManifest,
+  type SourceWorkspaceFactory,
+} from "./source.js";
 import type { ProjectStore } from "./state.js";
 import { writeJsonAtomic } from "./state.js";
 
@@ -494,6 +500,7 @@ const PlanningQuestionnaireRecordWithoutDigestSchema = z
         id: z.string().uuid(),
         name: z.string().min(1),
         workspace: z.string().min(1),
+        projection: WorkspaceSessionProjectionSchema.optional(),
       })
       .strict(),
     questionnaire: PlanningQuestionnaireSchema,
@@ -606,6 +613,7 @@ export interface RunPlanningOptions {
   readonly now?: () => Date;
   readonly nonce?: () => string;
   readonly launchSession?: PlanningSessionLauncher;
+  readonly workspaceFactory?: SourceWorkspaceFactory;
 }
 
 export interface RunPlanningResult {
@@ -669,7 +677,7 @@ export function compilePlanningBrief(input: {
   readonly permissionCeiling: PermissionCeiling;
   readonly model: ResolvedModelRoute;
   readonly goal: string;
-  readonly source: SourceSnapshotManifest;
+  readonly source: PlanningSourceManifest;
   readonly contextLimitTokens: number;
 }): CompiledPlanningBrief {
   const budgetTokens = Math.max(
@@ -699,7 +707,7 @@ export function compilePlanningBrief(input: {
     planningSection("Goal", input.goal),
     planningSection(
       "Repository Evidence",
-      `The exact committed repository is mounted read-only at /workspace/project.\nCommit: ${input.source.commit}\nSource digest: ${input.source.source_digest}\nTracked entries: ${input.source.entries.length}\nTracked bytes: ${input.source.entries.reduce((total, entry) => total + entry.size, 0)}`,
+      `The exact committed repository is mounted read-only at /workspace/project.\nCommit: ${input.source.commit}\nSource digest: ${input.source.source_digest}\nTracked entries: ${input.source.entries.length}\nTracked bytes: ${planningSourceBytes(input.source)}`,
     ),
     planningSection("Required Output", PLANNING_OUTPUT_CONTRACT),
   ];
@@ -949,11 +957,11 @@ export class PlanningStore {
     readonly projectId: string;
     readonly goal: string;
     readonly baseCommit: string;
-    readonly source: SourceSnapshotManifest;
+    readonly source: PlanningSourceManifest;
     readonly now: Date;
   }): Promise<{ readonly state: PlanningState; readonly created: boolean }> {
     const id = PlanningIdSchema.parse(input.id);
-    const source = SourceSnapshotManifestSchema.parse(input.source);
+    const source = PlanningSourceManifestSchema.parse(input.source);
     const goal = HumanTextSchema.parse(input.goal);
     const existingSource = await readOptional(this.stateFile(id));
     if (existingSource !== undefined) {
@@ -1009,7 +1017,7 @@ export class PlanningStore {
     await putImmutable(
       this.sourceFile(id),
       source,
-      SourceSnapshotManifestSchema,
+      PlanningSourceManifestSchema,
       "planning_source_conflict",
     );
     await writeJsonAtomic(this.stateFile(id), state);
@@ -1018,8 +1026,8 @@ export class PlanningStore {
 
   private async requireSource(
     id: string,
-    expected: SourceSnapshotManifest,
-  ): Promise<SourceSnapshotManifest> {
+    expected: PlanningSourceManifest,
+  ): Promise<PlanningSourceManifest> {
     const filePath = this.sourceFile(id);
     const source = await readOptional(filePath);
     if (source === undefined) {
@@ -1028,7 +1036,7 @@ export class PlanningStore {
         `Planning request '${id}' is missing its source manifest`,
       );
     }
-    const stored = parseStored(SourceSnapshotManifestSchema, source, filePath);
+    const stored = parseStored(PlanningSourceManifestSchema, source, filePath);
     if (canonicalJson(stored) !== canonicalJson(expected)) {
       throw new OrchestratorError(
         "planning_source_conflict",
@@ -1038,7 +1046,7 @@ export class PlanningStore {
     return stored;
   }
 
-  async source(id: string): Promise<SourceSnapshotManifest> {
+  async source(id: string): Promise<PlanningSourceManifest> {
     const state = await this.get(id);
     const filePath = this.sourceFile(state.id);
     const source = await readOptional(filePath);
@@ -1049,7 +1057,7 @@ export class PlanningStore {
       );
     }
     const manifest = parseStored(
-      SourceSnapshotManifestSchema,
+      PlanningSourceManifestSchema,
       source,
       filePath,
     );
@@ -1878,6 +1886,9 @@ function createQuestionnaireRecord(input: {
       id: input.session.sandbox.id,
       name: input.session.sandbox.name,
       workspace: input.session.sandbox.workspace,
+      ...(input.session.sandbox.projection
+        ? { projection: input.session.sandbox.projection }
+        : {}),
     },
     questionnaire: input.questionnaire,
     response: input.turn.text,
@@ -1904,7 +1915,7 @@ function createQuestionnaireRecord(input: {
 function requireSessionBinding(input: {
   readonly info: ReadSessionInfo;
   readonly identity: SessionIdentity;
-  readonly source: SourceSnapshot;
+  readonly source: PlanningSource;
   readonly model: ResolvedModelRoute;
   readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
@@ -1916,6 +1927,7 @@ function requireSessionBinding(input: {
       input.permissionCeiling.permission_ceiling_digest ||
     !sameSessionIdentity(input.info.identity, input.identity) ||
     input.info.sourceDigest !== input.source.manifest.source_digest ||
+    !workspaceProjectionMatches(input.source, input.info.sandbox.projection) ||
     input.info.policyDigest !== input.policyDigest ||
     input.info.briefDigest !== input.brief.digest ||
     canonicalJson(input.info.model) !== canonicalJson(input.model) ||
@@ -2003,11 +2015,17 @@ export async function runPlanningQuestionnaire(
     options.planningId ?? planningIdForGoal(goal),
   );
   const baseCommit = await requireCleanPlanningProject(options.project);
-  const snapshot = await createSourceSnapshot({
+  const snapshot = await createPlanningSource({
     projectRoot: options.project.root,
+    projectId: options.project.config.project.id,
+    workspaceId: planningId,
     commit: baseCommit,
-    paths: ["."],
+    local: options.local,
+    restrictedPaths: options.project.config.restricted_paths,
     ...(options.temporaryRoot ? { temporaryRoot: options.temporaryRoot } : {}),
+    ...(options.workspaceFactory
+      ? { workspaceFactory: options.workspaceFactory }
+      : {}),
   });
   try {
     const store = new PlanningStore(options.store);
@@ -2161,7 +2179,9 @@ export async function runPlanningQuestionnaire(
       const launched = await launch({
         client: options.client,
         identity,
-        snapshot,
+        ...(isReadOnlySourceWorkspace(snapshot)
+          ? { workspace: snapshot }
+          : { snapshot }),
         permissionCeiling,
         model,
         brief,
@@ -2228,7 +2248,7 @@ export async function runPlanningQuestionnaire(
       }
       const questionnaire = parsePlanningQuestionnaire(
         turn.text,
-        new Set(snapshot.manifest.entries.map((entry) => entry.path)),
+        planningSourcePaths(snapshot.manifest),
       );
       const latestCommit = await requireCleanPlanningProject(options.project);
       if (latestCommit !== baseCommit) {
@@ -2237,7 +2257,7 @@ export async function runPlanningQuestionnaire(
           "Repository commit changed while the planning Session was running",
         );
       }
-      await verifySourceSnapshot(snapshot);
+      await verifyPlanningSource(snapshot);
       record = createQuestionnaireRecord({
         request,
         session: launched.info,

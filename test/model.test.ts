@@ -252,6 +252,7 @@ describe("Pi model route", () => {
     brief: {
       path: "/workspace/input/brief.md" as const,
       digest: `sha256:${"a".repeat(64)}`,
+      content_digest: `sha256:${"b".repeat(64)}`,
     },
   };
 

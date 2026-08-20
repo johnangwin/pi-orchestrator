@@ -11,6 +11,8 @@ openshell:
   command: /opt/homebrew/bin/openshell
   required_version: "0.0.106"
   workspace: default
+  images:
+    pi: registry.example.test/pi-orchestrator-pi@sha256:<digest>
   shared_workspace:
     enabled: true
     gateway: openshell
@@ -37,15 +39,17 @@ The command fails unless the version is pinned, all selected profiles pass, and 
 
 ## Shared Workspace volume
 
-Version 0.3 uses one plain Docker named volume per Run. The Supervisor creates and inspects it; Project configuration and model input cannot supply raw volume names or mount arguments. Bind-backed volumes and host bind mounts are rejected.
+Version 0.3 uses plain Docker named volumes. The trusted host creates and inspects them; Project configuration and model input cannot supply raw volume names or mount arguments. Bind-backed volumes and host bind mounts are rejected.
 
-The trusted proof command is:
+Build `sandbox/pi/Dockerfile`, publish it to the registry available to the selected local gateway, and configure the exact manifest digest. Floating tags and local build-context paths are rejected for shared-Workspace Sessions.
+
+The trusted volume proof command is:
 
 ```sh
 orchestrator canary --workspace-volume
 ```
 
-It compiles normalized volume-subpath capabilities, checks the observed Linux mount table, exercises one writer and one reader over a shared Workspace, verifies protected and restricted paths, and removes both Sandboxes and the disposable volume. It does not switch ordinary Sessions from the v0.2 source path.
+It compiles normalized volume-subpath capabilities, checks the observed Linux mount table, exercises one writer and one reader over a shared Workspace, verifies protected and restricted paths, and removes both Sandboxes and the disposable volume.
 
 The 2026-08-19 proof passed on OpenShell 0.0.106 and Docker 29.5.2 with hard Landlock enabled. The Project root was native `ext4` and read-only, the Task subpath was writable only to the writer, protected and restricted descendants remained constrained, the reader observed the write, Git and host paths were absent, and cleanup completed. See [OpenShell Workspace-Volume Proof](proofs/openshell-workspace-volume.md).
 
@@ -161,7 +165,7 @@ The test builds the pinned baseline Check image, transfers a real source package
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
-Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. The host instead assembles a temporary derived-image context from the exact Git snapshot and starts the Sandbox under its final policy. See [ADR 0004](decisions/0004-session-snapshot.md).
+Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions start directly under the final policy from the pinned static Pi image, mount a verified named-volume source projection, and upload only their immutable input files. The old derived-image path remains only for phases awaiting migration.
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 
@@ -185,6 +189,12 @@ The Link protocol uses authenticated, identity-bound, 64 KiB JSONL frames. Unit 
 
 ```sh
 PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts
+```
+
+The shared-Workspace variant additionally proves the configured static image, exact Git materialization, restricted masks, read-only mount table, and reconnect path:
+
+```sh
+PI_ORCHESTRATOR_LIVE_WORKSPACE_SESSION=1 npm test -- test/source.live.test.ts
 ```
 
 Durable Mailbox integration remains part of the visible-Session milestone. The Link now carries bounded unsolicited Session and model-turn events, but those events are not authoritative state.

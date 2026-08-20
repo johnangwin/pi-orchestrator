@@ -67,11 +67,16 @@ import {
   type SessionIdentity,
 } from "./session.js";
 import {
-  createSourceSnapshot,
-  verifySourceSnapshot,
-  type SourceSnapshot,
-  type SourceSnapshotManifest,
-} from "./snapshot.js";
+  createPlanningSource,
+  isReadOnlySourceWorkspace,
+  planningSourcePaths,
+  verifyPlanningSource,
+  workspaceProjectionMatches,
+  WorkspaceSessionProjectionSchema,
+  type PlanningSource,
+  type PlanningSourceManifest,
+  type SourceWorkspaceFactory,
+} from "./source.js";
 import type { ProjectStore } from "./state.js";
 import { syncDirectory, writeJsonAtomic } from "./state.js";
 
@@ -269,6 +274,7 @@ const PlanningCritiqueRecordWithoutDigestSchema = z
         id: z.string().uuid(),
         name: z.string().min(1),
         workspace: z.string().min(1),
+        projection: WorkspaceSessionProjectionSchema.optional(),
       })
       .strict(),
     output: PlanningCritiqueSchema,
@@ -354,6 +360,7 @@ const PlanSynthesisRecordWithoutDigestSchema = z
         id: z.string().uuid(),
         name: z.string().min(1),
         workspace: z.string().min(1),
+        projection: WorkspaceSessionProjectionSchema.optional(),
       })
       .strict(),
     output: PlanSynthesisOutputSchema,
@@ -400,6 +407,7 @@ export interface RunPlanSynthesisOptions {
   readonly now?: () => Date;
   readonly nonce?: (stage: PlanningStage, attempt: number) => string;
   readonly launchSession?: PlanningSessionLauncher;
+  readonly workspaceFactory?: SourceWorkspaceFactory;
 }
 
 export interface RunPlanSynthesisResult {
@@ -555,7 +563,7 @@ export function compileCritiqueBrief(input: {
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
   readonly consultations: RunPlanningConsultationsResult;
-  readonly source: SourceSnapshotManifest;
+  readonly source: PlanningSourceManifest;
   readonly contextLimitTokens: number;
 }): CompiledPlanningStageBrief {
   return compileStageBrief({
@@ -586,7 +594,7 @@ export function compileSynthesisBrief(input: {
   readonly decisions: readonly Decision[];
   readonly consultations: RunPlanningConsultationsResult;
   readonly critique: PlanningCritiqueRecord;
-  readonly source: SourceSnapshotManifest;
+  readonly source: PlanningSourceManifest;
   readonly contextLimitTokens: number;
 }): CompiledPlanningStageBrief {
   return compileStageBrief({
@@ -619,7 +627,7 @@ function compileStageBrief(input: {
   readonly decisions: readonly Decision[];
   readonly consultations: RunPlanningConsultationsResult;
   readonly critique?: PlanningCritiqueRecord;
-  readonly source: SourceSnapshotManifest;
+  readonly source: PlanningSourceManifest;
   readonly contextLimitTokens: number;
   readonly outputContract: string;
 }): CompiledPlanningStageBrief {
@@ -1157,7 +1165,7 @@ function requirePreflight(
 function requireSessionBinding(input: {
   readonly info: ReadSessionInfo;
   readonly identity: SessionIdentity;
-  readonly source: SourceSnapshot;
+  readonly source: PlanningSource;
   readonly model: ResolvedModelRoute;
   readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
@@ -1170,6 +1178,7 @@ function requireSessionBinding(input: {
       input.permissionCeiling.permission_ceiling_digest ||
     !sameSessionIdentity(input.info.identity, input.identity) ||
     input.info.sourceDigest !== input.source.manifest.source_digest ||
+    !workspaceProjectionMatches(input.source, input.info.sandbox.projection) ||
     input.info.policyDigest !== input.policyDigest ||
     input.info.briefDigest !== input.brief.digest ||
     canonicalJson(input.info.model) !== canonicalJson(input.model) ||
@@ -1380,6 +1389,9 @@ function createCritiqueRecord(input: {
       id: input.session.sandbox.id,
       name: input.session.sandbox.name,
       workspace: input.session.sandbox.workspace,
+      ...(input.session.sandbox.projection
+        ? { projection: input.session.sandbox.projection }
+        : {}),
     },
     output: input.output,
     response: input.turn.text,
@@ -1476,6 +1488,9 @@ function createSynthesisRecord(input: {
       id: input.session.sandbox.id,
       name: input.session.sandbox.name,
       workspace: input.session.sandbox.workspace,
+      ...(input.session.sandbox.projection
+        ? { projection: input.session.sandbox.projection }
+        : {}),
     },
     output: input.output,
     response: input.turn.text,
@@ -1679,7 +1694,7 @@ async function runTurn(input: {
   readonly options: RunPlanSynthesisOptions;
   readonly stage: PlanningStage;
   readonly client: ReadSessionOpenShell;
-  readonly snapshot: SourceSnapshot;
+  readonly snapshot: PlanningSource;
   readonly request: PlanningStageRequest;
   readonly brief: CompiledPlanningStageBrief;
   readonly model: ResolvedModelRoute;
@@ -1701,7 +1716,9 @@ async function runTurn(input: {
     session = await launch({
       client: input.client,
       identity: input.request.identity,
-      snapshot: input.snapshot,
+      ...(isReadOnlySourceWorkspace(input.snapshot)
+        ? { workspace: input.snapshot }
+        : { snapshot: input.snapshot }),
       permissionCeiling: input.permissionCeiling,
       model: input.model,
       brief: input.brief,
@@ -1784,7 +1801,7 @@ async function runTurn(input: {
         `Repository commit changed while the ${input.stage} Session was running`,
       );
     }
-    await verifySourceSnapshot(input.snapshot);
+    await verifyPlanningSource(input.snapshot);
     result = { session: session.info, turn };
   } catch (error) {
     primaryError = error;
@@ -1805,7 +1822,7 @@ async function executeCritique(input: {
   readonly options: RunPlanSynthesisOptions;
   readonly planning: PlanningStore;
   readonly evidence: SynthesisStore;
-  readonly snapshot: SourceSnapshot;
+  readonly snapshot: PlanningSource;
   readonly questionnaire: PlanningQuestionnaireRecord;
   readonly decisions: readonly PlanningDecisionRecord[];
   readonly consultations: RunPlanningConsultationsResult;
@@ -1833,9 +1850,7 @@ async function executeCritique(input: {
     input.options.local,
     role.definition.name,
   );
-  const sourcePaths = new Set(
-    input.snapshot.manifest.entries.map((entry) => entry.path),
-  );
+  const sourcePaths = planningSourcePaths(input.snapshot.manifest);
   const currentBrief = (
     request: PlanningStageRequest,
     stored: PlanningBriefArtifact,
@@ -2036,7 +2051,7 @@ async function executeSynthesis(input: {
   readonly options: RunPlanSynthesisOptions;
   readonly planning: PlanningStore;
   readonly evidence: SynthesisStore;
-  readonly snapshot: SourceSnapshot;
+  readonly snapshot: PlanningSource;
   readonly questionnaire: PlanningQuestionnaireRecord;
   readonly decisions: readonly PlanningDecisionRecord[];
   readonly consultations: RunPlanningConsultationsResult;
@@ -2062,9 +2077,7 @@ async function executeSynthesis(input: {
     input.options.local,
     role.definition.name,
   );
-  const sourcePaths = new Set(
-    input.snapshot.manifest.entries.map((entry) => entry.path),
-  );
+  const sourcePaths = planningSourcePaths(input.snapshot.manifest);
   const currentBrief = (
     request: PlanningStageRequest,
     stored: PlanningBriefArtifact,
@@ -2320,13 +2333,22 @@ export async function runPlanSynthesis(
       ? { policyDirectory: options.policyDirectory }
       : {}),
     ...(options.temporaryRoot ? { temporaryRoot: options.temporaryRoot } : {}),
+    ...(options.workspaceFactory
+      ? { workspaceFactory: options.workspaceFactory }
+      : {}),
   });
   const baseCommit = await requireCleanPlanningProject(options.project);
-  const snapshot = await createSourceSnapshot({
+  const snapshot = await createPlanningSource({
     projectRoot: options.project.root,
+    projectId: options.project.config.project.id,
+    workspaceId: options.planningId,
     commit: baseCommit,
-    paths: ["."],
+    local: options.local,
+    restrictedPaths: options.project.config.restricted_paths,
     ...(options.temporaryRoot ? { temporaryRoot: options.temporaryRoot } : {}),
+    ...(options.workspaceFactory
+      ? { workspaceFactory: options.workspaceFactory }
+      : {}),
   });
   try {
     const planning = new PlanningStore(options.store);

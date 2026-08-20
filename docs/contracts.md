@@ -165,7 +165,7 @@ openshell:
 
   shared_workspace:
     enabled: true
-    gateway: local
+    gateway: openshell-local
     driver: docker
     driver_version: "29.5.2"
     docker_command: docker

@@ -55,11 +55,16 @@ import {
   type SessionIdentity,
 } from "./session.js";
 import {
-  createSourceSnapshot,
-  verifySourceSnapshot,
-  type SourceSnapshot,
-  type SourceSnapshotManifest,
-} from "./snapshot.js";
+  createPlanningSource,
+  isReadOnlySourceWorkspace,
+  planningSourcePaths,
+  verifyPlanningSource,
+  workspaceProjectionMatches,
+  WorkspaceSessionProjectionSchema,
+  type PlanningSource,
+  type PlanningSourceManifest,
+  type SourceWorkspaceFactory,
+} from "./source.js";
 import type { ProjectStore } from "./state.js";
 import { writeJsonAtomic } from "./state.js";
 
@@ -227,6 +232,7 @@ const ConsultationRecordWithoutDigestSchema = z
         id: z.string().uuid(),
         name: z.string().min(1),
         workspace: z.string().min(1),
+        projection: WorkspaceSessionProjectionSchema.optional(),
       })
       .strict(),
     output: PlanningConsultationOutputSchema,
@@ -271,6 +277,7 @@ export interface RunPlanningConsultationsOptions {
   readonly now?: () => Date;
   readonly nonce?: (role: PlanningConsultationRole, attempt: number) => string;
   readonly launchSession?: PlanningSessionLauncher;
+  readonly workspaceFactory?: SourceWorkspaceFactory;
 }
 
 export interface PlanningConsultationResult {
@@ -369,7 +376,7 @@ export function compileConsultationBrief(input: {
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
-  readonly source: SourceSnapshotManifest;
+  readonly source: PlanningSourceManifest;
   readonly contextLimitTokens: number;
 }): CompiledConsultationBrief {
   const budgetTokens = Math.max(
@@ -754,7 +761,7 @@ function requirePreflight(
 function requireSessionBinding(input: {
   readonly info: ReadSessionInfo;
   readonly identity: SessionIdentity;
-  readonly source: SourceSnapshot;
+  readonly source: PlanningSource;
   readonly model: ResolvedModelRoute;
   readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
@@ -766,6 +773,7 @@ function requireSessionBinding(input: {
       input.permissionCeiling.permission_ceiling_digest ||
     !sameSessionIdentity(input.info.identity, input.identity) ||
     input.info.sourceDigest !== input.source.manifest.source_digest ||
+    !workspaceProjectionMatches(input.source, input.info.sandbox.projection) ||
     input.info.policyDigest !== input.policyDigest ||
     input.info.briefDigest !== input.brief.digest ||
     canonicalJson(input.info.model) !== canonicalJson(input.model) ||
@@ -916,6 +924,9 @@ function createRecord(input: {
       id: input.session.sandbox.id,
       name: input.session.sandbox.name,
       workspace: input.session.sandbox.workspace,
+      ...(input.session.sandbox.projection
+        ? { projection: input.session.sandbox.projection }
+        : {}),
     },
     output: input.output,
     response: input.turn.text,
@@ -992,7 +1003,7 @@ async function executeRole(input: {
   readonly options: RunPlanningConsultationsOptions;
   readonly planning: PlanningStore;
   readonly evidence: ConsultationStore;
-  readonly snapshot: SourceSnapshot;
+  readonly snapshot: PlanningSource;
   readonly questionnaire: PlanningQuestionnaireRecord;
   readonly decisionRecords: readonly PlanningDecisionRecord[];
   readonly state: PlanningState;
@@ -1074,7 +1085,7 @@ async function executeRole(input: {
       state,
       prepared.request,
       record,
-      new Set(input.snapshot.manifest.entries.map((entry) => entry.path)),
+      planningSourcePaths(input.snapshot.manifest),
     );
     await input.evidence.requireReport(record);
     return {
@@ -1109,7 +1120,7 @@ async function executeRole(input: {
         state,
         prepared.request,
         recovered,
-        new Set(input.snapshot.manifest.entries.map((entry) => entry.path)),
+        planningSourcePaths(input.snapshot.manifest),
       );
       await input.evidence.requireReport(recovered);
       state = await input.planning.publishConsultation({
@@ -1255,7 +1266,9 @@ async function executeRole(input: {
     session = await launch({
       client,
       identity: request.identity,
-      snapshot: input.snapshot,
+      ...(isReadOnlySourceWorkspace(input.snapshot)
+        ? { workspace: input.snapshot }
+        : { snapshot: input.snapshot }),
       permissionCeiling,
       model,
       brief,
@@ -1331,7 +1344,7 @@ async function executeRole(input: {
     const output = parseConsultationOutput(
       input.role,
       turn.text,
-      new Set(input.snapshot.manifest.entries.map((entry) => entry.path)),
+      planningSourcePaths(input.snapshot.manifest),
     );
     const latestCommit = await requireCleanPlanningProject(
       input.options.project,
@@ -1342,7 +1355,7 @@ async function executeRole(input: {
         "Repository commit changed while a consultation Session was running",
       );
     }
-    await verifySourceSnapshot(input.snapshot);
+    await verifyPlanningSource(input.snapshot);
     record = createRecord({
       request,
       session: session.info,
@@ -1382,11 +1395,17 @@ export async function runPlanningConsultations(
   options: RunPlanningConsultationsOptions,
 ): Promise<RunPlanningConsultationsResult> {
   const baseCommit = await requireCleanPlanningProject(options.project);
-  const snapshot = await createSourceSnapshot({
+  const snapshot = await createPlanningSource({
     projectRoot: options.project.root,
+    projectId: options.project.config.project.id,
+    workspaceId: options.planningId,
     commit: baseCommit,
-    paths: ["."],
+    local: options.local,
+    restrictedPaths: options.project.config.restricted_paths,
     ...(options.temporaryRoot ? { temporaryRoot: options.temporaryRoot } : {}),
+    ...(options.workspaceFactory
+      ? { workspaceFactory: options.workspaceFactory }
+      : {}),
   });
   try {
     const planning = new PlanningStore(options.store);

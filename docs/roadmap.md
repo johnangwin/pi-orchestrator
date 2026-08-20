@@ -10,7 +10,7 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 5 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime. Every Session carries both an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Version-two Tasks now declare literal write roots, and complete deterministic Workspace manifests bind all projected content independently from scrubbed Git status. Filesystem execution remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
+Phases 0 through 7 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Complete deterministic Workspace manifests, Write Leases, Change Sets, and Candidates now bind mutable execution. Read-only planning Agents run from a digest-pinned static image against verified read-only Workspace projections without source archives or derived images. Implementer, Check, and Review execution remains on the retained v0.2 source-transfer path until its named replacement phase.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
@@ -20,9 +20,9 @@ Phases 0 through 5 are complete. The original host-bind design failed under hard
 |     3 | Enforce explicit Role permissions                 | Complete |
 |     4 | Add policy-bound Model Profiles                   | Complete |
 |     5 | Add complete Workspace manifests                  | Complete |
-|     6 | Add Write Leases, Change Sets, and Candidates     | Next     |
-|     7 | Run read-only Agents from the shared Workspace    | Pending  |
-|     8 | Run Implementers under Write Leases               | Pending  |
+|     6 | Add Write Leases, Change Sets, and Candidates     | Complete |
+|     7 | Run read-only Agents from the shared Workspace    | Complete |
+|     8 | Run Implementers under Write Leases               | Next     |
 |     9 | Run authoritative Checks against Candidates       | Pending  |
 |    10 | Run fresh Reviews against Candidates              | Pending  |
 |    11 | Commit exact Candidates                           | Pending  |
@@ -97,6 +97,21 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - rejected Git metadata, invalid paths, unsafe symlink targets, special files, unexpected hard links, changing reads, and entry or byte-limit violations;
 - added separately scrubbed NUL-delimited Git status and the version-two `workspace-diff` digest domain;
 - decoupled source-scope validation from Patch Artifact types and covered additions, deletions, modes, symlinks, binaries, protected paths, and restricted paths.
+
+## Phase 6 outcome
+
+- added immutable Write Lease, Change Set, and Candidate stores with digest-bound Run state;
+- enforced one active writer, exact Task write roots, ordered mutation attribution, bounded revocation, and stable Candidate freeze;
+- made unexplained, protected, restricted, out-of-scope, and post-freeze drift block the Run and stale Gate evidence;
+- made interrupted publication and recovery idempotent from persisted provenance.
+
+## Phase 7 outcome
+
+- replaced source-derived images for planning Agents with one digest-pinned static Pi image and read-only named-volume projection;
+- materialized exact Git objects through a pinned model-free helper with no archive, checkout metadata, filters, hooks, or model authority;
+- masked restricted paths, inspected the actual native mount table, and uploaded only digest-bound Session inputs;
+- migrated questionnaire planning, Architecture and Quant consultations, independent criticism, and Lead synthesis;
+- made durable recovery re-inspect the named volume, rebuild policy masks, verify complete contents and gateway provenance, and reject mount drift.
 
 ## Later proof gates
 

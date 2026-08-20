@@ -4,6 +4,7 @@ import type { Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import { ResolvedModelRouteSchema } from "./model.js";
 import { OpenShellSandboxNameSchema } from "./openshell.js";
+import { WorkspaceSessionProjectionSchema } from "./source.js";
 
 const TimestampSchema = z.string().datetime({ offset: true });
 const DigestSchema = z
@@ -70,6 +71,7 @@ export const SessionSandboxSchema = z
     id: z.string().uuid(),
     name: OpenShellSandboxNameSchema,
     workspace: z.string().min(1),
+    projection: WorkspaceSessionProjectionSchema.optional(),
   })
   .strict();
 export type SessionSandbox = z.infer<typeof SessionSandboxSchema>;

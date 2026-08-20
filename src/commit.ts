@@ -43,6 +43,10 @@ import {
   type PlanTask,
 } from "./plan.js";
 import { loadSandboxPolicy } from "./policy.js";
+import {
+  projectPermissionPolicyDigest,
+  roleHasReadSource,
+} from "./permission.js";
 import { gitHead, loadProject, type Project } from "./project.js";
 import { ReviewStore, type ReviewRecord } from "./review.js";
 import {
@@ -1533,6 +1537,9 @@ function requireRunBinding(options: {
   readonly projectRecord: ProjectRecord;
   readonly currentHead: string;
 }): void {
+  const permissionPolicyDigest = projectPermissionPolicyDigest(
+    options.project.roles,
+  );
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -1540,6 +1547,12 @@ function requireRunBinding(options: {
     throw new OrchestratorError(
       "run_project_conflict",
       `Run '${options.run.id}' does not belong to the loaded Project`,
+    );
+  }
+  if (options.run.permission_policy_digest !== permissionPolicyDigest) {
+    throw new OrchestratorError(
+      "run_permission_policy_stale",
+      `Run '${options.run.id}' was approved under another Role permission policy`,
     );
   }
   if (
@@ -1562,6 +1575,7 @@ function requireRunBinding(options: {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest as Digest,
+    permissionPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1803,8 +1817,8 @@ async function collectReviews(options: {
   const role = options.project.roles.get("reviewer");
   if (
     !role ||
-    role.definition.access !== "read" ||
-    role.definition.sandbox !== "read" ||
+    !roleHasReadSource(role.definition) ||
+    role.definition.permissions.write_lease !== "never" ||
     role.definition.lifetime !== "review"
   ) {
     throw new OrchestratorError(

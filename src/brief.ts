@@ -6,6 +6,7 @@ import {
 } from "./config.js";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import type { LoadedPlan, PlanTask, SourceAnchor } from "./plan.js";
+import type { PermissionCeiling } from "./permission.js";
 import type { LoadedSkill } from "./project.js";
 import type { Report } from "./report.js";
 import type { LoadedRole } from "./role.js";
@@ -32,6 +33,7 @@ export interface BriefInput {
   readonly identity: BriefIdentity;
   readonly agents: string;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly task: PlanTask;
   readonly plan: Pick<LoadedPlan, "id" | "revision" | "digest" | "markdown">;
   readonly decisions: readonly Decision[];
@@ -67,6 +69,7 @@ export interface BriefReviewContext {
 export interface BriefBinding {
   readonly planDigest: Digest;
   readonly roleDigest: Digest;
+  readonly permissionCeilingDigest: Digest;
   readonly taskDigest: Digest;
   readonly decisionsDigest: Digest;
   readonly sourceDigests: Readonly<Record<string, Digest>>;
@@ -109,6 +112,18 @@ export function compileBrief(input: BriefInput): CompiledBrief {
     section(
       "Role",
       `${canonicalJson(input.role.definition)}\n\n${input.role.body}`,
+    ),
+    section(
+      "Permission Ceiling",
+      `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson(
+        {
+          source: input.permissionCeiling.source,
+          write_lease: input.permissionCeiling.write_lease,
+          pi_tools: input.permissionCeiling.pi_tools,
+          actions: input.permissionCeiling.actions,
+          assignment: input.permissionCeiling.assignment,
+        },
+      )}`,
     ),
     section("Task", canonicalJson(input.task)),
     section(
@@ -180,6 +195,7 @@ export function compileBrief(input: BriefInput): CompiledBrief {
   const binding: BriefBinding = {
     planDigest: input.plan.digest,
     roleDigest: input.role.digest,
+    permissionCeilingDigest: input.permissionCeiling.permission_ceiling_digest,
     taskDigest: digestParts("pi-orchestrator/task/v1", [
       [input.task.id, canonicalJson(input.task)],
     ]),
@@ -206,7 +222,10 @@ export function compileBrief(input: BriefInput): CompiledBrief {
 
   return {
     content,
-    digest: digestParts("pi-orchestrator/brief/v1", [["brief.md", content]]),
+    digest: digestParts("pi-orchestrator/brief/v2", [
+      ["content", content],
+      ["binding", canonicalJson(binding)],
+    ]),
     estimatedTokens: estimateTokens(content),
     budgetTokens,
     omissions,
@@ -222,6 +241,9 @@ export function briefStaleReasons(
   if (previous.planDigest !== current.planDigest)
     reasons.push("Plan digest changed");
   if (previous.roleDigest !== current.roleDigest) reasons.push("Role changed");
+  if (previous.permissionCeilingDigest !== current.permissionCeilingDigest) {
+    reasons.push("Permission ceiling changed");
+  }
   if (previous.taskDigest !== current.taskDigest) reasons.push("Task changed");
   if (previous.decisionsDigest !== current.decisionsDigest)
     reasons.push("Decisions changed");

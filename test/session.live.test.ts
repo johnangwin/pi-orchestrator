@@ -11,6 +11,7 @@ import {
   type ReadSession,
 } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
+import { fixturePermissionCeiling } from "./fixture.js";
 
 const live = process.env.PI_ORCHESTRATOR_LIVE_OPENSHELL === "1";
 
@@ -38,6 +39,7 @@ const live = process.env.PI_ORCHESTRATOR_LIVE_OPENSHELL === "1";
       try {
         session = await startReadSession({
           client,
+          permissionCeiling: fixturePermissionCeiling(),
           identity: {
             run: "live-probe",
             agent: "scout",

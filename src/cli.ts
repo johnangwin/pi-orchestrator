@@ -30,6 +30,10 @@ import {
 } from "./local.js";
 import { OpenShellClient } from "./openshell.js";
 import {
+  formatProjectPermissionPolicy,
+  projectPermissionPolicyDigest,
+} from "./permission.js";
+import {
   answerPlanningQuestionnaire,
   PlanningStore,
   runPlanningQuestionnaire,
@@ -938,14 +942,17 @@ program
   .action(async (value: string, options: ApproveOptions) => {
     const { project, plan } = await validatedPlan(value, options);
     const baseCommit = await gitHead(project.root);
+    const permissionPolicyDigest = projectPermissionPolicyDigest(project.roles);
+    const permissionPolicy = formatProjectPermissionPolicy(project.roles);
     await confirmation(
-      `Approve Plan ${plan.id} revision ${plan.revision} at ${baseCommit}\nDigest ${plan.digest}?`,
+      `Approve Plan ${plan.id} revision ${plan.revision} at ${baseCommit}\nPlan digest ${plan.digest}\nPermission policy ${permissionPolicyDigest}\n\nRole permissions:\n${permissionPolicy}?`,
       options.yes,
     );
 
     const approval = createApproval({
       plan,
       baseCommit,
+      permissionPolicyDigest,
       approvedBy: os.userInfo().username,
     });
     const store = await ProjectStore.open({
@@ -1494,6 +1501,7 @@ program
   .action(async (options: CommonOptions & { home?: string }) => {
     const project = await loadProject(options.project ?? process.cwd());
     const baseCommit = await gitHead(project.root);
+    const permissionPolicyDigest = projectPermissionPolicyDigest(project.roles);
     const store = await ProjectStore.open({
       home: options.home ? options.home : defaultOrchestratorHome(),
       projectId: project.config.project.id,
@@ -1515,6 +1523,7 @@ program
                 planId: plan.id,
                 planRevision: plan.revision,
                 planDigest: plan.digest,
+                permissionPolicyDigest,
                 baseCommit,
               }),
             };

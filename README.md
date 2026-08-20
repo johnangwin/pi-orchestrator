@@ -112,6 +112,7 @@ The generated draft remains outside the Project until a human reviews and places
 
 - No Session transcript is a required dependency of another Session.
 - Only the host Orchestrator performs authoritative state transitions.
+- Every Agent Session receives a digest-bound Role permission ceiling; omitted and unknown authority is denied.
 - No model-driven Pi process runs with host-user authority.
 - Sandboxes receive allowlisted source and environment data, never host state or ambient credentials.
 - Checks and Reviews are bound to exact Plan, source, and diff digests.

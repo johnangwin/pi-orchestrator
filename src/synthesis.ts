@@ -31,6 +31,11 @@ import {
 } from "./planning.js";
 import { loadSandboxPolicy } from "./policy.js";
 import {
+  resolveRolePermissionCeiling,
+  roleHasReadSource,
+  type PermissionCeiling,
+} from "./permission.js";
+import {
   PlanTaskSchema,
   SourceAnchorSchema,
   TasksFileSchema,
@@ -201,6 +206,7 @@ const PlanningStageRequestWithoutDigestSchema = z
     source_digest: DigestSchema,
     source_entries: z.number().int().positive(),
     role: z.object({ name: IdentifierSchema, digest: DigestSchema }).strict(),
+    permission_ceiling_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
     policy_digest: DigestSchema,
     brief_digest: DigestSchema,
@@ -254,6 +260,7 @@ const PlanningCritiqueRecordWithoutDigestSchema = z
     base_commit: GitCommitSchema,
     source_digest: DigestSchema,
     role_digest: DigestSchema,
+    permission_ceiling_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
     policy_digest: DigestSchema,
     brief_digest: DigestSchema,
@@ -338,6 +345,7 @@ const PlanSynthesisRecordWithoutDigestSchema = z
     base_commit: GitCommitSchema,
     source_digest: DigestSchema,
     role_digest: DigestSchema,
+    permission_ceiling_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
     policy_digest: DigestSchema,
     brief_digest: DigestSchema,
@@ -540,6 +548,7 @@ export function compileCritiqueBrief(input: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -552,6 +561,7 @@ export function compileCritiqueBrief(input: {
     identity: input.identity,
     project: input.project,
     role: input.role,
+    permissionCeiling: input.permissionCeiling,
     state: input.state,
     questionnaire: input.questionnaire,
     decisions: input.decisions,
@@ -566,6 +576,7 @@ export function compileSynthesisBrief(input: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -579,6 +590,7 @@ export function compileSynthesisBrief(input: {
     identity: input.identity,
     project: input.project,
     role: input.role,
+    permissionCeiling: input.permissionCeiling,
     state: input.state,
     questionnaire: input.questionnaire,
     decisions: input.decisions,
@@ -595,6 +607,7 @@ function compileStageBrief(input: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -619,6 +632,10 @@ function compileStageBrief(input: {
     section(
       "Role",
       `${canonicalJson(input.role.definition)}\n\n${input.role.body}`,
+    ),
+    section(
+      "Permission Ceiling",
+      `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson({ source: input.permissionCeiling.source, write_lease: input.permissionCeiling.write_lease, pi_tools: input.permissionCeiling.pi_tools, actions: input.permissionCeiling.actions, assignment: input.permissionCeiling.assignment })}`,
     ),
     section("Goal", input.state.goal),
     section("Repository Questionnaire", canonicalJson(input.questionnaire)),
@@ -1096,10 +1113,13 @@ function requireRole(project: Project, stage: PlanningStage): LoadedRole {
       `${stage} requires the '${name}' Role`,
     );
   }
-  if (role.definition.access !== "read" || role.definition.sandbox !== "read") {
+  if (
+    !roleHasReadSource(role.definition) ||
+    role.definition.permissions.write_lease !== "never"
+  ) {
     throw new OrchestratorError(
       "invalid_planning_stage_role",
-      `The '${name}' Role must use read access and the read Sandbox profile`,
+      `The '${name}' Role must explicitly permit read-only source access`,
     );
   }
   return role;
@@ -1129,12 +1149,15 @@ function requireSessionBinding(input: {
   readonly identity: SessionIdentity;
   readonly source: SourceSnapshot;
   readonly model: ResolvedModelRoute;
+  readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningStageBrief;
   readonly stage: PlanningStage;
 }): void {
   if (
     input.info.profile !== "read" ||
+    input.info.permissionCeiling.permission_ceiling_digest !==
+      input.permissionCeiling.permission_ceiling_digest ||
     !sameSessionIdentity(input.info.identity, input.identity) ||
     input.info.sourceDigest !== input.source.manifest.source_digest ||
     input.info.policyDigest !== input.policyDigest ||
@@ -1160,6 +1183,7 @@ function createStageRequest(input: {
   readonly attempt: number;
   readonly identity: SessionIdentity;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly model: ResolvedModelRoute;
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningStageBrief;
@@ -1181,6 +1205,8 @@ function createStageRequest(input: {
     source_digest: input.state.source_digest,
     source_entries: input.state.source_entries,
     role: { name: input.role.definition.name, digest: input.role.digest },
+    permission_ceiling_digest:
+      input.permissionCeiling.permission_ceiling_digest,
     model: input.model,
     policy_digest: input.policyDigest,
     brief_digest: input.brief.digest,
@@ -1201,6 +1227,7 @@ function requireCurrentRequest(input: {
   readonly consultations: RunPlanningConsultationsResult;
   readonly critique?: PlanningCritiqueRecord;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly model: ResolvedModelRoute;
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningStageBrief;
@@ -1219,6 +1246,8 @@ function requireCurrentRequest(input: {
     input.request.source_entries !== input.state.source_entries ||
     input.request.role.name !== input.role.definition.name ||
     input.request.role.digest !== input.role.digest ||
+    input.request.permission_ceiling_digest !==
+      input.permissionCeiling.permission_ceiling_digest ||
     canonicalJson(input.request.model) !== canonicalJson(input.model) ||
     input.request.policy_digest !== input.policyDigest ||
     input.request.brief_digest !== input.brief.digest ||
@@ -1314,6 +1343,7 @@ function createCritiqueRecord(input: {
     base_commit: input.request.base_commit,
     source_digest: input.request.source_digest,
     role_digest: input.request.role.digest,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
     model: input.request.model,
     policy_digest: input.request.policy_digest,
     brief_digest: input.request.brief_digest,
@@ -1407,6 +1437,7 @@ function createSynthesisRecord(input: {
     base_commit: input.request.base_commit,
     source_digest: input.request.source_digest,
     role_digest: input.request.role.digest,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
     model: input.request.model,
     policy_digest: input.request.policy_digest,
     brief_digest: input.request.brief_digest,
@@ -1459,6 +1490,7 @@ function requireCritiqueRecord(
     record.source_digest !== state.source_digest ||
     !sameSessionIdentity(record.identity, request.identity) ||
     record.role_digest !== request.role.digest ||
+    record.permission_ceiling_digest !== request.permission_ceiling_digest ||
     canonicalJson(record.model) !== canonicalJson(request.model) ||
     record.policy_digest !== request.policy_digest ||
     record.brief_digest !== request.brief_digest ||
@@ -1587,6 +1619,7 @@ function requireSynthesisRecord(
     record.source_digest !== state.source_digest ||
     !sameSessionIdentity(record.identity, request.identity) ||
     record.role_digest !== request.role.digest ||
+    record.permission_ceiling_digest !== request.permission_ceiling_digest ||
     canonicalJson(record.model) !== canonicalJson(request.model) ||
     record.policy_digest !== request.policy_digest ||
     record.brief_digest !== request.brief_digest ||
@@ -1619,6 +1652,7 @@ async function runTurn(input: {
   readonly request: PlanningStageRequest;
   readonly brief: CompiledPlanningStageBrief;
   readonly model: ResolvedModelRoute;
+  readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
   readonly state: PlanningState;
   readonly references: readonly string[];
@@ -1637,6 +1671,7 @@ async function runTurn(input: {
       client: input.client,
       identity: input.request.identity,
       snapshot: input.snapshot,
+      permissionCeiling: input.permissionCeiling,
       model: input.model,
       brief: input.brief,
       context: input.options.project.config.context,
@@ -1658,6 +1693,7 @@ async function runTurn(input: {
       identity: input.request.identity,
       source: input.snapshot,
       model: input.model,
+      permissionCeiling: input.permissionCeiling,
       policyDigest: input.policyDigest,
       brief: input.brief,
       stage: input.stage,
@@ -1752,6 +1788,11 @@ async function executeCritique(input: {
 }> {
   let state = input.state;
   const role = requireRole(input.options.project, "critique");
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "review" },
+    localPolicy: input.options.local.permissions,
+  });
   const model = resolveRoleModelRoute(
     input.options.project.config,
     input.options.local,
@@ -1769,6 +1810,7 @@ async function executeCritique(input: {
       identity: request.identity,
       project: input.options.project,
       role,
+      permissionCeiling,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -1789,6 +1831,7 @@ async function executeCritique(input: {
       decisions: input.decisions,
       consultations: input.consultations,
       role,
+      permissionCeiling,
       model,
       policyDigest: input.policyDigest,
       brief,
@@ -1886,6 +1929,7 @@ async function executeCritique(input: {
       identity,
       project: input.options.project,
       role,
+      permissionCeiling,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -1902,6 +1946,7 @@ async function executeCritique(input: {
       attempt,
       identity,
       role,
+      permissionCeiling,
       model,
       policyDigest: input.policyDigest,
       brief,
@@ -1924,6 +1969,7 @@ async function executeCritique(input: {
     request,
     brief,
     model,
+    permissionCeiling,
     policyDigest: input.policyDigest,
     state,
     references: input.questionnaire.questionnaire.repository.anchors.map(
@@ -1970,6 +2016,11 @@ async function executeSynthesis(input: {
 }> {
   let state = input.state;
   const role = requireRole(input.options.project, "synthesis");
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "run" },
+    localPolicy: input.options.local.permissions,
+  });
   const model = resolveRoleModelRoute(
     input.options.project.config,
     input.options.local,
@@ -1987,6 +2038,7 @@ async function executeSynthesis(input: {
       identity: request.identity,
       project: input.options.project,
       role,
+      permissionCeiling,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -2009,6 +2061,7 @@ async function executeSynthesis(input: {
       consultations: input.consultations,
       critique: input.critique,
       role,
+      permissionCeiling,
       model,
       policyDigest: input.policyDigest,
       brief,
@@ -2131,6 +2184,7 @@ async function executeSynthesis(input: {
       identity,
       project: input.options.project,
       role,
+      permissionCeiling,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -2149,6 +2203,7 @@ async function executeSynthesis(input: {
       attempt,
       identity,
       role,
+      permissionCeiling,
       model,
       policyDigest: input.policyDigest,
       brief,
@@ -2171,6 +2226,7 @@ async function executeSynthesis(input: {
     request,
     brief,
     model,
+    permissionCeiling,
     policyDigest: input.policyDigest,
     state,
     references: input.questionnaire.questionnaire.repository.anchors.map(

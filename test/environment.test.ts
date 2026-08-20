@@ -74,11 +74,16 @@ describe("Pi child environment", () => {
     });
   });
 
-  it("enables mutating Pi tools only for write-profile Sessions", () => {
-    expect(sessionTools("read")).toBe("read,grep,find,ls");
-    expect(sessionTools("write")).toBe("read,write,edit,bash,grep,find,ls");
-    expect(() => sessionTools("check" as never)).toThrow(
-      "Unsupported Session profile",
+  it("derives Pi tools from the permission ceiling and active workspace grant", () => {
+    const permissions = {
+      pi_tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+    };
+    expect(sessionTools(permissions)).toBe("read,bash,grep,find,ls");
+    expect(sessionTools(permissions, true)).toBe(
+      "read,write,edit,bash,grep,find,ls",
+    );
+    expect(() => sessionTools({ pi_tools: ["commit"] })).toThrow(
+      "Invalid Session Pi tool permissions",
     );
   });
 });

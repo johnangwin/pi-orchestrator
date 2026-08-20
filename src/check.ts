@@ -53,6 +53,7 @@ import {
 } from "./plan.js";
 import type { LoadedSandboxPolicy } from "./policy.js";
 import { loadSandboxPolicy } from "./policy.js";
+import { projectPermissionPolicyDigest } from "./permission.js";
 import type { Project } from "./project.js";
 import { createSourceSnapshot } from "./snapshot.js";
 import {
@@ -1210,6 +1211,9 @@ function requireRunBinding(options: {
   readonly plan: LoadedPlan;
   readonly projectRecord: ProjectRecord;
 }): void {
+  const permissionPolicyDigest = projectPermissionPolicyDigest(
+    options.project.roles,
+  );
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -1229,10 +1233,17 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' is not bound to the loaded Plan revision`,
     );
   }
+  if (options.run.permission_policy_digest !== permissionPolicyDigest) {
+    throw new OrchestratorError(
+      "run_permission_policy_stale",
+      `Run '${options.run.id}' was approved under another Role permission policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest,
+    permissionPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1859,10 +1870,14 @@ export async function runCheck(
       patch: patch.value,
     });
     const latestProject = await options.store.read();
+    const permissionPolicyDigest = projectPermissionPolicyDigest(
+      options.project.roles,
+    );
     requireFreshApproval(latestProject.approvals[options.plan.id], {
       planId: run.plan_id,
       planRevision: run.plan_revision,
       planDigest: DigestSchema.parse(run.plan_digest) as Digest,
+      permissionPolicyDigest,
       baseCommit: run.base_commit,
     });
     await requireCurrentCheckInputs({

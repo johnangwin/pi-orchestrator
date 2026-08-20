@@ -24,6 +24,7 @@ import {
   type VerifiedPatch,
 } from "./patch.js";
 import type { LoadedPlan, PlanTask } from "./plan.js";
+import { projectPermissionPolicyDigest } from "./permission.js";
 import type { Project } from "./project.js";
 import { validatePatchPaths } from "./scope.js";
 import { createSourceSnapshot } from "./snapshot.js";
@@ -391,6 +392,9 @@ function requireRunBinding(options: {
   readonly plan: LoadedPlan;
   readonly projectRecord: ProjectRecord;
 }): void {
+  const permissionPolicyDigest = projectPermissionPolicyDigest(
+    options.project.roles,
+  );
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -410,10 +414,17 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' is not bound to the loaded Plan revision`,
     );
   }
+  if (options.run.permission_policy_digest !== permissionPolicyDigest) {
+    throw new OrchestratorError(
+      "run_permission_policy_stale",
+      `Run '${options.run.id}' was approved under another Role permission policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest,
+    permissionPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }

@@ -34,6 +34,7 @@ const StartSessionInputSchema = z
   .object({
     agent: IdentifierSchema,
     session: IdentifierSchema,
+    permission_ceiling_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
 
@@ -42,6 +43,7 @@ const ReplaceSessionInputSchema = z
     expected: SessionIdentitySchema,
     session: IdentifierSchema,
     reason: z.string().trim().min(1).max(2_000),
+    permission_ceiling_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
 
@@ -197,15 +199,30 @@ export class AgentRegistry {
   async start(input: {
     readonly agent: string;
     readonly session: string;
+    readonly permissionCeilingDigest: string;
   }): Promise<SessionRecord> {
-    const parsed = StartSessionInputSchema.parse(input);
+    const parsed = StartSessionInputSchema.parse({
+      agent: input.agent,
+      session: input.session,
+      permission_ceiling_digest: input.permissionCeilingDigest,
+    });
     let result: SessionRecord | undefined;
     await this.store.updateRun(this.runId, (state) => {
       const agent = requireAgent(state, parsed.agent);
       if (agent.session !== null) {
         if (agent.session === parsed.session) {
-          result = state.sessions[parsed.session];
-          return state;
+          const existing = state.sessions[parsed.session];
+          if (
+            existing?.permission_ceiling_digest ===
+            parsed.permission_ceiling_digest
+          ) {
+            result = existing;
+            return state;
+          }
+          throw new OrchestratorError(
+            "session_permission_conflict",
+            `Session '${parsed.session}' was started under another permission ceiling`,
+          );
         }
         throw new OrchestratorError(
           "session_already_started",
@@ -229,6 +246,7 @@ export class AgentRegistry {
       result = SessionRecordSchema.parse({
         identity,
         model: agent.model,
+        permission_ceiling_digest: parsed.permission_ceiling_digest,
         status: "starting",
         sandbox: null,
         replaces: null,
@@ -258,8 +276,14 @@ export class AgentRegistry {
     readonly expected: SessionIdentity;
     readonly session: string;
     readonly reason: string;
+    readonly permissionCeilingDigest: string;
   }): Promise<SessionRecord> {
-    const parsed = ReplaceSessionInputSchema.parse(input);
+    const parsed = ReplaceSessionInputSchema.parse({
+      expected: input.expected,
+      session: input.session,
+      reason: input.reason,
+      permission_ceiling_digest: input.permissionCeilingDigest,
+    });
     let result: SessionRecord | undefined;
     await this.store.updateRun(this.runId, (state) => {
       if (parsed.expected.run !== state.id) {
@@ -275,7 +299,9 @@ export class AgentRegistry {
         if (
           existing?.identity.generation === parsed.expected.generation + 1 &&
           existing.replaces?.session === parsed.expected.session &&
-          existing.replaces.reason === parsed.reason
+          existing.replaces.reason === parsed.reason &&
+          existing.permission_ceiling_digest ===
+            parsed.permission_ceiling_digest
         ) {
           result = existing;
           return state;
@@ -320,6 +346,7 @@ export class AgentRegistry {
       result = SessionRecordSchema.parse({
         identity,
         model: agent.model,
+        permission_ceiling_digest: parsed.permission_ceiling_digest,
         status: "starting",
         sandbox: null,
         replaces: {

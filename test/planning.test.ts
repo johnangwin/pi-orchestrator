@@ -164,6 +164,7 @@ function launcher(
     return {
       info: {
         sandbox,
+        permissionCeiling: options.permissionCeiling,
         identity: options.identity,
         sourceDigest: options.snapshot.manifest.source_digest,
         profile: "read",

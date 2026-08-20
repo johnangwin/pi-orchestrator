@@ -6,6 +6,7 @@ import {
   modelArguments,
   registerModelRoute,
 } from "../sandbox/pi/client/model.mjs";
+import { fixturePermissionCeiling } from "./fixture.js";
 
 const local = parseLocalConfig(`version: 1
 openshell:
@@ -121,6 +122,7 @@ describe("Pi model route", () => {
     listen: { host: "127.0.0.1" as const, port: 41727 },
     client_version: "0.2.0",
     pi_version: "0.84.2",
+    permission_ceiling: fixturePermissionCeiling(),
     model: {
       alias: "code" as const,
       pi_model: "local-code",

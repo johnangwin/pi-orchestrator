@@ -58,17 +58,34 @@ Bind conclusions to the supplied Plan, source, diff, Check, image, and policy di
 
 const roles = {
   lead: `---
+version: 2
 name: lead
 description: Maintain Run-level reasoning and synthesize durable decisions.
-model: plan
 skills:
   - architecture
-access: read
 lifetime: run
-sandbox: read
 needs:
   - plan
   - decisions
+permissions:
+  source: read
+  write_lease: never
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+  actions:
+    - ask
+    - message
+    - consult
+    - report
+    - handoff
+    - block
+    - propose_plan
+    - propose_decision
+    - coordinate
 inference: remote
 ---
 
@@ -77,17 +94,30 @@ inference: remote
 Coordinate through Plans, Decisions, Reports, and targeted consultations. Do not treat Session memory as authoritative state.
 `,
   architect: `---
+version: 2
 name: architect
 description: Design repository-grounded boundaries and distinguish current architecture from intended direction.
-model: plan
 skills:
   - architecture
-access: read
 lifetime: design
-sandbox: read
 needs:
   - decisions
   - scope
+permissions:
+  source: read
+  write_lease: never
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+  actions:
+    - message
+    - consult
+    - report
+    - handoff
+    - block
 inference: remote
 ---
 
@@ -96,18 +126,31 @@ inference: remote
 Produce conservative and cleaner target alternatives from exact repository evidence. Recommend the smallest coherent direction that preserves accepted Decisions and state what must not be implemented prematurely.
 `,
   quant: `---
+version: 2
 name: quant
 description: Analyze material quantitative semantics and required verification.
-model: quant
 skills:
   - architecture
   - quant
-access: read
 lifetime: design
-sandbox: read
 needs:
   - decisions
   - scope
+permissions:
+  source: read
+  write_lease: never
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+  actions:
+    - message
+    - consult
+    - report
+    - handoff
+    - block
 inference: prefer-local
 ---
 
@@ -116,15 +159,13 @@ inference: prefer-local
 Evaluate definitions, units, assumptions, calculations, causality, reproducibility, and boundary behavior. If quantitative semantics are not material, support that conclusion with repository evidence and a verification recommendation.
 `,
   implementer: `---
+version: 2
 name: implementer
 description: Implement one approved Task in an isolated Sandbox.
-model: code
 skills:
   - architecture
   - development
-access: write
 lifetime: task
-sandbox: write
 needs:
   - task
   - plan
@@ -132,6 +173,24 @@ needs:
   - dependencies
   - scope
   - checks
+permissions:
+  source: read
+  write_lease: task
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+    - write
+    - edit
+  actions:
+    - message
+    - consult
+    - report
+    - handoff
+    - block
+    - finish
 inference: prefer-local
 ---
 
@@ -140,21 +199,32 @@ inference: prefer-local
 Remain within the approved Task and produce the required implementation Report and patch metadata.
 `,
   reviewer: `---
+version: 2
 name: reviewer
 description: Perform one fresh independent Review under one Lens.
-model: review
 skills:
   - architecture
   - review
   - verify
-access: read
 lifetime: review
-sandbox: read
 needs:
   - task
   - plan
   - decisions
   - checks
+permissions:
+  source: read
+  write_lease: never
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+  actions:
+    - report
+    - handoff
+    - block
 inference: prefer-local
 ---
 
@@ -163,16 +233,28 @@ inference: prefer-local
 Review only the frozen evidence in the Brief. Do not consult another Reviewer before submitting the Review.
 `,
   scout: `---
+version: 2
 name: scout
 description: Perform bounded read-only repository reconnaissance.
-model: fast
 skills:
   - architecture
-access: read
 lifetime: query
-sandbox: read
 needs:
   - scope
+permissions:
+  source: read
+  write_lease: never
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+  actions:
+    - message
+    - report
+    - handoff
+    - block
 inference: local
 ---
 
@@ -310,6 +392,30 @@ models:
     context_window: 32768
     max_tokens: 4096
     reasoning: false
+
+# Machine-local capability ceiling. Roles and assignments can only narrow it.
+permissions:
+  source: read
+  write_lease: task
+  pi_tools:
+    - read
+    - grep
+    - find
+    - ls
+    - bash
+    - write
+    - edit
+  actions:
+    - ask
+    - message
+    - consult
+    - report
+    - handoff
+    - block
+    - finish
+    - propose_plan
+    - propose_decision
+    - coordinate
 
 cmux:
   command: /Applications/cmux.app/Contents/Resources/bin/cmux

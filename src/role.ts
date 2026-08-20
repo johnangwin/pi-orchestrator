@@ -2,48 +2,29 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import {
-  IdentifierSchema,
-  ModelAliasSchema,
-  type ProjectConfig,
-  defaultModelForRole,
-} from "./config.js";
+import { IdentifierSchema, type ProjectConfig } from "./config.js";
 import { digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
+import { PermissionSetSchema } from "./permission.js";
 
 export const RoleSchema = z
   .object({
+    version: z.literal(2),
     name: IdentifierSchema,
     description: z.string().min(1),
-    model: ModelAliasSchema,
     skills: z.array(IdentifierSchema),
-    access: z.enum(["read", "write"]),
     lifetime: z.enum(["run", "design", "task", "review", "query"]),
-    sandbox: z.enum(["read", "write", "check"]),
     needs: z.array(IdentifierSchema),
+    permissions: PermissionSetSchema,
     inference: z.enum(["local", "prefer-local", "remote"]).optional(),
   })
   .strict()
   .superRefine((role, context) => {
-    if (role.access === "write" && role.sandbox !== "write") {
+    if (role.permissions.write_lease === "task" && role.lifetime !== "task") {
       context.addIssue({
         code: "custom",
-        path: ["sandbox"],
-        message: "a write Role must use the write Sandbox profile",
-      });
-    }
-    if (role.access === "read" && role.sandbox === "write") {
-      context.addIssue({
-        code: "custom",
-        path: ["sandbox"],
-        message: "a read Role cannot use the write Sandbox profile",
-      });
-    }
-    if (role.sandbox === "check") {
-      context.addIssue({
-        code: "custom",
-        path: ["sandbox"],
-        message: "the check profile does not host model-driven Roles",
+        path: ["permissions", "write_lease"],
+        message: "Task Write Lease eligibility requires a Task-scoped Role",
       });
     }
   });
@@ -102,7 +83,7 @@ export function parseRole(source: string, filePath: string): LoadedRole {
     definition: result.data,
     body,
     path: filePath,
-    digest: digestParts("pi-orchestrator/role/v1", [
+    digest: digestParts("pi-orchestrator/role/v2", [
       [path.basename(filePath), source],
     ]),
   };
@@ -125,14 +106,6 @@ export async function loadRoles(
       throw new OrchestratorError(
         "invalid_role",
         `${filePath} declares Role '${role.definition.name}', expected '${name}'`,
-      );
-    }
-
-    const configuredModel = defaultModelForRole(config, name);
-    if (configuredModel !== role.definition.model) {
-      throw new OrchestratorError(
-        "invalid_role",
-        `${filePath} uses model '${role.definition.model}', but project routing uses '${configuredModel ?? "none"}'`,
       );
     }
 

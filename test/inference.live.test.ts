@@ -10,6 +10,7 @@ import { OpenShellClient } from "../src/openshell.js";
 import { gitHead } from "../src/project.js";
 import { startReadSession, type ReadSession } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
+import { fixturePermissionCeiling } from "./fixture.js";
 
 const execFileAsync = promisify(execFile);
 const live = process.env.PI_ORCHESTRATOR_LIVE_INFERENCE === "1";
@@ -143,6 +144,7 @@ async function close(server: Server): Promise<void> {
         };
         session = await startReadSession({
           client,
+          permissionCeiling: fixturePermissionCeiling(),
           identity: {
             run: "live-inference",
             agent: "scout",

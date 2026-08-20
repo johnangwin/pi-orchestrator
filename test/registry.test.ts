@@ -4,8 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRegistry } from "../src/registry.js";
 import { RunStateSchema, ProjectStore, writeJsonAtomic } from "../src/state.js";
+import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
 
 const roots: string[] = [];
+const permissionCeilingDigest =
+  fixturePermissionCeiling().permission_ceiling_digest;
 
 afterEach(async () => {
   await Promise.all(
@@ -35,6 +38,7 @@ async function writeEmptyRun(store: ProjectStore): Promise<void> {
     plan_id: "fixture-plan",
     plan_revision: 1,
     plan_digest: "sha256:plan",
+    permission_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -64,6 +68,7 @@ async function activeRegistry(store: ProjectStore): Promise<{
   const session = await registry.start({
     agent: "lead",
     session: "session-one",
+    permissionCeilingDigest,
   });
   await registry.transition(session.identity, { status: "active" });
   return { registry, identity: session.identity };
@@ -88,6 +93,7 @@ describe("durable Agent and Session registry", () => {
     const started = await registry.start({
       agent: "implementer",
       session: "session-one",
+      permissionCeilingDigest,
     });
     expect(started.identity).toEqual({
       run: "run-one",
@@ -95,6 +101,13 @@ describe("durable Agent and Session registry", () => {
       session: "session-one",
       generation: 1,
     });
+    await expect(
+      registry.start({
+        agent: "implementer",
+        session: "session-one",
+        permissionCeilingDigest: `sha256:${"f".repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({ code: "session_permission_conflict" });
     await store.close();
 
     store = await openStore(home);
@@ -145,6 +158,7 @@ describe("durable Agent and Session registry", () => {
       const started = await registry.start({
         agent: "scout",
         session: "session-one",
+        permissionCeilingDigest,
       });
       const sandbox = {
         id: "43502221-db6b-49f2-a316-673792b3faae",
@@ -214,11 +228,13 @@ describe("durable Agent and Session registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Context handoff",
+          permissionCeilingDigest,
         }),
         registry.replace({
           expected: identity,
           session: "session-three",
           reason: "Competing replacement",
+          permissionCeilingDigest,
         }),
       ]);
       expect(
@@ -240,6 +256,7 @@ describe("durable Agent and Session registry", () => {
           expected: identity,
           session: current.identity.session,
           reason,
+          permissionCeilingDigest,
         }),
       ).resolves.toEqual(current);
       expect((await store.readRun("run-one")).updated_at).toBe(retryMarker);
@@ -263,6 +280,7 @@ describe("durable Agent and Session registry", () => {
           expected: { ...identity, run: "other-run" },
           session: current.identity.session,
           reason,
+          permissionCeilingDigest,
         }),
       ).rejects.toMatchObject({ code: "stale_session" });
     } finally {
@@ -280,6 +298,7 @@ describe("durable Agent and Session registry", () => {
         expected: identity,
         session: "session-two",
         reason: "Context handoff",
+        permissionCeilingDigest,
       });
       const valid = await store.readRun("run-one");
 

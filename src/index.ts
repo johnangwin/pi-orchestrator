@@ -25,6 +25,7 @@ export * from "./model.js";
 export * from "./mount.js";
 export * from "./openshell.js";
 export * from "./patch.js";
+export * from "./permission.js";
 export * from "./plan.js";
 export * from "./planning.js";
 export * from "./policy.js";

@@ -355,6 +355,7 @@ const BriefBindingSchema = z
   .object({
     planDigest: DigestSchema,
     roleDigest: DigestSchema,
+    permissionCeilingDigest: DigestSchema,
     taskDigest: DigestSchema,
     decisionsDigest: DigestSchema,
     sourceDigests: z.record(z.string(), DigestSchema),
@@ -387,6 +388,7 @@ export type HandoffTrigger = z.infer<typeof HandoffTriggerSchema>;
 const HandoffLaunchBindingSchema = z
   .object({
     profile: z.enum(["read", "write"]),
+    permission_ceiling_digest: DigestSchema,
     source_digest: DigestSchema,
     policy_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
@@ -520,8 +522,9 @@ function toBriefArtifact(brief: CompiledBrief): HandoffBriefArtifact {
     ...brief,
   });
   if (
-    digestParts("pi-orchestrator/brief/v1", [
-      ["brief.md", artifact.content],
+    digestParts("pi-orchestrator/brief/v2", [
+      ["content", artifact.content],
+      ["binding", canonicalJson(artifact.binding)],
     ]) !== artifact.digest
   ) {
     throw new OrchestratorError(
@@ -542,6 +545,8 @@ function fromBriefArtifact(artifact: HandoffBriefArtifact): CompiledBrief {
     binding: {
       planDigest: artifact.binding.planDigest as Digest,
       roleDigest: artifact.binding.roleDigest as Digest,
+      permissionCeilingDigest: artifact.binding
+        .permissionCeilingDigest as Digest,
       taskDigest: artifact.binding.taskDigest as Digest,
       decisionsDigest: artifact.binding.decisionsDigest as Digest,
       sourceDigests: Object.fromEntries(
@@ -1087,6 +1092,8 @@ function requireRuntimeBinding(
     !sameSessionIdentity(runtime.identity, intent.to) ||
     !sameSessionIdentity(info.identity, intent.to) ||
     info.profile !== intent.launch.profile ||
+    info.permissionCeiling.permission_ceiling_digest !==
+      intent.launch.permission_ceiling_digest ||
     info.sourceDigest !== intent.launch.source_digest ||
     info.policyDigest !== intent.launch.policy_digest ||
     info.briefDigest !== intent.brief_digest ||
@@ -1174,6 +1181,21 @@ export async function runHandoff(
     expected.run,
   );
   let stored = await handoffs.get(expected.agent, identifiers.id);
+  const run = await options.store.readRun(expected.run);
+  const fromSession = run.sessions[expected.session];
+  if (
+    !fromSession ||
+    !sameSessionIdentity(fromSession.identity, expected) ||
+    fromSession.permission_ceiling_digest !== launch.permission_ceiling_digest
+  ) {
+    throw new OrchestratorError(
+      "handoff_permission_stale",
+      "Handoff launch permissions do not match the durable source Session",
+    );
+  }
+  if (!stored) {
+    await options.reconciler.registry.requireCurrent(expected);
+  }
   let report: Report;
   let brief: CompiledBrief;
 
@@ -1402,6 +1424,7 @@ export function recoverTerminatedSession(
 
 export function defaultHandoffLaunchBinding(input: {
   readonly profile: AgentSessionProfile;
+  readonly permissionCeilingDigest: Digest;
   readonly sourceDigest: Digest;
   readonly policyDigest: Digest;
   readonly model: HandoffLaunchBinding["model"];
@@ -1411,6 +1434,7 @@ export function defaultHandoffLaunchBinding(input: {
 }): HandoffLaunchBinding {
   return HandoffLaunchBindingSchema.parse({
     profile: input.profile,
+    permission_ceiling_digest: input.permissionCeilingDigest,
     source_digest: input.sourceDigest,
     policy_digest: input.policyDigest,
     model: input.model,

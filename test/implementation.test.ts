@@ -24,7 +24,12 @@ import {
   type StartWriteSessionOptions,
 } from "../src/agent.js";
 import type { PatchApplication, ProjectStore, RunState } from "../src/state.js";
-import { commitFixture, createFixtureProject, createPlan } from "./fixture.js";
+import {
+  commitFixture,
+  createFixtureProject,
+  createPlan,
+  fixturePermissionPolicyDigest,
+} from "./fixture.js";
 
 const roots: string[] = [];
 const stores: ProjectStore[] = [];
@@ -116,7 +121,12 @@ async function fixture() {
   });
   stores.push(store);
   await store.recordApproval(
-    createApproval({ plan, baseCommit: commit, approvedBy: "fixture" }),
+    createApproval({
+      plan,
+      baseCommit: commit,
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      approvedBy: "fixture",
+    }),
   );
   const started = await startRun({
     store,
@@ -154,6 +164,7 @@ function launcher(text: string) {
     return {
       info: {
         sandbox,
+        permissionCeiling: options.permissionCeiling,
         identity: options.identity,
         sourceDigest: options.snapshot.manifest.source_digest,
         profile: "write",

@@ -9,7 +9,12 @@ import {
 } from "../src/approval.js";
 import { catalogFromConfig, loadPlan } from "../src/plan.js";
 import { loadProject } from "../src/project.js";
-import { createFixtureProject, createPlan, fixtureTask } from "./fixture.js";
+import {
+  createFixtureProject,
+  createPlan,
+  fixturePermissionPolicyDigest,
+  fixtureTask,
+} from "./fixture.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -36,6 +41,7 @@ describe("Plan validation and approval", () => {
     const approval = createApproval({
       plan: original,
       baseCommit: "base-commit",
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
       approvedBy: "tester",
     });
 
@@ -53,6 +59,7 @@ describe("Plan validation and approval", () => {
       planId: changed.id,
       planRevision: changed.revision,
       planDigest: changed.digest,
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
       baseCommit: "base-commit",
     });
 
@@ -69,6 +76,7 @@ describe("Plan validation and approval", () => {
     const approval = createApproval({
       plan: original,
       baseCommit: "base-commit",
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
       approvedBy: "tester",
     });
     const tasksPath = path.join(directory, "tasks.yaml");
@@ -87,6 +95,7 @@ describe("Plan validation and approval", () => {
         planId: changed.id,
         planRevision: changed.revision,
         planDigest: changed.digest,
+        permissionPolicyDigest: fixturePermissionPolicyDigest(project),
         baseCommit: "base-commit",
       }).fresh,
     ).toBe(false);
@@ -166,6 +175,7 @@ describe("Plan validation and approval", () => {
       planId: plan.id,
       planRevision: plan.revision,
       planDigest: plan.digest,
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
       baseCommit: "base-commit",
     } as const;
 
@@ -175,6 +185,7 @@ describe("Plan validation and approval", () => {
     const approval = createApproval({
       plan,
       baseCommit: "other-commit",
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
       approvedBy: "tester",
     });
     expect(() => requireFreshApproval(approval, current)).toThrowError(

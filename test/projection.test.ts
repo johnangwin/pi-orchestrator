@@ -16,8 +16,11 @@ import { ProjectionRegistry, type ProjectionCmux } from "../src/projection.js";
 import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore, RunStateSchema } from "../src/state.js";
+import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
 
 const roots: string[] = [];
+const permissionCeilingDigest =
+  fixturePermissionCeiling().permission_ceiling_digest;
 const workspaceOperation = "10000000-0000-4000-8000-000000000001";
 const workspaceId = "10000000-0000-4000-8000-000000000002";
 const firstPaneOperation = "20000000-0000-4000-8000-000000000001";
@@ -52,6 +55,7 @@ async function setup(): Promise<{
     plan_id: "fixture-plan",
     plan_revision: 1,
     plan_digest: "sha256:plan",
+    permission_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -62,7 +66,11 @@ async function setup(): Promise<{
   });
   const agents = new AgentRegistry(store, "run-one");
   await agents.register({ agent: "lead", role: "lead", model: "plan" });
-  const session = await agents.start({ agent: "lead", session: "session-one" });
+  const session = await agents.start({
+    agent: "lead",
+    session: "session-one",
+    permissionCeilingDigest,
+  });
   return { store, agents, identity: session.identity };
 }
 
@@ -312,6 +320,7 @@ describe("durable cmux projection registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
+          permissionCeilingDigest,
         }),
       ).rejects.toThrow();
       await projection.removePane(identity);
@@ -320,6 +329,7 @@ describe("durable cmux projection registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
+          permissionCeilingDigest,
         }),
       ).resolves.toMatchObject({ identity: { generation: 2 } });
       expect(fake.closed).toMatchObject([{ pane_id: firstPaneId }]);

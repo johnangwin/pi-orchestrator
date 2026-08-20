@@ -24,14 +24,24 @@ import {
   startWriteSession,
   type ReadSessionOpenShell,
   type ResumeReadSessionOpenShell,
+  type StartWriteSessionOptions,
 } from "../src/agent.js";
 import { loadSandboxPolicy } from "../src/policy.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
-import { commitFixture, createFixtureProject } from "./fixture.js";
+import {
+  commitFixture,
+  createFixtureProject,
+  fixturePermissionCeiling,
+} from "./fixture.js";
 import { createAppliedFixture } from "./applied-fixture.js";
 
 const roots: string[] = [];
+const readPermissionCeiling = fixturePermissionCeiling();
+const writePermissionCeiling = fixturePermissionCeiling(
+  { kind: "task", task: "bounded-change" },
+  "implementer",
+);
 
 afterEach(async () => {
   await Promise.all(
@@ -149,6 +159,7 @@ describe("read Session bootstrap", () => {
     try {
       const session = await startReadSession({
         client,
+        permissionCeiling: readPermissionCeiling,
         identity: {
           run: "run-one",
           agent: "scout",
@@ -244,6 +255,8 @@ describe("read Session bootstrap", () => {
     try {
       session = await startWriteSession({
         client,
+        permissionCeiling: writePermissionCeiling,
+        writeGrant: { task: "bounded-change" },
         identity: {
           run: "run-one",
           agent: "implementer",
@@ -273,6 +286,49 @@ describe("read Session bootstrap", () => {
     } finally {
       if (session) await session.stop();
       else await server?.close();
+      await snapshot.dispose();
+    }
+  });
+
+  it("rejects Write Lease eligibility without a trusted Task grant before OpenShell mutation", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const commit = await commitFixture(root);
+    const snapshot = await createSourceSnapshot({
+      projectRoot: root,
+      commit,
+      paths: ["src"],
+    });
+    let touchedOpenShell = false;
+    const unexpected = async (): Promise<never> => {
+      touchedOpenShell = true;
+      throw new Error("OpenShell must not be called");
+    };
+    const client: ReadSessionOpenShell = {
+      preflight: unexpected,
+      createSandbox: unexpected,
+      waitForSandbox: unexpected,
+      execSandbox: unexpected,
+      startServiceForward: unexpected,
+      deleteSandbox: unexpected,
+    };
+
+    try {
+      await expect(
+        startWriteSession({
+          client,
+          permissionCeiling: writePermissionCeiling,
+          identity: {
+            run: "run-one",
+            agent: "implementer",
+            session: "session-write",
+            generation: 1,
+          },
+          snapshot,
+        } as unknown as StartWriteSessionOptions),
+      ).rejects.toMatchObject({ code: "write_grant_required" });
+      expect(touchedOpenShell).toBe(false);
+    } finally {
       await snapshot.dispose();
     }
   });
@@ -346,6 +402,7 @@ describe("read Session bootstrap", () => {
     try {
       session = await startReadSession({
         client,
+        permissionCeiling: readPermissionCeiling,
         identity: {
           run: fixture.runId,
           agent: "review-spec",
@@ -417,6 +474,7 @@ describe("read Session bootstrap", () => {
       await expect(
         startReadSession({
           client,
+          permissionCeiling: readPermissionCeiling,
           identity: {
             run: "run-one",
             agent: "review-spec",
@@ -458,6 +516,7 @@ describe("read Session bootstrap", () => {
       listen: { host: "127.0.0.1", port },
       client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
+      permission_ceiling: readPermissionCeiling,
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,
     });
@@ -530,6 +589,8 @@ describe("read Session bootstrap", () => {
     try {
       first = await resumeReadSession({
         client,
+        permissionCeilingDigest:
+          readPermissionCeiling.permission_ceiling_digest,
         identity,
         sandbox: expectedSandbox,
       });
@@ -539,6 +600,8 @@ describe("read Session bootstrap", () => {
 
       second = await resumeReadSession({
         client,
+        permissionCeilingDigest:
+          readPermissionCeiling.permission_ceiling_digest,
         identity,
         sandbox: expectedSandbox,
       });
@@ -585,6 +648,8 @@ describe("read Session bootstrap", () => {
     await expect(
       resumeReadSession({
         client,
+        permissionCeilingDigest:
+          readPermissionCeiling.permission_ceiling_digest,
         identity,
         sandbox: {
           id: sandbox(1).id,
@@ -615,6 +680,7 @@ describe("read Session bootstrap", () => {
       listen: { host: "127.0.0.1", port: 41_727 },
       client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
+      permission_ceiling: readPermissionCeiling,
       profile: "read",
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,
@@ -639,6 +705,8 @@ describe("read Session bootstrap", () => {
     await expect(
       resumeWriteSession({
         client,
+        permissionCeilingDigest:
+          readPermissionCeiling.permission_ceiling_digest,
         identity,
         sandbox: {
           id: sandbox(1).id,
@@ -685,6 +753,8 @@ describe("read Session bootstrap", () => {
     await expect(
       resumeReadSession({
         client,
+        permissionCeilingDigest:
+          readPermissionCeiling.permission_ceiling_digest,
         identity,
         sandbox: {
           id: sandbox(1).id,
@@ -797,6 +867,7 @@ describe("read Session bootstrap", () => {
     try {
       session = await startReadSession({
         client,
+        permissionCeiling: readPermissionCeiling,
         identity: {
           run: "run-one",
           agent: "scout",
@@ -920,6 +991,7 @@ describe("read Session bootstrap", () => {
     try {
       session = await startReadSession({
         client,
+        permissionCeiling: readPermissionCeiling,
         identity: {
           run: "run-one",
           agent: "scout",
@@ -983,6 +1055,7 @@ describe("read Session bootstrap", () => {
       await expect(
         startReadSession({
           client,
+          permissionCeiling: readPermissionCeiling,
           identity: {
             run: "run-one",
             agent: "scout",

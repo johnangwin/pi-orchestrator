@@ -4,6 +4,10 @@ import { formatUnknownError, OrchestratorError } from "./error.js";
 import { MailboxRouter, type MailboxLink } from "./mailbox.js";
 import { MetricStore, type SessionMetricRecorder } from "./metric.js";
 import type { ResolvedModelRoute } from "./model.js";
+import type {
+  PermissionCeiling,
+  PermissionRuntimeState,
+} from "./permission.js";
 import type { OpenShellClient, OpenShellSandbox } from "./openshell.js";
 import { ProjectionRegistry, type ProjectionInspection } from "./projection.js";
 import { AgentRegistry } from "./registry.js";
@@ -68,6 +72,7 @@ export type SessionLifecycleOpenShell = ResumeReadSessionOpenShell &
 export interface SessionRuntime extends MailboxLink {
   readonly info: {
     readonly sandbox: OpenShellSandbox;
+    readonly permissionCeiling: PermissionCeiling;
   };
   ping(): Promise<string>;
   release(): Promise<void>;
@@ -88,6 +93,8 @@ export interface RecoverSessionOptions {
   readonly briefDigest?: string;
   readonly metrics?: SessionMetricRecorder;
   readonly task?: string;
+  readonly currentActionState?: () =>
+    PermissionRuntimeState | Promise<PermissionRuntimeState>;
 }
 
 export interface ReplaceSessionOptions {
@@ -337,7 +344,16 @@ export class SessionReconciler {
     pane?: Omit<Parameters<ProjectionRegistry["ensurePane"]>[0], "identity">,
   ): Promise<void> {
     const identity = SessionIdentitySchema.parse(session.identity);
-    await this.registry.requireCurrent(identity);
+    const current = await this.registry.requireCurrent(identity);
+    if (
+      session.info.permissionCeiling.permission_ceiling_digest !==
+      current.permission_ceiling_digest
+    ) {
+      throw new OrchestratorError(
+        "session_permission_stale",
+        "Live Session permission ceiling does not match durable state",
+      );
+    }
     await this.registry.bindSandbox(identity, {
       id: session.info.sandbox.id,
       name: session.info.sandbox.name,
@@ -385,6 +401,7 @@ export class SessionReconciler {
       client: this.openshell,
       identity,
       sandbox: current.sandbox,
+      permissionCeilingDigest: current.permission_ceiling_digest,
       ...(options.policyDirectory
         ? { policyDirectory: options.policyDirectory }
         : {}),
@@ -405,6 +422,9 @@ export class SessionReconciler {
         options.metrics ??
         new MetricStore(this.store.runDirectory(this.runId), this.runId),
       ...(options.task ? { task: options.task } : {}),
+      ...(options.currentActionState
+        ? { currentActionState: options.currentActionState }
+        : {}),
     });
     try {
       await this.mailbox.attach(recovered);
@@ -478,6 +498,7 @@ export class SessionReconciler {
       expected,
       session: sessionId,
       reason,
+      permissionCeilingDigest: current.permission_ceiling_digest,
     });
   }
 }

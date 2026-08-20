@@ -5,6 +5,10 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { ModelAliasSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
+import {
+  DEFAULT_LOCAL_PERMISSION_POLICY,
+  PermissionSetSchema,
+} from "./permission.js";
 
 export const VersionSchema = z
   .string()
@@ -127,6 +131,7 @@ export const LocalConfigSchema = z
     version: z.literal(1),
     openshell: OpenShellSettingsSchema,
     models: LocalModelRoutesSchema,
+    permissions: PermissionSetSchema.default(DEFAULT_LOCAL_PERMISSION_POLICY),
     cmux: CmuxSettingsSchema.default({
       command: "cmux",
       workspace_prefix: "orchestrator",

@@ -7,9 +7,11 @@ import {
   encodeLinkFrame,
 } from "../src/link.js";
 import { MessageSchema, type Message } from "../src/message.js";
+import { createPermissionCeiling } from "../src/permission.js";
 import type { SessionIdentity } from "../src/session.js";
 import type { LinkFrame, LinkTransport } from "../src/transport.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
+import { fixturePermissionCeiling } from "./fixture.js";
 
 const identity: SessionIdentity = {
   run: "run-one",
@@ -18,6 +20,7 @@ const identity: SessionIdentity = {
   generation: 1,
 };
 const token = "a".repeat(64);
+const permissionCeiling = fixturePermissionCeiling();
 
 async function availablePort(): Promise<number> {
   const server = createServer();
@@ -133,6 +136,7 @@ describe("Pi client Link", () => {
         listen: { host: "127.0.0.1", port },
         client_version: "0.2.0",
         pi_version: "0.84.2",
+        permission_ceiling: permissionCeiling,
       },
       deliver(value) {
         delivered.push(value.id);
@@ -179,6 +183,7 @@ describe("Pi client Link", () => {
         listen: { host: "127.0.0.1", port },
         client_version: "0.2.0",
         pi_version: "0.84.2",
+        permission_ceiling: permissionCeiling,
       },
       deliver() {},
     });
@@ -212,6 +217,98 @@ describe("Pi client Link", () => {
     }
   });
 
+  it("rejects a forged client action against the host-bound ceiling", async () => {
+    const port = await availablePort();
+    const reportOnlyCeiling = createPermissionCeiling({
+      role: "scout",
+      rolePermissions: {
+        source: "read",
+        write_lease: "never",
+        pi_tools: ["read"],
+        actions: ["report"],
+      },
+      assignment: { kind: "query" },
+    });
+    const server = await startLinkServer({
+      config: {
+        version: 2,
+        identity,
+        token,
+        listen: { host: "127.0.0.1", port },
+        client_version: "0.2.0",
+        pi_version: "0.84.2",
+        permission_ceiling: reportOnlyCeiling,
+      },
+      deliver() {},
+    });
+    server.emit("handoff-requested", {
+      source: "manual",
+      reason: "Bypass the Pi client check.",
+    });
+
+    let link: HostLink | undefined;
+    try {
+      link = await HostLink.connect({
+        transport: new TcpLinkTransport({ port }),
+        identity,
+        token,
+        expectedClientVersion: "0.2.0",
+        expectedPiVersion: "0.84.2",
+        permissionCeiling: reportOnlyCeiling,
+      });
+      await expect(link.ping()).rejects.toMatchObject({
+        code: "permission_denied",
+      });
+    } finally {
+      await link?.close();
+      await server.close();
+    }
+  });
+
+  it("rejects an otherwise allowed action after host state marks the Session stale", async () => {
+    const port = await availablePort();
+    const server = await startLinkServer({
+      config: {
+        version: 2,
+        identity,
+        token,
+        listen: { host: "127.0.0.1", port },
+        client_version: "0.2.0",
+        pi_version: "0.84.2",
+        permission_ceiling: permissionCeiling,
+      },
+      deliver() {},
+    });
+    server.emit("handoff-requested", {
+      source: "manual",
+      reason: "Act from a stale Session.",
+    });
+
+    let link: HostLink | undefined;
+    try {
+      link = await HostLink.connect({
+        transport: new TcpLinkTransport({ port }),
+        identity,
+        token,
+        expectedClientVersion: "0.2.0",
+        expectedPiVersion: "0.84.2",
+        permissionCeiling,
+        currentActionState: () => ({
+          session_current: false,
+          run_allows_actions: true,
+          review_frozen: false,
+          write_lease_active: false,
+        }),
+      });
+      await expect(link.ping()).rejects.toMatchObject({
+        code: "permission_denied",
+      });
+    } finally {
+      await link?.close();
+      await server.close();
+    }
+  });
+
   it("serializes simultaneous duplicate deliveries", async () => {
     const port = await availablePort();
     const delivered: string[] = [];
@@ -223,6 +320,7 @@ describe("Pi client Link", () => {
         listen: { host: "127.0.0.1", port },
         client_version: "0.2.0",
         pi_version: "0.84.2",
+        permission_ceiling: permissionCeiling,
       },
       async deliver(value) {
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -284,6 +382,7 @@ describe("Pi client Link", () => {
         listen: { host: "127.0.0.1", port },
         client_version: "0.2.0",
         pi_version: "0.84.2",
+        permission_ceiling: permissionCeiling,
       },
       deliver() {},
     });

@@ -10,15 +10,15 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 2 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime. Filesystem behavior remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
+Phases 0 through 3 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime, and every Session carries an immutable least-authority permission ceiling. Filesystem behavior remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
 |     0 | Freeze v0.3 contracts and replacement ADRs        | Complete |
 |     1 | Prove shared OpenShell Workspace volumes          | Complete |
 |     2 | Rename Seats and epochs to Agents and generations | Complete |
-|     3 | Enforce explicit Role permissions                 | Next     |
-|     4 | Add policy-bound Model Profiles                   | Pending  |
+|     3 | Enforce explicit Role permissions                 | Complete |
+|     4 | Add policy-bound Model Profiles                   | Next     |
 |     5 | Add complete Workspace manifests                  | Pending  |
 |     6 | Add Write Leases, Change Sets, and Candidates     | Pending  |
 |     7 | Run read-only Agents from the shared Workspace    | Pending  |
@@ -67,6 +67,16 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - advanced Run and planning state to schema version 2 and the Link and Pi client protocols to version 2;
 - rejected unfinished version-one Run and planning state with explicit no-migration diagnostics;
 - preserved contiguous Session history, stale-generation rejection, Handoffs, recovery, and existing scheduling and filesystem behavior.
+
+## Phase 3 outcome
+
+- replaced Role `access` and `sandbox` fields with closed source, Write Lease, Pi-tool, and Orchestrator-action permissions;
+- intersected hard host limits, machine-local policy, Role permissions, and Task or Review assignment into one immutable Session ceiling;
+- bound the ceiling digest to approvals, Brief freshness, durable Sessions, planning and consultation evidence, Reviews, Handoffs, and recovery;
+- derived Pi tools from the effective ceiling and required an exact trusted Task grant before launching a writable Sandbox;
+- enforced model-facing actions in both the Pi client and host Link handler, including pre-freeze Reviewer isolation and stale-Session rejection;
+- kept Git, Sandbox, cmux, credential, Gate, and human authority outside the configurable permission registry;
+- made the full Role permission policy visible during trusted Plan approval and covered the boundary with adversarial tests.
 
 ## Later proof gates
 

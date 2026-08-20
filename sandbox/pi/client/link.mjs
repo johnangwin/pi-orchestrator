@@ -20,6 +20,27 @@ const modelApis = new Set([
   "openai-completions",
   "openai-responses",
 ]);
+const piTools = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "write",
+  "edit",
+]);
+const orchestratorActions = new Set([
+  "ask",
+  "message",
+  "consult",
+  "report",
+  "handoff",
+  "block",
+  "finish",
+  "propose_plan",
+  "propose_decision",
+  "coordinate",
+]);
 const clientEvents = new Set([
   "session-started",
   "session-blocked",
@@ -176,6 +197,74 @@ function validInputs(value) {
   );
 }
 
+function validPermissionAssignment(value) {
+  if (
+    !exactKeys(value, ["kind"], ["task", "lens"]) ||
+    !["run", "design", "task", "review", "query"].includes(value.kind)
+  ) {
+    return false;
+  }
+  if (value.task !== undefined && !identifierPattern.test(value.task)) {
+    return false;
+  }
+  if (
+    value.lens !== undefined &&
+    !["spec", "architecture", "quality", "quant"].includes(value.lens)
+  ) {
+    return false;
+  }
+  if (["task", "review"].includes(value.kind) && value.task === undefined) {
+    return false;
+  }
+  if (!["task", "review"].includes(value.kind) && value.task !== undefined) {
+    return false;
+  }
+  if (value.kind === "review") return value.lens !== undefined;
+  return value.lens === undefined;
+}
+
+function validPermissionCeiling(value) {
+  const required = [
+    "version",
+    "role",
+    "assignment",
+    "source",
+    "write_lease",
+    "pi_tools",
+    "actions",
+    "host_policy_digest",
+    "local_policy_digest",
+    "role_permissions_digest",
+    "assignment_digest",
+    "permission_ceiling_digest",
+  ];
+  const validShape =
+    exactKeys(value, required) &&
+    value.version === 2 &&
+    identifierPattern.test(value.role) &&
+    validPermissionAssignment(value.assignment) &&
+    ["none", "read"].includes(value.source) &&
+    ["never", "task"].includes(value.write_lease) &&
+    Array.isArray(value.pi_tools) &&
+    value.pi_tools.every((tool) => piTools.has(tool)) &&
+    new Set(value.pi_tools).size === value.pi_tools.length &&
+    Array.isArray(value.actions) &&
+    value.actions.every((action) => orchestratorActions.has(action)) &&
+    new Set(value.actions).size === value.actions.length &&
+    required.slice(7).every((name) => digestPattern.test(value[name]));
+  if (!validShape) return false;
+  const mutatingTools = value.pi_tools.some((tool) =>
+    ["write", "edit"].includes(tool),
+  );
+  return (
+    (value.source === "read" || value.pi_tools.length === 0) &&
+    (value.write_lease !== "task" ||
+      (value.source === "read" && value.assignment.kind === "task")) &&
+    (!mutatingTools || value.write_lease === "task") &&
+    (!value.actions.includes("finish") || value.write_lease === "task")
+  );
+}
+
 function parseConfig(value) {
   if (
     !exactKeys(
@@ -187,6 +276,7 @@ function parseConfig(value) {
         "listen",
         "client_version",
         "pi_version",
+        "permission_ceiling",
       ],
       [
         "source_digest",
@@ -210,8 +300,12 @@ function parseConfig(value) {
     value.client_version.length === 0 ||
     typeof value.pi_version !== "string" ||
     value.pi_version.length === 0 ||
+    !validPermissionCeiling(value.permission_ceiling) ||
     (value.profile !== undefined &&
       !["read", "write"].includes(value.profile)) ||
+    (value.profile === "write" &&
+      (value.permission_ceiling.write_lease !== "task" ||
+        value.permission_ceiling.assignment.kind !== "task")) ||
     !validContext(value.context) ||
     (value.source_digest !== undefined &&
       !digestPattern.test(value.source_digest)) ||

@@ -231,6 +231,7 @@ export const RunStateSchema = z
     plan_id: IdentifierSchema,
     plan_revision: z.number().int().positive(),
     plan_digest: z.string(),
+    permission_policy_digest: DigestSchema,
     base_commit: z.string().min(1),
     branch: z
       .string()

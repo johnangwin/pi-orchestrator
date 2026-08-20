@@ -19,6 +19,13 @@ import { MetricStore } from "./metric.js";
 import { resolveRoleModelRoute, type ResolvedModelRoute } from "./model.js";
 import type { OpenShellPreflight } from "./openshell.js";
 import {
+  permissionRuntimeState,
+  projectPermissionPolicyDigest,
+  resolveRolePermissionCeiling,
+  roleCanImplementTask,
+  type PermissionCeiling,
+} from "./permission.js";
+import {
   catalogFromConfig,
   loadPlan,
   type LoadedPlan,
@@ -157,6 +164,9 @@ function requireRunBinding(options: {
   readonly plan: LoadedPlan;
   readonly projectRecord: ProjectRecord;
 }): void {
+  const permissionPolicyDigest = projectPermissionPolicyDigest(
+    options.project.roles,
+  );
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -176,10 +186,17 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' is not bound to the loaded Plan revision`,
     );
   }
+  if (options.run.permission_policy_digest !== permissionPolicyDigest) {
+    throw new OrchestratorError(
+      "run_permission_policy_stale",
+      `Run '${options.run.id}' was approved under another Role permission policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest,
+    permissionPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -204,13 +221,10 @@ function requireImplementerRole(project: Project, task: PlanTask): LoadedRole {
       `Task '${task.id}' Role '${task.role}' is unavailable`,
     );
   }
-  if (
-    role.definition.access !== "write" ||
-    role.definition.sandbox !== "write"
-  ) {
+  if (!roleCanImplementTask(role.definition)) {
     throw new OrchestratorError(
       "invalid_implementation_role",
-      `Task '${task.id}' Role '${task.role}' must use write access and the write Sandbox profile`,
+      `Task '${task.id}' Role '${task.role}' must explicitly permit Task writes and completion`,
     );
   }
   return role;
@@ -281,6 +295,7 @@ function compileImplementationBrief(options: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly task: PlanTask;
   readonly plan: LoadedPlan;
   readonly model: ResolvedModelRoute;
@@ -301,6 +316,7 @@ function compileImplementationBrief(options: {
     identity: options.identity,
     agents: options.project.agents,
     role: options.role,
+    permissionCeiling: options.permissionCeiling,
     task: options.task,
     plan: options.plan,
     decisions: [],
@@ -347,6 +363,7 @@ async function allocateSession(options: {
   readonly registry: AgentRegistry;
   readonly task: PlanTask;
   readonly model: ResolvedModelRoute;
+  readonly permissionCeiling: PermissionCeiling;
   readonly nonce: string;
 }) {
   const agentId = "implementer";
@@ -358,7 +375,12 @@ async function allocateSession(options: {
   const agent = await options.registry.get(agentId);
   const sessionId = IdentifierSchema.parse(`implementation-${options.nonce}`);
   if (agent.record.session === null) {
-    return options.registry.start({ agent: agentId, session: sessionId });
+    return options.registry.start({
+      agent: agentId,
+      session: sessionId,
+      permissionCeilingDigest:
+        options.permissionCeiling.permission_ceiling_digest,
+    });
   }
   if (!agent.session || !["stopped", "failed"].includes(agent.session.status)) {
     throw new OrchestratorError(
@@ -370,6 +392,8 @@ async function allocateSession(options: {
     expected: agent.session.identity,
     session: sessionId,
     reason: `Implementation attempt for Task '${options.task.id}'`,
+    permissionCeilingDigest:
+      options.permissionCeiling.permission_ceiling_digest,
   });
 }
 
@@ -687,6 +711,11 @@ export async function runImplementation(
   );
 
   const role = requireImplementerRole(current.project, task);
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "task", task: task.id },
+    localPolicy: options.local.permissions,
+  });
   const model = resolveRoleModelRoute(
     current.project.config,
     options.local,
@@ -721,12 +750,19 @@ export async function runImplementation(
     .string()
     .regex(/^[a-f0-9]{8}$/)
     .parse(rawNonce);
-  const sessionRecord = await allocateSession({ registry, task, model, nonce });
+  const sessionRecord = await allocateSession({
+    registry,
+    task,
+    model,
+    permissionCeiling,
+    nonce,
+  });
   const identity = sessionRecord.identity;
   const brief = compileImplementationBrief({
     identity,
     project: current.project,
     role,
+    permissionCeiling,
     task,
     plan: current.plan,
     model,
@@ -764,11 +800,19 @@ export async function runImplementation(
       client: options.client,
       identity,
       snapshot,
+      permissionCeiling,
+      writeGrant: { task: task.id },
       model,
       brief,
       context: current.project.config.context,
       metrics,
       task: task.id,
+      currentActionState: async () =>
+        permissionRuntimeState({
+          ceiling: permissionCeiling,
+          identity,
+          run: await options.store.readRun(initialRun.id),
+        }),
       now,
       policyDirectory,
       ...(options.imageContext ? { imageContext: options.imageContext } : {}),
@@ -781,6 +825,8 @@ export async function runImplementation(
     });
     if (
       session.info.profile !== "write" ||
+      session.info.permissionCeiling.permission_ceiling_digest !==
+        permissionCeiling.permission_ceiling_digest ||
       canonicalJson(session.info.identity) !== canonicalJson(identity) ||
       session.info.sourceDigest !== snapshot.manifest.source_digest ||
       session.info.policyDigest !== policy.digest ||

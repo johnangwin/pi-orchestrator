@@ -47,6 +47,8 @@ import {
   commitFixture,
   createFixtureProject,
   createPlan,
+  fixturePermissionCeiling,
+  fixturePermissionPolicyDigest,
   fixtureTask,
 } from "./fixture.js";
 
@@ -298,7 +300,12 @@ export async function createAppliedFixture(
       projectRoot: project.root,
     });
     await store.recordApproval(
-      createApproval({ plan, baseCommit: commit, approvedBy: "fixture" }),
+      createApproval({
+        plan,
+        baseCommit: commit,
+        permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+        approvedBy: "fixture",
+      }),
     );
     const started = await startRun({ store, project, plan, worktreeRoot });
     const registry = new AgentRegistry(store, started.run.id);
@@ -310,6 +317,10 @@ export async function createAppliedFixture(
     const session = await registry.start({
       agent: "implementer",
       session: "implementation-one",
+      permissionCeilingDigest: fixturePermissionCeiling(
+        { kind: "task", task: task.id },
+        task.role,
+      ).permission_ceiling_digest,
     });
     await registry.bindSandbox(session.identity, {
       id: implementationSandbox.id,

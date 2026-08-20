@@ -9,7 +9,11 @@ import { sha256 } from "../src/digest.js";
 import { catalogFromConfig, loadPlan } from "../src/plan.js";
 import { loadProject } from "../src/project.js";
 import { createReport } from "../src/report.js";
-import { createFixtureProject, createPlan } from "./fixture.js";
+import {
+  createFixtureProject,
+  createPlan,
+  fixturePermissionCeiling,
+} from "./fixture.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -46,6 +50,10 @@ async function briefInput(): Promise<BriefInput> {
     },
     agents: project.agents,
     role,
+    permissionCeiling: fixturePermissionCeiling(
+      { kind: "task", task: plan.tasks[0]!.id },
+      role.definition.name,
+    ),
     task: plan.tasks[0]!,
     plan,
     decisions: [

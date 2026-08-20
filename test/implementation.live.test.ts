@@ -9,6 +9,7 @@ import { importPatchArtifact } from "../src/patch.js";
 import { gitHead } from "../src/project.js";
 import { startWriteSession, type WriteSession } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
+import { fixturePermissionCeiling } from "./fixture.js";
 
 const live = process.env.PI_ORCHESTRATOR_LIVE_IMPLEMENTATION === "1";
 
@@ -43,7 +44,16 @@ const live = process.env.PI_ORCHESTRATOR_LIVE_IMPLEMENTATION === "1";
       } as const;
       let session: WriteSession | undefined;
       try {
-        session = await startWriteSession({ client, identity, snapshot });
+        session = await startWriteSession({
+          client,
+          identity,
+          snapshot,
+          permissionCeiling: fixturePermissionCeiling(
+            { kind: "task", task: "bounded-change" },
+            "implementer",
+          ),
+          writeGrant: { task: "bounded-change" },
+        });
         const change = await client.execSandbox(session.info.sandbox.name, [
           "/bin/sh",
           "-c",

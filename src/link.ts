@@ -4,6 +4,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { OrchestratorError } from "./error.js";
 import type { Message } from "./message.js";
 import {
+  requireAgentAction,
+  type OrchestratorActionPermission,
+  type PermissionCeiling,
+  type PermissionRuntimeState,
+} from "./permission.js";
+import {
   sameSessionIdentity,
   SessionIdentitySchema,
   type SessionIdentity,
@@ -289,6 +295,9 @@ export interface HostLinkOptions {
   readonly expectedClientVersion: string;
   readonly expectedPiVersion: string;
   readonly timeoutMs?: number;
+  readonly permissionCeiling?: PermissionCeiling;
+  readonly currentActionState?: () =>
+    PermissionRuntimeState | Promise<PermissionRuntimeState>;
   readonly onEvent?: (frame: Extract<LinkFrame, { type: "event" }>) => void;
 }
 
@@ -299,6 +308,35 @@ export interface LinkPeer {
 }
 
 export type LinkEventFrame = Extract<LinkFrame, { type: "event" }>;
+
+const eventActions: Readonly<
+  Partial<
+    Record<LinkEventFrame["payload"]["event"], OrchestratorActionPermission>
+  >
+> = {
+  "session-blocked": "block",
+  "handoff-requested": "handoff",
+  "report-submitted": "report",
+};
+
+async function authorizeEvent(
+  options: HostLinkOptions,
+  frame: LinkEventFrame,
+): Promise<void> {
+  const action = eventActions[frame.payload.event];
+  if (!action) return;
+  if (!options.permissionCeiling) {
+    throw new OrchestratorError(
+      "permission_denied",
+      `Session event '${frame.payload.event}' has no host-bound permission ceiling`,
+    );
+  }
+  requireAgentAction(
+    options.permissionCeiling,
+    action,
+    await options.currentActionState?.(),
+  );
+}
 
 export class HostLink {
   readonly identity: SessionIdentity;
@@ -478,6 +516,7 @@ export class HostLink {
           );
         }
         if (response.type === "event") {
+          await authorizeEvent(this.options, response);
           this.events.push(response);
           if (this.events.length > 1_024) this.events.shift();
           this.options.onEvent?.(response);

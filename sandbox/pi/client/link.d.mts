@@ -15,6 +15,26 @@ export interface ClientConfig {
   };
   readonly client_version: string;
   readonly pi_version: string;
+  readonly permission_ceiling: {
+    readonly version: 2;
+    readonly role: string;
+    readonly assignment: {
+      readonly kind: "run" | "design" | "task" | "review" | "query";
+      readonly task?: string | undefined;
+      readonly lens?: "spec" | "architecture" | "quality" | "quant" | undefined;
+    };
+    readonly source: "none" | "read";
+    readonly write_lease: "never" | "task";
+    readonly pi_tools: readonly (
+      "read" | "grep" | "find" | "ls" | "bash" | "write" | "edit"
+    )[];
+    readonly actions: readonly string[];
+    readonly host_policy_digest: string;
+    readonly local_policy_digest: string;
+    readonly role_permissions_digest: string;
+    readonly assignment_digest: string;
+    readonly permission_ceiling_digest: string;
+  };
   readonly profile?: "read" | "write" | undefined;
   readonly context?:
     | {

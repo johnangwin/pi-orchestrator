@@ -36,6 +36,12 @@ import type {
 } from "./openshell.js";
 import { loadSandboxPolicy } from "./policy.js";
 import {
+  PermissionCeilingSchema,
+  requireWritableGrant,
+  type PermissionCeiling,
+  type PermissionRuntimeState,
+} from "./permission.js";
+import {
   ModelTurnFailureSchema,
   ModelTurnResultSchema,
   sameSessionIdentity,
@@ -132,6 +138,7 @@ export const PiClientConfigSchema = z
     client_version: VersionSchema,
     pi_version: VersionSchema,
     profile: z.enum(["read", "write"]).default("read"),
+    permission_ceiling: PermissionCeilingSchema,
     context: ContextThresholdsSchema.default(DEFAULT_CONTEXT_THRESHOLDS),
     source_digest: z
       .string()
@@ -180,10 +187,14 @@ export type ResumeReadSessionOpenShell = Pick<
 export type ResumeWriteSessionOpenShell = ResumeReadSessionOpenShell;
 
 type ReadSessionCleanupOpenShell = Pick<OpenShellClient, "deleteSandbox">;
+type CurrentActionState = () =>
+  PermissionRuntimeState | Promise<PermissionRuntimeState>;
 
 interface StartSessionOptions {
   readonly client: ReadSessionOpenShell;
   readonly identity: SessionIdentity;
+  readonly permissionCeiling: PermissionCeiling;
+  readonly currentActionState?: CurrentActionState;
   readonly imageContext?: string;
   readonly policyDirectory?: string;
   readonly sandboxName?: string;
@@ -194,7 +205,8 @@ interface StartSessionOptions {
   readonly turnTimeoutMs?: number;
   readonly context?: ContextThresholds;
   readonly model?: ResolvedModelRoute;
-  readonly brief?: Pick<CompiledBrief, "content" | "digest">;
+  readonly brief?: Pick<CompiledBrief, "content" | "digest"> &
+    Partial<Pick<CompiledBrief, "binding">>;
   readonly inputs?: readonly SessionInput[];
   readonly metrics?: SessionMetricRecorder;
   readonly task?: string;
@@ -216,12 +228,15 @@ export type StartReadSessionOptions = StartSessionOptions &
 export type StartWriteSessionOptions = StartSessionOptions & {
   readonly snapshot: SourceSnapshot;
   readonly workspaceSource?: never;
+  readonly writeGrant: { readonly task: string };
 };
 
 export interface ResumeReadSessionOptions {
   readonly client: ResumeReadSessionOpenShell;
   readonly identity: SessionIdentity;
   readonly sandbox: SessionSandbox;
+  readonly permissionCeilingDigest: Digest;
+  readonly currentActionState?: CurrentActionState;
   readonly policyDirectory?: string;
   readonly piVersion?: string;
   readonly clientVersion?: string;
@@ -244,6 +259,7 @@ export interface ReadSessionInfo {
   readonly identity: SessionIdentity;
   readonly sourceDigest: string;
   readonly profile: AgentSessionProfile;
+  readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: string;
   readonly readPolicyDigest: string;
   readonly openshell: OpenShellPreflight;
@@ -344,7 +360,7 @@ function validateSessionInputs(
 }
 
 async function verifiedSessionSource(
-  options: StartReadSessionOptions,
+  options: StartReadSessionOptions | StartWriteSessionOptions,
   profile: AgentSessionProfile,
 ): Promise<VerifiedSessionSource> {
   if (options.workspaceSource) {
@@ -380,6 +396,17 @@ async function verifiedSessionSource(
     manifest,
     sourceDigest: manifest.source_digest,
   };
+}
+
+function hasWriteGrant(
+  options: StartReadSessionOptions | StartWriteSessionOptions,
+): options is StartWriteSessionOptions {
+  const candidate = options as { readonly writeGrant?: unknown };
+  return (
+    typeof candidate.writeGrant === "object" &&
+    candidate.writeGrant !== null &&
+    "task" in candidate.writeGrant
+  );
 }
 
 async function createSessionImageContext(options: {
@@ -563,6 +590,8 @@ async function connectWithRetry(options: {
   readonly piVersion: string;
   readonly clientVersion: string;
   readonly timeoutMs: number;
+  readonly permissionCeiling: PermissionCeiling;
+  readonly currentActionState?: CurrentActionState;
 }): Promise<HostLink> {
   const deadline = Date.now() + options.timeoutMs;
   let lastError: unknown;
@@ -579,6 +608,10 @@ async function connectWithRetry(options: {
         expectedClientVersion: options.clientVersion,
         expectedPiVersion: options.piVersion,
         timeoutMs: Math.min(5_000, options.timeoutMs),
+        permissionCeiling: options.permissionCeiling,
+        ...(options.currentActionState
+          ? { currentActionState: options.currentActionState }
+          : {}),
       });
     } catch (error) {
       lastError = error;
@@ -623,6 +656,7 @@ export class ReadSession {
     private readonly metrics: SessionMetricRecorder | undefined,
     private readonly task: string | undefined,
     private readonly now: () => Date,
+    private readonly currentActionState: CurrentActionState | undefined,
   ) {
     this.info = info;
   }
@@ -777,6 +811,10 @@ export class ReadSession {
         piVersion: this.info.piVersion,
         clientVersion: this.info.clientVersion,
         timeoutMs: this.startupTimeoutMs,
+        permissionCeiling: this.info.permissionCeiling,
+        ...(this.currentActionState
+          ? { currentActionState: this.currentActionState }
+          : {}),
       });
     } catch (error) {
       await this.recordLinkFailure("reconnect", error);
@@ -900,6 +938,10 @@ async function resumeSession(
   const now = options.now ?? (() => new Date());
   const identity = SessionIdentitySchema.parse(options.identity);
   const expectedSandbox = SessionSandboxSchema.parse(options.sandbox);
+  const expectedPermissionCeilingDigest = z
+    .string()
+    .regex(/^sha256:[a-f0-9]{64}$/)
+    .parse(options.permissionCeilingDigest);
   const piVersion = VersionSchema.parse(
     options.piVersion ?? PI_RUNTIME_VERSION,
   );
@@ -963,6 +1005,15 @@ async function resumeSession(
     "/workspace/input/session.json",
   );
   const config = PiClientConfigSchema.parse(rawConfig);
+  if (
+    config.permission_ceiling.permission_ceiling_digest !==
+    expectedPermissionCeilingDigest
+  ) {
+    throw new OrchestratorError(
+      "session_permission_stale",
+      "Immutable Sandbox configuration uses another permission ceiling",
+    );
+  }
   if (!sameSessionIdentity(config.identity, identity)) {
     throw new OrchestratorError(
       "stale_session_generation",
@@ -1079,6 +1130,10 @@ async function resumeSession(
       piVersion,
       clientVersion,
       timeoutMs: startupTimeoutMs,
+      permissionCeiling: config.permission_ceiling,
+      ...(options.currentActionState
+        ? { currentActionState: options.currentActionState }
+        : {}),
     });
     if (model && !link.peer.capabilities.includes("events")) {
       throw new OrchestratorError(
@@ -1095,6 +1150,7 @@ async function resumeSession(
         identity,
         sourceDigest: config.source_digest,
         profile,
+        permissionCeiling: config.permission_ceiling,
         policyDigest: config.policy_digest,
         readPolicyDigest: config.policy_digest,
         openshell: preflight,
@@ -1112,6 +1168,7 @@ async function resumeSession(
       options.metrics,
       options.task,
       now,
+      options.currentActionState,
     );
   } catch (error) {
     await options.metrics
@@ -1141,13 +1198,31 @@ export function resumeWriteSession(
 }
 
 async function startSession(
-  options: StartReadSessionOptions,
+  options: StartReadSessionOptions | StartWriteSessionOptions,
   profile: AgentSessionProfile,
 ): Promise<ReadSession> {
   const now = options.now ?? (() => new Date());
   const source = await verifiedSessionSource(options, profile);
   const inputs = validateSessionInputs(options.inputs);
   const identity = SessionIdentitySchema.parse(options.identity);
+  const permissionCeiling = PermissionCeilingSchema.parse(
+    options.permissionCeiling,
+  );
+  if (permissionCeiling.source !== "read") {
+    throw new OrchestratorError(
+      "permission_denied",
+      `Role '${permissionCeiling.role}' cannot receive Project source`,
+    );
+  }
+  if (profile === "write") {
+    if (!hasWriteGrant(options)) {
+      throw new OrchestratorError(
+        "write_grant_required",
+        "A writable Sandbox requires an exact trusted Task write grant",
+      );
+    }
+    requireWritableGrant(permissionCeiling, options.writeGrant.task);
+  }
   const piVersion = VersionSchema.parse(
     options.piVersion ?? PI_RUNTIME_VERSION,
   );
@@ -1176,8 +1251,10 @@ async function startSession(
   }
   if (
     options.brief &&
-    digestParts("pi-orchestrator/brief/v1", [
-      ["brief.md", options.brief.content],
+    "binding" in options.brief &&
+    digestParts("pi-orchestrator/brief/v2", [
+      ["content", options.brief.content],
+      ["binding", canonicalJson(options.brief.binding)],
     ]) !== options.brief.digest
   ) {
     throw new OrchestratorError(
@@ -1230,6 +1307,7 @@ async function startSession(
     client_version: clientVersion,
     pi_version: piVersion,
     profile,
+    permission_ceiling: permissionCeiling,
     context,
     source_digest: source.sourceDigest,
     policy_digest: policy.digest,
@@ -1309,6 +1387,10 @@ async function startSession(
       piVersion,
       clientVersion,
       timeoutMs: startupTimeoutMs,
+      permissionCeiling,
+      ...(options.currentActionState
+        ? { currentActionState: options.currentActionState }
+        : {}),
     });
     if (model && !link.peer.capabilities.includes("events")) {
       throw new OrchestratorError(
@@ -1325,6 +1407,7 @@ async function startSession(
         identity,
         sourceDigest: source.sourceDigest,
         profile,
+        permissionCeiling,
         policyDigest: policy.digest,
         readPolicyDigest: policy.digest,
         openshell: preflight,
@@ -1342,6 +1425,7 @@ async function startSession(
       options.metrics,
       options.task,
       now,
+      options.currentActionState,
     );
     await options.metrics?.recordSandboxStartup({
       identity,

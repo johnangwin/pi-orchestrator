@@ -13,8 +13,11 @@ import { MetricStore } from "../src/metric.js";
 import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
+import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
 
 const roots: string[] = [];
+const permissionCeilingDigest =
+  fixturePermissionCeiling().permission_ceiling_digest;
 
 afterEach(async () => {
   await Promise.all(
@@ -41,6 +44,7 @@ async function setup(): Promise<{
     plan_id: "fixture-plan",
     plan_revision: 1,
     plan_digest: "sha256:plan",
+    permission_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -54,6 +58,7 @@ async function setup(): Promise<{
   const session = await registry.start({
     agent: "lead",
     session: "session-one",
+    permissionCeilingDigest,
   });
   return { store, registry, identity: session.identity };
 }
@@ -255,6 +260,7 @@ describe("durable Mailbox routing", () => {
         expected: identity,
         session: "session-two",
         reason: "Replace lost context",
+        permissionCeilingDigest,
       });
 
       await expect(
@@ -286,6 +292,7 @@ describe("durable Mailbox routing", () => {
             expected: identity,
             session: "session-two",
             reason: "Replacement raced with delivery",
+            permissionCeilingDigest,
           });
           return "queued" as const;
         }),

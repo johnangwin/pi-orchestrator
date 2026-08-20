@@ -24,7 +24,7 @@ const child = spawn(
     "--no-themes",
     "--no-context-files",
     "--tools",
-    sessionTools(config.profile),
+    sessionTools(config.permission_ceiling, config.profile === "write"),
     "--offline",
     ...modelArguments(config),
   ],

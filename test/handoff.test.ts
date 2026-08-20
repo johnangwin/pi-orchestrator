@@ -29,7 +29,13 @@ import {
 import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
-import { createFixtureProject, createPlan } from "./fixture.js";
+import type { PermissionCeiling } from "../src/permission.js";
+import {
+  createFixtureProject,
+  createPlan,
+  fixturePermissionCeiling,
+  fixturePermissionPolicyDigest,
+} from "./fixture.js";
 
 const roots: string[] = [];
 
@@ -50,6 +56,10 @@ const model: ResolvedModelRoute = {
   max_tokens: 8_192,
   reasoning: false,
 };
+const handoffPermissionCeiling = fixturePermissionCeiling(
+  { kind: "task", task: "bounded-change" },
+  "implementer",
+);
 
 const preflight: OpenShellPreflight = {
   command: "openshell",
@@ -88,6 +98,7 @@ interface Fixture {
   readonly brief: Omit<BriefInput, "identity" | "handoff">;
   readonly sourceDigest: Digest;
   readonly policyDigest: Digest;
+  readonly permissionCeiling: PermissionCeiling;
 }
 
 async function fixture(
@@ -98,6 +109,7 @@ async function fixture(
   const planDirectory = await createPlan(root);
   const project = await loadProject(root);
   const plan = await loadPlan(planDirectory, catalogFromConfig(project.config));
+  const permissionCeiling = handoffPermissionCeiling;
   const home = await mkdtemp(path.join(os.tmpdir(), "pi-handoff-test-"));
   roots.push(home);
   const store = await ProjectStore.open({
@@ -112,6 +124,7 @@ async function fixture(
     plan_id: plan.id,
     plan_revision: plan.revision,
     plan_digest: plan.digest,
+    permission_policy_digest: fixturePermissionPolicyDigest(project),
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: path.join(root, "worktree"),
@@ -129,6 +142,7 @@ async function fixture(
   const initial = await registry.start({
     agent: "implementer",
     session: "session-one",
+    permissionCeilingDigest: permissionCeiling.permission_ceiling_digest,
   });
   await registry.transition(
     initial.identity,
@@ -163,9 +177,11 @@ async function fixture(
     expected: initial.identity,
     sourceDigest,
     policyDigest,
+    permissionCeiling,
     brief: {
       agents: project.agents,
       role,
+      permissionCeiling,
       task: plan.tasks[0]!,
       plan,
       decisions: [],
@@ -199,6 +215,7 @@ function launcher(input: {
     const actual = sandbox(input.calls.value);
     const info = {
       sandbox: actual,
+      permissionCeiling: handoffPermissionCeiling,
       identity,
       sourceDigest: input.sourceDigest,
       profile: "write" as const,
@@ -253,6 +270,8 @@ function options(
     checkpoint,
     launch: defaultHandoffLaunchBinding({
       profile: "write",
+      permissionCeilingDigest:
+        context.permissionCeiling.permission_ceiling_digest,
       sourceDigest: context.sourceDigest,
       policyDigest: context.policyDigest,
       model,
@@ -400,6 +419,8 @@ describe("Handoff lifecycle", () => {
         expected: result.intent.to,
         session: "session-three",
         reason: "A later replacement completed.",
+        permissionCeilingDigest:
+          context.permissionCeiling.permission_ceiling_digest,
       });
       await expect(
         recoverTerminatedSession(

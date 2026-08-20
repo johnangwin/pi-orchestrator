@@ -32,8 +32,11 @@ import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 import { loadSandboxPolicy } from "../src/policy.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
+import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
 
 const roots: string[] = [];
+const permissionCeiling = fixturePermissionCeiling();
+const permissionCeilingDigest = permissionCeiling.permission_ceiling_digest;
 const workspaceOperation = "10000000-0000-4000-8000-000000000001";
 const workspaceId = "10000000-0000-4000-8000-000000000002";
 const paneOperation = "20000000-0000-4000-8000-000000000001";
@@ -218,6 +221,7 @@ async function setup(): Promise<{
     plan_id: "fixture-plan",
     plan_revision: 1,
     plan_digest: "sha256:plan",
+    permission_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -231,6 +235,7 @@ async function setup(): Promise<{
   const session = await registry.start({
     agent: "lead",
     session: "session-one",
+    permissionCeilingDigest,
   });
   const cmux = new FakeProjectionCmux();
   const projection = new ProjectionRegistry(store, "run-one", cmux);
@@ -273,7 +278,7 @@ function runtime(
 ): SessionRuntime {
   return {
     identity,
-    info: { sandbox: actual },
+    info: { sandbox: actual, permissionCeiling },
     deliver: () => Promise.resolve("queued"),
     ping: () => Promise.resolve("nonce"),
     release: () => Promise.resolve(),
@@ -515,6 +520,7 @@ describe("Session lifecycle reconciliation", () => {
       listen: { host: "127.0.0.1", port },
       client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
+      permission_ceiling: permissionCeiling,
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,
     });

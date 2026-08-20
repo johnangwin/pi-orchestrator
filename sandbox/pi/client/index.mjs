@@ -11,6 +11,18 @@ let lastAssistant;
 const deliveredMessageIds = [];
 let lastPressureLevel = "normal";
 
+export function actionAllowed(config, action) {
+  if (!config.permission_ceiling.actions.includes(action)) return false;
+  if (
+    config.permission_ceiling.assignment.kind === "review" &&
+    ["message", "consult", "coordinate"].includes(action)
+  ) {
+    return false;
+  }
+  if (action === "finish" && config.profile !== "write") return false;
+  return true;
+}
+
 function currentPressure(context, config) {
   if (!context) return null;
   return contextPressureEvent(context.getContextUsage(), config.context);
@@ -21,7 +33,10 @@ function publishContextPressure(context, config) {
   const pressure = currentPressure(context, config);
   if (!pressure) return;
   activeServer.emit("context-pressure", pressure);
-  if (crossedHandoffThreshold(lastPressureLevel, pressure.level)) {
+  if (
+    crossedHandoffThreshold(lastPressureLevel, pressure.level) &&
+    actionAllowed(config, "handoff")
+  ) {
     activeServer.emit("handoff-requested", {
       source: "context-pressure",
       reason: "Context usage reached the configured Handoff threshold.",
@@ -116,6 +131,13 @@ export default async function orchestratorClient(pi) {
       if (action === "handoff") {
         if (!activeServer) {
           context.ui.notify("The Orchestrator Link is unavailable", "error");
+          return;
+        }
+        if (!actionAllowed(config, "handoff")) {
+          context.ui.notify(
+            "This Role cannot request a Session Handoff",
+            "error",
+          );
           return;
         }
         const pressure = currentPressure(context, config);

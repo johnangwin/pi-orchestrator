@@ -13,6 +13,7 @@ import {
   commitFixture,
   createFixtureProject,
   createPlan,
+  fixturePermissionPolicyDigest,
   fixtureTask,
 } from "./fixture.js";
 
@@ -68,6 +69,7 @@ describe("approved Run initialization", () => {
         createApproval({
           plan,
           baseCommit: commit,
+          permissionPolicyDigest: fixturePermissionPolicyDigest(project),
           approvedBy: "fixture",
           approvedAt: new Date("2026-08-18T12:00:00.000Z"),
         }),
@@ -146,7 +148,12 @@ describe("approved Run initialization", () => {
       ).rejects.toMatchObject({ code: "approval_required" });
 
       await store.recordApproval(
-        createApproval({ plan, baseCommit: commit, approvedBy: "fixture" }),
+        createApproval({
+          plan,
+          baseCommit: commit,
+          permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+          approvedBy: "fixture",
+        }),
       );
       await writeFile(
         path.join(root, "src", "later.ts"),
@@ -208,7 +215,12 @@ describe("approved Run initialization", () => {
     };
     try {
       await store.recordApproval(
-        createApproval({ plan, baseCommit: commit, approvedBy: "fixture" }),
+        createApproval({
+          plan,
+          baseCommit: commit,
+          permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+          approvedBy: "fixture",
+        }),
       );
       await expect(
         startRun({

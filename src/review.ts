@@ -51,6 +51,13 @@ import {
   type PlanTask,
 } from "./plan.js";
 import type { VerifiedPatch } from "./patch.js";
+import {
+  permissionRuntimeState,
+  projectPermissionPolicyDigest,
+  resolveRolePermissionCeiling,
+  roleHasReadSource,
+  type PermissionCeiling,
+} from "./permission.js";
 import { loadSandboxPolicy } from "./policy.js";
 import { loadProject, type Project } from "./project.js";
 import { AgentRegistry } from "./registry.js";
@@ -929,6 +936,9 @@ function requireRunBinding(options: {
   readonly plan: LoadedPlan;
   readonly projectRecord: ProjectRecord;
 }): void {
+  const permissionPolicyDigest = projectPermissionPolicyDigest(
+    options.project.roles,
+  );
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -948,10 +958,17 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' is not bound to the loaded Plan revision`,
     );
   }
+  if (options.run.permission_policy_digest !== permissionPolicyDigest) {
+    throw new OrchestratorError(
+      "run_permission_policy_stale",
+      `Run '${options.run.id}' was approved under another Role permission policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest as Digest,
+    permissionPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1117,6 +1134,7 @@ function compileReviewBrief(options: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly task: PlanTask;
   readonly lens: ReviewLens;
   readonly plan: LoadedPlan;
@@ -1147,6 +1165,7 @@ function compileReviewBrief(options: {
     identity: options.identity,
     agents: options.project.agents,
     role: options.role,
+    permissionCeiling: options.permissionCeiling,
     task: options.task,
     plan: options.plan,
     decisions: options.decisions,
@@ -1244,8 +1263,8 @@ function requireReviewRole(project: Project) {
   const role = project.roles.get("reviewer");
   if (
     !role ||
-    role.definition.access !== "read" ||
-    role.definition.sandbox !== "read" ||
+    !roleHasReadSource(role.definition) ||
+    role.definition.permissions.write_lease !== "never" ||
     role.definition.lifetime !== "review"
   ) {
     throw new OrchestratorError(
@@ -1544,6 +1563,7 @@ async function allocateReviewSession(options: {
   readonly registry: AgentRegistry;
   readonly lens: ReviewLens;
   readonly model: ResolvedModelRoute;
+  readonly permissionCeiling: PermissionCeiling;
   readonly nonce: string;
 }) {
   const agentId = IdentifierSchema.parse(`review-${options.lens}`);
@@ -1557,7 +1577,12 @@ async function allocateReviewSession(options: {
     `review-${options.lens}-${options.nonce}`,
   );
   if (agent.record.session === null) {
-    return options.registry.start({ agent: agentId, session: sessionId });
+    return options.registry.start({
+      agent: agentId,
+      session: sessionId,
+      permissionCeilingDigest:
+        options.permissionCeiling.permission_ceiling_digest,
+    });
   }
   if (!agent.session || !["stopped", "failed"].includes(agent.session.status)) {
     throw new OrchestratorError(
@@ -1569,6 +1594,8 @@ async function allocateReviewSession(options: {
     expected: agent.session.identity,
     session: sessionId,
     reason: "Fresh independent Review attempt",
+    permissionCeilingDigest:
+      options.permissionCeiling.permission_ceiling_digest,
   });
 }
 
@@ -1647,6 +1674,11 @@ export async function runReview(
   }
   const taskState = requireAppliedTask(initialRun, task);
   const role = requireReviewRole(current.project);
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "review", task: task.id, lens },
+    localPolicy: options.local.permissions,
+  });
   const decisions = z.array(DecisionSchema).parse(options.decisions ?? []);
   const model = resolveReviewModelRoute(
     current.project.config,
@@ -1724,6 +1756,7 @@ export async function runReview(
         identity: existing.identity,
         project: current.project,
         role,
+        permissionCeiling,
         task,
         lens,
         plan: current.plan,
@@ -1788,6 +1821,7 @@ export async function runReview(
           identity: pendingResult.identity,
           project: current.project,
           role,
+          permissionCeiling,
           task,
           lens,
           plan: current.plan,
@@ -1852,6 +1886,7 @@ export async function runReview(
       registry,
       lens,
       model,
+      permissionCeiling,
       nonce,
     });
     const identity = sessionRecord.identity;
@@ -1859,6 +1894,7 @@ export async function runReview(
       identity,
       project: current.project,
       role,
+      permissionCeiling,
       task,
       lens,
       plan: current.plan,
@@ -1909,12 +1945,19 @@ export async function runReview(
         client: options.client,
         identity,
         workspaceSource: source,
+        permissionCeiling,
         model,
         brief,
         context: current.project.config.context,
         inputs: [patchInput],
         metrics,
         task: task.id,
+        currentActionState: async () =>
+          permissionRuntimeState({
+            ceiling: permissionCeiling,
+            identity,
+            run: await options.store.readRun(initialRun.id),
+          }),
         now,
         policyDirectory,
         ...(options.imageContext ? { imageContext: options.imageContext } : {}),
@@ -1927,6 +1970,8 @@ export async function runReview(
       });
       if (
         session.info.profile !== "read" ||
+        session.info.permissionCeiling.permission_ceiling_digest !==
+          permissionCeiling.permission_ceiling_digest ||
         canonicalJson(session.info.identity) !== canonicalJson(identity) ||
         session.info.sourceDigest !== source.manifest.source_digest ||
         session.info.policyDigest !== policy.digest ||
@@ -2054,10 +2099,16 @@ export async function runReview(
         lens,
         latestRole.definition.inference,
       );
+      const latestPermissionCeiling = resolveRolePermissionCeiling({
+        role: latestRole,
+        assignment: { kind: "review", task: task.id, lens },
+        localPolicy: options.local.permissions,
+      });
       const latestBrief = compileReviewBrief({
         identity,
         project: latest.project,
         role: latestRole,
+        permissionCeiling: latestPermissionCeiling,
         task,
         lens,
         plan: latest.plan,
@@ -2073,6 +2124,8 @@ export async function runReview(
       );
       if (
         latestRole.digest !== intent.role_digest ||
+        latestPermissionCeiling.permission_ceiling_digest !==
+          permissionCeiling.permission_ceiling_digest ||
         latestBrief.digest !== intent.brief_digest ||
         canonicalJson(latestModel) !== canonicalJson(intent.model) ||
         latestPolicy.digest !== intent.policy_digest

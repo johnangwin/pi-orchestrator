@@ -1,10 +1,24 @@
-const tools = {
-  read: "read,grep,find,ls",
-  write: "read,write,edit,bash,grep,find,ls",
-};
+const supportedTools = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "write",
+  "edit",
+]);
 
-export function sessionTools(profile = "read") {
-  const selected = tools[profile];
-  if (!selected) throw new Error(`Unsupported Session profile '${profile}'`);
-  return selected;
+export function sessionTools(permissionCeiling, workspaceWritable = false) {
+  if (
+    !permissionCeiling ||
+    !Array.isArray(permissionCeiling.pi_tools) ||
+    !permissionCeiling.pi_tools.every((tool) => supportedTools.has(tool))
+  ) {
+    throw new Error("Invalid Session Pi tool permissions");
+  }
+  return permissionCeiling.pi_tools
+    .filter(
+      (tool) => workspaceWritable || (tool !== "write" && tool !== "edit"),
+    )
+    .join(",");
 }

@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { IdentifierSchema, ModelAliasSchema } from "./config.js";
+import type { Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import { OpenShellSandboxNameSchema } from "./openshell.js";
 
 const TimestampSchema = z.string().datetime({ offset: true });
+const DigestSchema = z
+  .string()
+  .regex(/^sha256:[a-f0-9]{64}$/)
+  .transform((value): Digest => value as Digest);
 
 export const SessionGenerationSchema = z
   .number()
@@ -79,6 +84,7 @@ export const SessionRecordSchema = z
   .object({
     identity: SessionIdentitySchema,
     model: ModelAliasSchema,
+    permission_ceiling_digest: DigestSchema,
     status: SessionStatusSchema,
     sandbox: SessionSandboxSchema.nullable(),
     replaces: SessionReplacementSchema.nullable(),

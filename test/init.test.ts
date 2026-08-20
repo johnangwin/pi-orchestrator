@@ -24,9 +24,15 @@ describe("consumer Project initialization", () => {
 
     const project = await loadProject(root);
     expect(project.config.project.id).toBe("sample-project");
-    expect(project.roles.get("architect")?.definition.model).toBe("plan");
-    expect(project.roles.get("quant")?.definition.model).toBe("quant");
-    expect(project.roles.get("implementer")?.definition.access).toBe("write");
+    expect(project.roles.get("architect")?.definition.permissions.source).toBe(
+      "read",
+    );
+    expect(project.roles.get("quant")?.definition.inference).toBe(
+      "prefer-local",
+    );
+    expect(
+      project.roles.get("implementer")?.definition.permissions.write_lease,
+    ).toBe("task");
     expect(project.skills.get("quant")?.content).toContain(
       "dimensional consistency",
     );

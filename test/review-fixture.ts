@@ -123,6 +123,7 @@ function launcher(
     const session: ReviewSession = {
       info: {
         sandbox,
+        permissionCeiling: options.permissionCeiling,
         identity: options.identity,
         sourceDigest: options.workspaceSource.sourceDigest,
         profile: "read",

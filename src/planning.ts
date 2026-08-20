@@ -15,6 +15,11 @@ import {
 } from "./model.js";
 import type { OpenShellPreflight } from "./openshell.js";
 import { loadSandboxPolicy } from "./policy.js";
+import {
+  resolveRolePermissionCeiling,
+  roleHasReadSource,
+  type PermissionCeiling,
+} from "./permission.js";
 import { SourceAnchorSchema } from "./plan.js";
 import type { Project } from "./project.js";
 import { gitHead, gitOutput } from "./project.js";
@@ -445,6 +450,7 @@ const PlanningRequestWithoutDigestSchema = z
     source_digest: DigestSchema,
     source_entries: z.number().int().positive(),
     role: z.object({ name: IdentifierSchema, digest: DigestSchema }).strict(),
+    permission_ceiling_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
     policy_digest: DigestSchema,
     brief_digest: DigestSchema,
@@ -479,6 +485,7 @@ const PlanningQuestionnaireRecordWithoutDigestSchema = z
     base_commit: GitCommitSchema,
     source_digest: DigestSchema,
     role_digest: DigestSchema,
+    permission_ceiling_digest: DigestSchema,
     model: ResolvedModelRouteSchema,
     policy_digest: DigestSchema,
     brief_digest: DigestSchema,
@@ -569,6 +576,7 @@ export interface CompiledPlanningBrief {
   readonly estimatedTokens: number;
   readonly budgetTokens: number;
   readonly omissions: readonly string[];
+  readonly permissionCeilingDigest: Digest;
 }
 
 export interface PlanningSession {
@@ -658,6 +666,7 @@ export function compilePlanningBrief(input: {
   readonly identity: SessionIdentity;
   readonly project: Project;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly goal: string;
   readonly source: SourceSnapshotManifest;
   readonly contextLimitTokens: number;
@@ -677,6 +686,10 @@ export function compilePlanningBrief(input: {
     planningSection(
       "Role",
       `${canonicalJson(input.role.definition)}\n\n${input.role.body}`,
+    ),
+    planningSection(
+      "Permission Ceiling",
+      `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson({ source: input.permissionCeiling.source, write_lease: input.permissionCeiling.write_lease, pi_tools: input.permissionCeiling.pi_tools, actions: input.permissionCeiling.actions, assignment: input.permissionCeiling.assignment })}`,
     ),
     planningSection("Goal", input.goal),
     planningSection(
@@ -723,6 +736,7 @@ export function compilePlanningBrief(input: {
     estimatedTokens: estimateTokens(content),
     budgetTokens,
     omissions,
+    permissionCeilingDigest: input.permissionCeiling.permission_ceiling_digest,
   };
 }
 
@@ -1733,10 +1747,13 @@ function requirePlanningRole(project: Project): LoadedRole {
       "Repository-aware planning requires the 'lead' Role",
     );
   }
-  if (role.definition.access !== "read" || role.definition.sandbox !== "read") {
+  if (
+    !roleHasReadSource(role.definition) ||
+    role.definition.permissions.write_lease !== "never"
+  ) {
     throw new OrchestratorError(
       "invalid_planning_role",
-      "The planning Lead must use read access and the read Sandbox profile",
+      "The planning Lead must explicitly permit read-only source access",
     );
   }
   return role;
@@ -1765,6 +1782,7 @@ function createPlanningRequest(input: {
   readonly attempt: number;
   readonly identity: SessionIdentity;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly model: ResolvedModelRoute;
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningBrief;
@@ -1782,6 +1800,8 @@ function createPlanningRequest(input: {
     source_digest: input.state.source_digest,
     source_entries: input.state.source_entries,
     role: { name: input.role.definition.name, digest: input.role.digest },
+    permission_ceiling_digest:
+      input.permissionCeiling.permission_ceiling_digest,
     model: input.model,
     policy_digest: input.policyDigest,
     brief_digest: input.brief.digest,
@@ -1798,6 +1818,7 @@ function requireCurrentPlanningRequest(input: {
   readonly state: PlanningState;
   readonly request: PlanningRequest;
   readonly role: LoadedRole;
+  readonly permissionCeiling: PermissionCeiling;
   readonly model: ResolvedModelRoute;
   readonly policyDigest: Digest;
   readonly brief: Pick<CompiledPlanningBrief, "content" | "digest">;
@@ -1811,6 +1832,8 @@ function requireCurrentPlanningRequest(input: {
     input.request.source_entries !== input.state.source_entries ||
     input.request.role.name !== input.role.definition.name ||
     input.request.role.digest !== input.role.digest ||
+    input.request.permission_ceiling_digest !==
+      input.permissionCeiling.permission_ceiling_digest ||
     canonicalJson(input.request.model) !== canonicalJson(input.model) ||
     input.request.policy_digest !== input.policyDigest ||
     input.request.brief_digest !== input.brief.digest ||
@@ -1842,6 +1865,7 @@ function createQuestionnaireRecord(input: {
     base_commit: input.request.base_commit,
     source_digest: input.request.source_digest,
     role_digest: input.request.role.digest,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
     model: input.request.model,
     policy_digest: input.request.policy_digest,
     brief_digest: input.request.brief_digest,
@@ -1877,11 +1901,14 @@ function requireSessionBinding(input: {
   readonly identity: SessionIdentity;
   readonly source: SourceSnapshot;
   readonly model: ResolvedModelRoute;
+  readonly permissionCeiling: PermissionCeiling;
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningBrief;
 }): void {
   if (
     input.info.profile !== "read" ||
+    input.info.permissionCeiling.permission_ceiling_digest !==
+      input.permissionCeiling.permission_ceiling_digest ||
     !sameSessionIdentity(input.info.identity, input.identity) ||
     input.info.sourceDigest !== input.source.manifest.source_digest ||
     input.info.policyDigest !== input.policyDigest ||
@@ -1912,6 +1939,7 @@ function requireQuestionnaireRecord(
     record.source_digest !== state.source_digest ||
     !sameSessionIdentity(record.identity, request.identity) ||
     record.role_digest !== request.role.digest ||
+    record.permission_ceiling_digest !== request.permission_ceiling_digest ||
     canonicalJson(record.model) !== canonicalJson(request.model) ||
     record.policy_digest !== request.policy_digest ||
     record.brief_digest !== request.brief_digest ||
@@ -2007,6 +2035,11 @@ export async function runPlanningQuestionnaire(
     }
 
     const role = requirePlanningRole(options.project);
+    const permissionCeiling = resolveRolePermissionCeiling({
+      role,
+      assignment: { kind: "run" },
+      localPolicy: options.local.permissions,
+    });
     const model = resolveRoleModelRoute(
       options.project.config,
       options.local,
@@ -2045,6 +2078,7 @@ export async function runPlanningQuestionnaire(
         identity: request.identity,
         project: options.project,
         role,
+        permissionCeiling,
         goal,
         source: snapshot.manifest,
         contextLimitTokens: model.context_window,
@@ -2062,6 +2096,7 @@ export async function runPlanningQuestionnaire(
         state,
         request,
         role,
+        permissionCeiling,
         model,
         policyDigest: policy.digest,
         brief,
@@ -2084,6 +2119,7 @@ export async function runPlanningQuestionnaire(
         identity,
         project: options.project,
         role,
+        permissionCeiling,
         goal,
         source: snapshot.manifest,
         contextLimitTokens: model.context_window,
@@ -2093,6 +2129,7 @@ export async function runPlanningQuestionnaire(
         attempt,
         identity,
         role,
+        permissionCeiling,
         model,
         policyDigest: policy.digest,
         brief,
@@ -2119,6 +2156,7 @@ export async function runPlanningQuestionnaire(
         client: options.client,
         identity,
         snapshot,
+        permissionCeiling,
         model,
         brief,
         context: options.project.config.context,
@@ -2137,6 +2175,7 @@ export async function runPlanningQuestionnaire(
         identity,
         source: snapshot,
         model,
+        permissionCeiling,
         policyDigest: policy.digest,
         brief,
       });

@@ -6,10 +6,11 @@ import { OrchestratorError } from "./error.js";
 
 export const ApprovalSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     plan_id: IdentifierSchema,
     plan_revision: z.number().int().positive(),
     plan_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    permission_policy_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     base_commit: z.string().min(1),
     approved_by: z.string().min(1),
     approved_at: z.string().datetime({ offset: true }),
@@ -25,14 +26,16 @@ export interface ApprovalFreshness {
 export function createApproval(input: {
   readonly plan: LoadedPlan;
   readonly baseCommit: string;
+  readonly permissionPolicyDigest: Digest;
   readonly approvedBy: string;
   readonly approvedAt?: Date;
 }): Approval {
   return ApprovalSchema.parse({
-    version: 1,
+    version: 2,
     plan_id: input.plan.id,
     plan_revision: input.plan.revision,
     plan_digest: input.plan.digest,
+    permission_policy_digest: input.permissionPolicyDigest,
     base_commit: input.baseCommit,
     approved_by: input.approvedBy,
     approved_at: (input.approvedAt ?? new Date()).toISOString(),
@@ -45,6 +48,7 @@ export function approvalFreshness(
     readonly planId: string;
     readonly planRevision: number;
     readonly planDigest: Digest;
+    readonly permissionPolicyDigest: Digest;
     readonly baseCommit: string;
   },
 ): ApprovalFreshness {
@@ -54,6 +58,8 @@ export function approvalFreshness(
     reasons.push("Plan revision changed");
   if (approval.plan_digest !== current.planDigest)
     reasons.push("Plan content changed");
+  if (approval.permission_policy_digest !== current.permissionPolicyDigest)
+    reasons.push("Role permission policy changed");
   if (approval.base_commit !== current.baseCommit)
     reasons.push("base commit changed");
   return { fresh: reasons.length === 0, reasons };

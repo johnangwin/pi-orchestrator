@@ -195,6 +195,7 @@ class FakeReviewRuntime {
     }));
     const info = {
       sandbox,
+      permissionCeiling: options.permissionCeiling,
       identity: options.identity,
       sourceDigest: options.workspaceSource.sourceDigest,
       profile: "read" as const,

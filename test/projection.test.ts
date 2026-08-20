@@ -13,7 +13,7 @@ import type {
   EnsureCmuxWorkspaceOptions,
 } from "../src/cmux.js";
 import { ProjectionRegistry, type ProjectionCmux } from "../src/projection.js";
-import { SeatRegistry } from "../src/registry.js";
+import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore, RunStateSchema } from "../src/state.js";
 
@@ -35,7 +35,7 @@ afterEach(async () => {
 
 async function setup(): Promise<{
   store: ProjectStore;
-  seats: SeatRegistry;
+  agents: AgentRegistry;
   identity: SessionIdentity;
 }> {
   const home = await mkdtemp(path.join(os.tmpdir(), "pi-projection-test-"));
@@ -46,7 +46,7 @@ async function setup(): Promise<{
     projectRoot: "/project",
   });
   await store.writeRun({
-    version: 1,
+    version: 2,
     id: "run-one",
     project_id: "fixture",
     plan_id: "fixture-plan",
@@ -60,10 +60,10 @@ async function setup(): Promise<{
     created_at: "2026-08-18T12:00:00.000Z",
     updated_at: "2026-08-18T12:00:00.000Z",
   });
-  const seats = new SeatRegistry(store, "run-one");
-  await seats.register({ seat: "lead", role: "lead", model: "plan" });
-  const session = await seats.start({ seat: "lead", session: "session-one" });
-  return { store, seats, identity: session.identity };
+  const agents = new AgentRegistry(store, "run-one");
+  await agents.register({ agent: "lead", role: "lead", model: "plan" });
+  const session = await agents.start({ agent: "lead", session: "session-one" });
+  return { store, agents, identity: session.identity };
 }
 
 function paneBinding(operationId: string): CmuxPaneBinding {
@@ -137,8 +137,8 @@ class FakeProjectionCmux implements ProjectionCmux {
 
   reconcile(projection: CmuxProjection): Promise<CmuxReconciliation> {
     const panes = Object.fromEntries(
-      Object.entries(projection.panes).map(([seat, binding]) => [
-        seat,
+      Object.entries(projection.panes).map(([agent, binding]) => [
+        agent,
         { binding, status: this.paneStatus },
       ]),
     );
@@ -295,8 +295,8 @@ describe("durable cmux projection registry", () => {
     }
   });
 
-  it("requires Pane removal before advancing the Session epoch", async () => {
-    const { store, seats, identity } = await setup();
+  it("requires Pane removal before advancing the Session generation", async () => {
+    const { store, agents, identity } = await setup();
     try {
       const fake = new FakeProjectionCmux();
       const projection = new ProjectionRegistry(store, "run-one", fake);
@@ -308,7 +308,7 @@ describe("durable cmux projection registry", () => {
       });
 
       await expect(
-        seats.replace({
+        agents.replace({
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
@@ -316,12 +316,12 @@ describe("durable cmux projection registry", () => {
       ).rejects.toThrow();
       await projection.removePane(identity);
       await expect(
-        seats.replace({
+        agents.replace({
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
         }),
-      ).resolves.toMatchObject({ identity: { epoch: 2 } });
+      ).resolves.toMatchObject({ identity: { generation: 2 } });
       expect(fake.closed).toMatchObject([{ pane_id: firstPaneId }]);
     } finally {
       await store.close();
@@ -368,7 +368,7 @@ describe("durable cmux projection registry", () => {
           },
           panes: {
             lead: {
-              identity: { ...identity, epoch: 2 },
+              identity: { ...identity, generation: 2 },
               operation_id: firstPaneOperation,
               title: "lead · plan",
               intent: null,

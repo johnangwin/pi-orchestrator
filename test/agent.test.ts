@@ -24,7 +24,7 @@ import {
   startWriteSession,
   type ReadSessionOpenShell,
   type ResumeReadSessionOpenShell,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { loadSandboxPolicy } from "../src/policy.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
@@ -151,9 +151,9 @@ describe("read Session bootstrap", () => {
         client,
         identity: {
           run: "run-one",
-          seat: "scout",
+          agent: "scout",
           session: "session-one",
-          epoch: 1,
+          generation: 1,
         },
         snapshot,
         linkPort: port,
@@ -167,9 +167,9 @@ describe("read Session bootstrap", () => {
       });
       expect(session.identity).toEqual({
         run: "run-one",
-        seat: "scout",
+        agent: "scout",
         session: "session-one",
-        epoch: 1,
+        generation: 1,
       });
       await expect(session.ping()).resolves.toMatch(/^[a-f0-9]{32}$/);
       await session.reconnect();
@@ -246,9 +246,9 @@ describe("read Session bootstrap", () => {
         client,
         identity: {
           run: "run-one",
-          seat: "implementer",
+          agent: "implementer",
           session: "session-write",
-          epoch: 1,
+          generation: 1,
         },
         snapshot,
         linkPort: port,
@@ -348,9 +348,9 @@ describe("read Session bootstrap", () => {
         client,
         identity: {
           run: fixture.runId,
-          seat: "review-spec",
+          agent: "review-spec",
           session: "review-session",
-          epoch: 1,
+          generation: 1,
         },
         workspaceSource: source,
         inputs: [
@@ -419,9 +419,9 @@ describe("read Session bootstrap", () => {
           client,
           identity: {
             run: "run-one",
-            seat: "review-spec",
+            agent: "review-spec",
             session: "review-session",
-            epoch: 1,
+            generation: 1,
           },
           snapshot,
           inputs: [
@@ -442,9 +442,9 @@ describe("read Session bootstrap", () => {
   it("recovers a Link from immutable Sandbox input without deleting the Sandbox", async () => {
     const identity = {
       run: "run-one",
-      seat: "scout",
+      agent: "scout",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     } as const;
     const port = await availablePort();
     const policy = await loadSandboxPolicy(
@@ -452,7 +452,7 @@ describe("read Session bootstrap", () => {
       path.join(process.cwd(), "sandbox", "policies", "read.yaml"),
     );
     const config = PiClientConfigSchema.parse({
-      version: 1,
+      version: 2,
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port },
@@ -508,14 +508,14 @@ describe("read Session bootstrap", () => {
       workspace: sandbox(1).workspace,
     };
     const message = MessageSchema.parse({
-      version: 1,
+      version: 2,
       id: "recovery-message",
       run: identity.run,
       from: { host: true },
       to: {
-        seat: identity.seat,
+        agent: identity.agent,
         session: identity.session,
-        epoch: identity.epoch,
+        generation: identity.generation,
       },
       type: "instruction",
       priority: "normal",
@@ -558,9 +558,9 @@ describe("read Session bootstrap", () => {
   it("fails recovery before forwarding when Sandbox provenance changed", async () => {
     const identity = {
       run: "run-one",
-      seat: "scout",
+      agent: "scout",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     } as const;
     let forwarded = false;
     let executed = false;
@@ -600,16 +600,16 @@ describe("read Session bootstrap", () => {
   it("rejects recovery under a different immutable Session profile", async () => {
     const identity = {
       run: "run-one",
-      seat: "scout",
+      agent: "scout",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     } as const;
     const policy = await loadSandboxPolicy(
       "read",
       path.join(process.cwd(), "sandbox", "policies", "read.yaml"),
     );
     const config = PiClientConfigSchema.parse({
-      version: 1,
+      version: 2,
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port: 41_727 },
@@ -653,9 +653,9 @@ describe("read Session bootstrap", () => {
   it("requires an expected Brief digest before model-routed recovery", async () => {
     const identity = {
       run: "run-one",
-      seat: "scout",
+      agent: "scout",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     } as const;
     let touchedOpenShell = false;
     const client: ResumeReadSessionOpenShell = {
@@ -790,7 +790,7 @@ describe("read Session bootstrap", () => {
 
     let session: Awaited<ReturnType<typeof startReadSession>> | undefined;
     const metricRoot = await mkdtemp(
-      path.join(os.tmpdir(), "pi-seat-metrics-"),
+      path.join(os.tmpdir(), "pi-agent-metrics-"),
     );
     roots.push(metricRoot);
     const metrics = new MetricStore(metricRoot, "run-one");
@@ -799,9 +799,9 @@ describe("read Session bootstrap", () => {
         client,
         identity: {
           run: "run-one",
-          seat: "scout",
+          agent: "scout",
           session: "session-model",
-          epoch: 1,
+          generation: 1,
         },
         snapshot,
         model,
@@ -813,11 +813,11 @@ describe("read Session bootstrap", () => {
       expect(session.info.model).toEqual(model);
       expect(session.info.briefDigest).toBe(brief.digest);
       const message = MessageSchema.parse({
-        version: 1,
+        version: 2,
         id: "model-turn",
         run: "run-one",
         from: { host: true },
-        to: { seat: "scout", session: "session-model", epoch: 1 },
+        to: { agent: "scout", session: "session-model", generation: 1 },
         type: "instruction",
         priority: "normal",
         reply_to: null,
@@ -922,9 +922,9 @@ describe("read Session bootstrap", () => {
         client,
         identity: {
           run: "run-one",
-          seat: "scout",
+          agent: "scout",
           session: "session-model",
-          epoch: 1,
+          generation: 1,
         },
         snapshot,
         model,
@@ -933,11 +933,11 @@ describe("read Session bootstrap", () => {
         sandboxName: "pio-read-test",
       });
       const message = MessageSchema.parse({
-        version: 1,
+        version: 2,
         id: "model-turn",
         run: "run-one",
         from: { host: true },
-        to: { seat: "scout", session: "session-model", epoch: 1 },
+        to: { agent: "scout", session: "session-model", generation: 1 },
         type: "instruction",
         priority: "normal",
         reply_to: null,
@@ -985,9 +985,9 @@ describe("read Session bootstrap", () => {
           client,
           identity: {
             run: "run-one",
-            seat: "scout",
+            agent: "scout",
             session: "session-one",
-            epoch: 1,
+            generation: 1,
           },
           snapshot,
           sandboxName: "pio-read-failed",

@@ -69,7 +69,7 @@ function initialRunState(options: {
     }),
   );
   return RunStateSchema.parse({
-    version: 1,
+    version: 2,
     id: options.intent.run_id,
     project_id: options.project.config.project.id,
     plan_id: options.plan.id,

@@ -53,7 +53,7 @@ import {
   startReadSession,
   type ReadSessionInfo,
   type ReadSessionOpenShell,
-} from "./seat.js";
+} from "./agent.js";
 import {
   ModelTurnResultSchema,
   SessionIdentitySchema,
@@ -613,7 +613,7 @@ function compileStageBrief(input: {
   const required = [
     section(
       "Identity",
-      `Planning: ${input.identity.run}\nSeat: ${input.identity.seat}\nSession: ${input.identity.session}\nEpoch: ${input.identity.epoch}`,
+      `Planning: ${input.identity.run}\nAgent: ${input.identity.agent}\nSession: ${input.identity.session}\nGeneration: ${input.identity.generation}`,
     ),
     section("Project Instructions", input.project.agents),
     section(
@@ -1205,7 +1205,7 @@ function requireCurrentRequest(input: {
   readonly policyDigest: Digest;
   readonly brief: CompiledPlanningStageBrief;
 }): void {
-  const expectedSeat = input.request.stage === "critique" ? "critic" : "lead";
+  const expectedAgent = input.request.stage === "critique" ? "critic" : "lead";
   if (
     input.request.planning !== input.state.id ||
     input.request.goal_digest !== input.state.goal_digest ||
@@ -1223,7 +1223,7 @@ function requireCurrentRequest(input: {
     input.request.policy_digest !== input.policyDigest ||
     input.request.brief_digest !== input.brief.digest ||
     input.request.identity.run !== input.state.id ||
-    input.request.identity.seat !== expectedSeat
+    input.request.identity.agent !== expectedAgent
   ) {
     throw new OrchestratorError(
       "planning_stage_attempt_stale",
@@ -1258,9 +1258,9 @@ function createCritiqueReport(
     id: "planning-critique",
     kind: "consultation",
     run: record.planning,
-    seat: record.identity.seat,
+    agent: record.identity.agent,
     session: record.identity.session,
-    epoch: record.identity.epoch,
+    generation: record.identity.generation,
     source_digest: record.source_digest,
     content: renderCritique(output),
     created_at: record.created_at,
@@ -1278,9 +1278,9 @@ function createSynthesisReport(
     id: "plan-synthesis",
     kind: "consultation",
     run: record.planning,
-    seat: record.identity.seat,
+    agent: record.identity.agent,
     session: record.identity.session,
-    epoch: record.identity.epoch,
+    generation: record.identity.generation,
     source_digest: record.source_digest,
     content: renderSynthesis(output, record.draft.plan.digest as Digest),
     created_at: record.created_at,
@@ -1663,14 +1663,14 @@ async function runTurn(input: {
       stage: input.stage,
     });
     const message = MessageSchema.parse({
-      version: 1,
+      version: 2,
       id: input.request.message_id,
       run: input.state.id,
       from: { host: true },
       to: {
-        seat: input.request.identity.seat,
+        agent: input.request.identity.agent,
         session: input.request.identity.session,
-        epoch: input.request.identity.epoch,
+        generation: input.request.identity.generation,
       },
       type: input.stage === "critique" ? "planning-critique" : "plan-synthesis",
       priority: "normal",
@@ -1878,9 +1878,9 @@ async function executeCritique(input: {
       );
     const identity = SessionIdentitySchema.parse({
       run: state.id,
-      seat: "critic",
+      agent: "critic",
       session: `critic-${attempt}-${nonce}`,
-      epoch: attempt,
+      generation: attempt,
     });
     brief = compileCritiqueBrief({
       identity,
@@ -2123,9 +2123,9 @@ async function executeSynthesis(input: {
       );
     const identity = SessionIdentitySchema.parse({
       run: state.id,
-      seat: "lead",
+      agent: "lead",
       session: `synthesis-${attempt}-${nonce}`,
-      epoch: state.attempts + attempt,
+      generation: state.attempts + attempt,
     });
     brief = compileSynthesisBrief({
       identity,

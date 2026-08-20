@@ -29,9 +29,9 @@ async function briefInput(): Promise<BriefInput> {
     id: "report-dependency",
     kind: "consultation",
     run: "run-001",
-    seat: "architect",
+    agent: "architect",
     session: "session-001",
-    epoch: 1,
+    generation: 1,
     task: "bounded-change",
     content: "# Conclusion\nKeep the current boundary.",
     created_at: new Date().toISOString(),
@@ -40,9 +40,9 @@ async function briefInput(): Promise<BriefInput> {
   return {
     identity: {
       run: "run-001",
-      seat: "implementer",
+      agent: "implementer",
       session: "session-002",
-      epoch: 2,
+      generation: 2,
     },
     agents: project.agents,
     role,
@@ -88,18 +88,21 @@ describe("Brief compilation", () => {
     expect(brief.omissions).toEqual([]);
   });
 
-  it("marks a Brief stale when source or epoch identity changes", async () => {
+  it("marks a Brief stale when source or generation identity changes", async () => {
     const input = await briefInput();
     const previous = compileBrief(input).binding;
     const current = compileBrief({
       ...input,
-      identity: { ...input.identity, epoch: input.identity.epoch + 1 },
+      identity: {
+        ...input.identity,
+        generation: input.identity.generation + 1,
+      },
       sourceDigests: { "src/fixture.ts": sha256("changed") },
     }).binding;
 
     expect(briefStaleReasons(previous, current)).toEqual([
       "source digest changed",
-      "Session identity or epoch changed",
+      "Session identity or generation changed",
     ]);
   });
 

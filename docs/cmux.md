@@ -33,13 +33,13 @@ The adapter uses these host-side records:
 
 ```text
 Run Workspace  operation UUID + Workspace UUID + expected title
-Seat Pane      operation UUID + Workspace UUID + Pane UUID + Surface UUID + expected title
+Agent Pane     operation UUID + Workspace UUID + Pane UUID + Surface UUID + expected title
 Pane intent    operation UUID + Workspace UUID + expected title + prior Pane UUIDs
 ```
 
 Workspace creation uses cmux's native operation UUID. A Pane intent must be written to authoritative state before `ensurePane` is allowed to create an unbound Pane. This lets a retry identify exactly one Pane created after the intent, including interruption between Pane creation and title assignment.
 
-The Run state store owns those operations, intents, and returned bindings. Pane records also carry the exact Run, Seat, Session, and epoch, so a stale Pane must be removed before Session replacement can advance the Seat epoch.
+The Run state store owns those operations, intents, and returned bindings. Pane records also carry the exact Run, Agent, Session, and generation, so a stale Pane must be removed before Session replacement can advance the Agent generation.
 
 An existing binding is authoritative. If its target is missing, the adapter reports drift and does not silently create a replacement. Reconciliation is read-only, and a missing pane never means that a Task finished.
 

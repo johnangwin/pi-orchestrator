@@ -7,7 +7,7 @@ import { loadLocalConfig } from "../src/local.js";
 import { OpenShellClient } from "../src/openshell.js";
 import { importPatchArtifact } from "../src/patch.js";
 import { gitHead } from "../src/project.js";
-import { startWriteSession, type WriteSession } from "../src/seat.js";
+import { startWriteSession, type WriteSession } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 
 const live = process.env.PI_ORCHESTRATOR_LIVE_IMPLEMENTATION === "1";
@@ -37,9 +37,9 @@ const live = process.env.PI_ORCHESTRATOR_LIVE_IMPLEMENTATION === "1";
       });
       const identity = {
         run: "live-implementation",
-        seat: "implementer",
+        agent: "implementer",
         session: "session-one",
-        epoch: 1,
+        generation: 1,
       } as const;
       let session: WriteSession | undefined;
       try {

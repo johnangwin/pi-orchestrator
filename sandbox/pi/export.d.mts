@@ -17,9 +17,9 @@ export interface ExportedPatch {
     readonly id: string;
     readonly kind: "patch";
     readonly run: string;
-    readonly seat: string;
+    readonly agent: string;
     readonly session: string;
-    readonly epoch: number;
+    readonly generation: number;
     readonly task: string;
     readonly sandbox_path: string;
     readonly media_type: "application/json";

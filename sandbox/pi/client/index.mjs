@@ -80,7 +80,7 @@ export default async function orchestratorClient(pi) {
     });
     context.ui.setStatus(
       "orchestrator",
-      `${config.identity.seat} · epoch ${config.identity.epoch}`,
+      `${config.identity.agent} · generation ${config.identity.generation}`,
     );
   });
 
@@ -138,7 +138,7 @@ export default async function orchestratorClient(pi) {
       const config = await readClientConfig(configPath);
       const pressure = currentPressure(context, config);
       context.ui.notify(
-        `${config.identity.run}/${config.identity.seat}/${config.identity.session} epoch ${config.identity.epoch}${pressure ? ` · ${pressure.percent.toFixed(1)}% context` : ""}`,
+        `${config.identity.run}/${config.identity.agent}/${config.identity.session} generation ${config.identity.generation}${pressure ? ` · ${pressure.percent.toFixed(1)}% context` : ""}`,
         "info",
       );
     },

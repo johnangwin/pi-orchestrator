@@ -49,7 +49,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   bundledPiPolicyDirectory,
-} from "./seat.js";
+} from "./agent.js";
 import { validatePatchPaths } from "./scope.js";
 import {
   syncDirectory,
@@ -1891,7 +1891,7 @@ async function collectReviews(options: {
     ) {
       throw new OrchestratorError(
         "commit_review_stale",
-        `Review '${lens}' no longer matches its durable Session epoch`,
+        `Review '${lens}' no longer matches its durable Session generation`,
       );
     }
     records.push(record);

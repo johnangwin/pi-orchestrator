@@ -51,7 +51,7 @@ export interface EnsureRunWorkspaceOptions {
   readonly focus?: boolean;
 }
 
-export interface EnsureSeatPaneOptions {
+export interface EnsureAgentPaneOptions {
   readonly identity: SessionIdentity;
   readonly operationId: string;
   readonly title: string;
@@ -62,16 +62,16 @@ export interface EnsureSeatPaneOptions {
 }
 
 function requireCurrent(state: RunState, identity: SessionIdentity): void {
-  const seat = state.seats[identity.seat];
+  const agent = state.agents[identity.agent];
   if (
     identity.run !== state.id ||
-    !seat ||
-    seat.session !== identity.session ||
-    seat.epoch !== identity.epoch
+    !agent ||
+    agent.session !== identity.session ||
+    agent.generation !== identity.generation
   ) {
     throw new OrchestratorError(
       "stale_session",
-      `Session '${identity.session}' at epoch ${identity.epoch} is not current for Seat '${identity.seat}' in Run '${state.id}'`,
+      `Session '${identity.session}' at generation ${identity.generation} is not current for Agent '${identity.agent}' in Run '${state.id}'`,
     );
   }
 }
@@ -164,7 +164,7 @@ export class ProjectionRegistry {
   }
 
   async ensurePane(
-    options: EnsureSeatPaneOptions,
+    options: EnsureAgentPaneOptions,
   ): Promise<CmuxEnsureResult<CmuxPaneBinding>> {
     const identity = SessionIdentitySchema.parse(options.identity);
     const desired = CmuxPaneStateSchema.parse({
@@ -183,10 +183,10 @@ export class ProjectionRegistry {
       if (!workspace) {
         throw new OrchestratorError(
           "cmux_workspace_unbound",
-          "The Run Workspace must be durably bound before a Seat Pane",
+          "The Run Workspace must be durably bound before an Agent Pane",
         );
       }
-      const existing = state.cmux.panes[identity.seat];
+      const existing = state.cmux.panes[identity.agent];
       if (existing) {
         if (
           !sameSessionIdentity(existing.identity, identity) ||
@@ -195,7 +195,7 @@ export class ProjectionRegistry {
         ) {
           throw new OrchestratorError(
             "cmux_pane_conflict",
-            `Seat '${identity.seat}' already has another cmux Pane operation`,
+            `Agent '${identity.agent}' already has another cmux Pane operation`,
           );
         }
         pane = existing;
@@ -206,7 +206,7 @@ export class ProjectionRegistry {
         ...state,
         cmux: {
           ...state.cmux,
-          panes: { ...state.cmux.panes, [identity.seat]: desired },
+          panes: { ...state.cmux.panes, [identity.agent]: desired },
         },
       };
     });
@@ -219,7 +219,7 @@ export class ProjectionRegistry {
       });
       await this.store.updateRun(this.runId, (state) => {
         requireCurrent(state, identity);
-        const current = state.cmux.panes[identity.seat];
+        const current = state.cmux.panes[identity.agent];
         if (
           !current ||
           !sameSessionIdentity(current.identity, identity) ||
@@ -234,7 +234,7 @@ export class ProjectionRegistry {
           if (!sameValue(current.intent, intent)) {
             throw new OrchestratorError(
               "cmux_intent_conflict",
-              "The Seat Pane already has another durable creation intent",
+              "The Agent Pane already has another durable creation intent",
             );
           }
           pane = current;
@@ -245,7 +245,7 @@ export class ProjectionRegistry {
           ...state,
           cmux: {
             ...state.cmux,
-            panes: { ...state.cmux.panes, [identity.seat]: pane },
+            panes: { ...state.cmux.panes, [identity.agent]: pane },
           },
         };
       });
@@ -264,7 +264,7 @@ export class ProjectionRegistry {
     });
     await this.store.updateRun(this.runId, (state) => {
       requireCurrent(state, identity);
-      const current = state.cmux.panes[identity.seat];
+      const current = state.cmux.panes[identity.agent];
       if (
         !current ||
         !sameSessionIdentity(current.identity, identity) ||
@@ -279,7 +279,7 @@ export class ProjectionRegistry {
         if (!sameValue(current.binding, result.binding)) {
           throw new OrchestratorError(
             "cmux_binding_conflict",
-            `Seat '${identity.seat}' is already bound to another cmux Pane`,
+            `Agent '${identity.agent}' is already bound to another cmux Pane`,
           );
         }
         return state;
@@ -290,7 +290,7 @@ export class ProjectionRegistry {
           ...state.cmux,
           panes: {
             ...state.cmux.panes,
-            [identity.seat]: { ...current, binding: result.binding },
+            [identity.agent]: { ...current, binding: result.binding },
           },
         },
       };
@@ -299,7 +299,7 @@ export class ProjectionRegistry {
   }
 
   async reattachPane(
-    options: EnsureSeatPaneOptions,
+    options: EnsureAgentPaneOptions,
   ): Promise<CmuxEnsureResult<CmuxPaneBinding>> {
     const identity = SessionIdentitySchema.parse(options.identity);
     const state = await this.store.readRun(this.runId);
@@ -311,14 +311,14 @@ export class ProjectionRegistry {
         "The Run Workspace is not durably bound",
       );
     }
-    const existing = state.cmux.panes[identity.seat];
+    const existing = state.cmux.panes[identity.agent];
     if (!existing) {
       return this.ensurePane(options);
     }
     if (!sameSessionIdentity(existing.identity, identity)) {
       throw new OrchestratorError(
         "stale_session",
-        `The cmux Pane for Seat '${identity.seat}' belongs to another Session`,
+        `The cmux Pane for Agent '${identity.agent}' belongs to another Session`,
       );
     }
 
@@ -332,15 +332,15 @@ export class ProjectionRegistry {
     if (!existing.binding) {
       throw new OrchestratorError(
         "cmux_pane_unbound",
-        `Seat '${identity.seat}' already has an unfinished Pane operation`,
+        `Agent '${identity.agent}' already has an unfinished Pane operation`,
       );
     }
 
     const observed = await this.cmux.reconcile({
       workspace,
-      panes: { [identity.seat]: existing.binding },
+      panes: { [identity.agent]: existing.binding },
     });
-    const status = observed.panes[identity.seat]?.status;
+    const status = observed.panes[identity.agent]?.status;
     if (observed.workspace.status === "missing") {
       throw new OrchestratorError(
         "cmux_workspace_missing",
@@ -350,13 +350,13 @@ export class ProjectionRegistry {
     if (status === "present" || status === "title_mismatch") {
       throw new OrchestratorError(
         "cmux_pane_present",
-        `Seat '${identity.seat}' still has its bound cmux Pane`,
+        `Agent '${identity.agent}' still has its bound cmux Pane`,
       );
     }
     if (status !== "missing" && status !== "surface_missing") {
       throw new OrchestratorError(
         "invalid_cmux_observation",
-        "cmux did not report a valid missing state for the bound Seat Pane",
+        "cmux did not report a valid missing state for the bound Agent Pane",
       );
     }
 
@@ -370,7 +370,7 @@ export class ProjectionRegistry {
     });
     await this.store.updateRun(this.runId, (current) => {
       requireCurrent(current, identity);
-      const pane = current.cmux.panes[identity.seat];
+      const pane = current.cmux.panes[identity.agent];
       if (!pane || !sameValue(pane, existing)) {
         throw new OrchestratorError(
           "cmux_pane_conflict",
@@ -381,7 +381,7 @@ export class ProjectionRegistry {
         ...current,
         cmux: {
           ...current.cmux,
-          panes: { ...current.cmux.panes, [identity.seat]: replacement },
+          panes: { ...current.cmux.panes, [identity.agent]: replacement },
         },
       };
     });
@@ -392,12 +392,12 @@ export class ProjectionRegistry {
     const parsed = SessionIdentitySchema.parse(identity);
     const state = await this.store.readRun(this.runId);
     requireCurrent(state, parsed);
-    const pane = state.cmux.panes[parsed.seat];
+    const pane = state.cmux.panes[parsed.agent];
     if (!pane) return;
     if (!sameSessionIdentity(pane.identity, parsed)) {
       throw new OrchestratorError(
         "stale_session",
-        `The cmux Pane for Seat '${parsed.seat}' belongs to another Session`,
+        `The cmux Pane for Agent '${parsed.agent}' belongs to another Session`,
       );
     }
     if (pane.binding) {
@@ -405,14 +405,14 @@ export class ProjectionRegistry {
       if (!workspace) {
         throw new OrchestratorError(
           "cmux_workspace_unbound",
-          "The bound Seat Pane has no bound Run Workspace",
+          "The bound Agent Pane has no bound Run Workspace",
         );
       }
       const observed = await this.cmux.reconcile({
         workspace,
-        panes: { [parsed.seat]: pane.binding },
+        panes: { [parsed.agent]: pane.binding },
       });
-      const status = observed.panes[parsed.seat]?.status;
+      const status = observed.panes[parsed.agent]?.status;
       if (observed.workspace.status === "missing") {
         if (status !== "workspace_missing") {
           throw new OrchestratorError(
@@ -425,14 +425,14 @@ export class ProjectionRegistry {
       } else if (status !== "missing" && status !== "surface_missing") {
         throw new OrchestratorError(
           "invalid_cmux_observation",
-          "cmux did not report a valid state for the bound Seat Pane",
+          "cmux did not report a valid state for the bound Agent Pane",
         );
       }
     }
 
     await this.store.updateRun(this.runId, (current) => {
       requireCurrent(current, parsed);
-      const existing = current.cmux.panes[parsed.seat];
+      const existing = current.cmux.panes[parsed.agent];
       if (!existing) return current;
       if (!sameValue(existing, pane)) {
         throw new OrchestratorError(
@@ -441,7 +441,7 @@ export class ProjectionRegistry {
         );
       }
       const panes = { ...current.cmux.panes };
-      delete panes[parsed.seat];
+      delete panes[parsed.agent];
       return { ...current, cmux: { ...current.cmux, panes } };
     });
   }
@@ -462,22 +462,22 @@ export class ProjectionRegistry {
       return { healthy: false, workspace: "prepared", pane: "unconfigured" };
     }
 
-    const pane = state.cmux.panes[parsed.seat];
+    const pane = state.cmux.panes[parsed.agent];
     if (pane && !sameSessionIdentity(pane.identity, parsed)) {
       throw new OrchestratorError(
         "stale_session",
-        `The cmux Pane for Seat '${parsed.seat}' belongs to another Session`,
+        `The cmux Pane for Agent '${parsed.agent}' belongs to another Session`,
       );
     }
     const reconciliation = await this.cmux.reconcile({
       workspace: workspaceState.binding,
-      panes: pane?.binding ? { [parsed.seat]: pane.binding } : {},
+      panes: pane?.binding ? { [parsed.agent]: pane.binding } : {},
     });
     const paneStatus: DurablePaneStatus = !pane
       ? "unconfigured"
       : !pane.binding
         ? "prepared"
-        : (reconciliation.panes[parsed.seat]?.status ?? "unconfigured");
+        : (reconciliation.panes[parsed.agent]?.status ?? "unconfigured");
     return {
       healthy:
         reconciliation.workspace.status === "present" &&

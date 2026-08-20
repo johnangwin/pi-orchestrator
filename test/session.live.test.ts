@@ -9,7 +9,7 @@ import {
   PI_RUNTIME_VERSION,
   startReadSession,
   type ReadSession,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 
 const live = process.env.PI_ORCHESTRATOR_LIVE_OPENSHELL === "1";
@@ -40,9 +40,9 @@ const live = process.env.PI_ORCHESTRATOR_LIVE_OPENSHELL === "1";
           client,
           identity: {
             run: "live-probe",
-            seat: "scout",
+            agent: "scout",
             session: "session-one",
-            epoch: 1,
+            generation: 1,
           },
           snapshot,
           startupTimeoutMs: 60_000,
@@ -52,11 +52,11 @@ const live = process.env.PI_ORCHESTRATOR_LIVE_OPENSHELL === "1";
         expect(session.info.sourceDigest).toBe(snapshot.manifest.source_digest);
         await expect(session.ping()).resolves.toMatch(/^[a-f0-9]{32}$/);
         const message = MessageSchema.parse({
-          version: 1,
+          version: 2,
           id: "live-message",
           run: "live-probe",
           from: { host: true },
-          to: { seat: "scout", session: "session-one", epoch: 1 },
+          to: { agent: "scout", session: "session-one", generation: 1 },
           type: "instruction",
           priority: "normal",
           reply_to: null,

@@ -27,7 +27,7 @@ import {
 import { importPatchArtifact, type VerifiedPatch } from "./patch.js";
 import { loadSandboxPolicy } from "./policy.js";
 import { loadProject, resolvePlanDirectory, type Project } from "./project.js";
-import { SeatRegistry } from "./registry.js";
+import { AgentRegistry } from "./registry.js";
 import { createReport, ReportStore, type Report } from "./report.js";
 import type { LoadedRole } from "./role.js";
 import {
@@ -36,7 +36,7 @@ import {
   type StartWriteSessionOptions,
   type WriteSessionInfo,
   type WriteSessionOpenShell,
-} from "./seat.js";
+} from "./agent.js";
 import {
   ModelTurnResultSchema,
   SessionIdentitySchema,
@@ -344,30 +344,30 @@ function requirePinnedPreflight(
 }
 
 async function allocateSession(options: {
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly task: PlanTask;
   readonly model: ResolvedModelRoute;
   readonly nonce: string;
 }) {
-  const seatId = "implementer";
+  const agentId = "implementer";
   await options.registry.register({
-    seat: seatId,
+    agent: agentId,
     role: options.task.role,
     model: options.model.alias,
   });
-  const seat = await options.registry.get(seatId);
+  const agent = await options.registry.get(agentId);
   const sessionId = IdentifierSchema.parse(`implementation-${options.nonce}`);
-  if (seat.record.session === null) {
-    return options.registry.start({ seat: seatId, session: sessionId });
+  if (agent.record.session === null) {
+    return options.registry.start({ agent: agentId, session: sessionId });
   }
-  if (!seat.session || !["stopped", "failed"].includes(seat.session.status)) {
+  if (!agent.session || !["stopped", "failed"].includes(agent.session.status)) {
     throw new OrchestratorError(
       "implementation_session_active",
-      `Implementer Seat already has nonterminal Session '${seat.record.session}'`,
+      `Implementer Agent already has nonterminal Session '${agent.record.session}'`,
     );
   }
   return options.registry.replace({
-    expected: seat.session.identity,
+    expected: agent.session.identity,
     session: sessionId,
     reason: `Implementation attempt for Task '${options.task.id}'`,
   });
@@ -451,7 +451,7 @@ async function markTaskRework(options: {
 }
 
 async function failSession(
-  registry: SeatRegistry,
+  registry: AgentRegistry,
   identity: SessionIdentity,
   reason: string,
 ): Promise<void> {
@@ -586,9 +586,9 @@ function existingReport(options: {
       report.run === options.run.id &&
       report.kind === "implementation" &&
       report.task === options.task.id &&
-      report.seat === application.seat &&
+      report.agent === application.agent &&
       report.session === application.session &&
-      report.epoch === application.epoch &&
+      report.generation === application.generation &&
       report.source_digest === application.source_digest &&
       report.patch_digest === application.sandbox_diff_digest,
   );
@@ -596,16 +596,16 @@ function existingReport(options: {
 
 async function settleAppliedSession(options: {
   readonly client: ImplementationOpenShell;
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly state: TaskRecord;
 }): Promise<void> {
   const application = options.state.patch_application;
   if (!application) return;
   const identity = SessionIdentitySchema.parse({
     run: options.registry.runId,
-    seat: application.seat,
+    agent: application.agent,
     session: application.session,
-    epoch: application.epoch,
+    generation: application.generation,
   });
   const current = await options.registry
     .requireCurrent(identity)
@@ -647,7 +647,7 @@ export async function runImplementation(
       `Run '${initialRun.id}' has no Task '${task.id}'`,
     );
   }
-  const registry = new SeatRegistry(options.store, initialRun.id, now);
+  const registry = new AgentRegistry(options.store, initialRun.id, now);
   const reports = new ReportStore(options.store.runDirectory(initialRun.id));
   const priorReport = existingReport({
     reports: await reports.list(),
@@ -668,9 +668,9 @@ export async function runImplementation(
       task: initialTask,
       identity: SessionIdentitySchema.parse({
         run: initialRun.id,
-        seat: initialTask.patch_application.seat,
+        agent: initialTask.patch_application.agent,
         session: initialTask.patch_application.session,
-        epoch: initialTask.patch_application.epoch,
+        generation: initialTask.patch_application.generation,
       }),
     };
   }
@@ -734,14 +734,14 @@ export async function runImplementation(
     dependencies: await dependencyReports(reports, initialRun.id, task),
   });
   const message = MessageSchema.parse({
-    version: 1,
+    version: 2,
     id: `implementation-request-${nonce}`,
     run: initialRun.id,
     from: { host: true },
     to: {
-      seat: identity.seat,
+      agent: identity.agent,
       session: identity.session,
-      epoch: identity.epoch,
+      generation: identity.generation,
     },
     type: "implementation-request",
     priority: "normal",
@@ -836,9 +836,9 @@ export async function runImplementation(
       id: `implementation-${nonce}`,
       kind: "implementation",
       run: initialRun.id,
-      seat: identity.seat,
+      agent: identity.agent,
       session: identity.session,
-      epoch: identity.epoch,
+      generation: identity.generation,
       task: task.id,
       source_digest: snapshot.manifest.source_digest,
       patch_digest: imported.value.bundle.diff_digest,

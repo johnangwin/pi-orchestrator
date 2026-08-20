@@ -15,29 +15,30 @@ export const MessageLifecycleSchema = z.enum([
 ]);
 export type MessageLifecycle = z.infer<typeof MessageLifecycleSchema>;
 export const messageLifecycles = MessageLifecycleSchema.options;
+export const MESSAGE_PROTOCOL_VERSION = 2 as const;
 
 const MessageSenderSchema = z
   .object({
-    seat: IdentifierSchema.optional(),
+    agent: IdentifierSchema.optional(),
     host: z.literal(true).optional(),
   })
   .strict()
   .refine(
-    (sender) => sender.seat !== undefined || sender.host === true,
-    "sender must identify a Seat or the host",
+    (sender) => sender.agent !== undefined || sender.host === true,
+    "sender must identify an Agent or the host",
   );
 
 export const MessageSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(MESSAGE_PROTOCOL_VERSION),
     id: IdentifierSchema,
     run: IdentifierSchema,
     from: MessageSenderSchema,
     to: z
       .object({
-        seat: IdentifierSchema,
+        agent: IdentifierSchema,
         session: IdentifierSchema.optional(),
-        epoch: z.number().int().nonnegative().optional(),
+        generation: z.number().int().nonnegative().optional(),
       })
       .strict(),
     type: IdentifierSchema,
@@ -51,13 +52,13 @@ export const MessageSchema = z
   .superRefine((message, context) => {
     if (
       (message.to.session === undefined) !==
-      (message.to.epoch === undefined)
+      (message.to.generation === undefined)
     ) {
       context.addIssue({
         code: "custom",
         path: ["to"],
         message:
-          "session and epoch must either both be present or both be absent",
+          "session and generation must either both be present or both be absent",
       });
     }
   });

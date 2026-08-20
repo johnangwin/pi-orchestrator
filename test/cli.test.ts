@@ -149,7 +149,7 @@ describe("host CLI", () => {
     await writeFile(
       path.join(planningDirectory, "state.json"),
       `${JSON.stringify({
-        version: 1,
+        version: 2,
         id: "fixture-planning",
         project_id: "fixture",
         goal: "Exercise status projection",

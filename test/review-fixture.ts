@@ -17,7 +17,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   type ReadSessionOpenShell,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { loadSandboxPolicy } from "../src/policy.js";
 import type { AppliedFixture } from "./applied-fixture.js";
 

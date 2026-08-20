@@ -32,9 +32,9 @@ const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const identity = {
   run: "run-one",
-  seat: "implementer",
+  agent: "implementer",
   session: "session-one",
-  epoch: 1,
+  generation: 1,
 } as const;
 const sourceSandbox: OpenShellSandbox = {
   annotations: {},
@@ -116,7 +116,7 @@ async function fixture() {
   await writeFile(
     sessionConfigPath,
     JSON.stringify({
-      version: 1,
+      version: 2,
       identity,
       profile: "write",
       source_digest: snapshot.manifest.source_digest,
@@ -343,7 +343,7 @@ describe("implementation Patch Artifacts", () => {
       await writeFile(
         value.sessionConfigPath,
         JSON.stringify({
-          version: 1,
+          version: 2,
           identity,
           profile: "read",
           source_digest: value.snapshot.manifest.source_digest,

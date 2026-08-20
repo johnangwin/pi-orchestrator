@@ -5,7 +5,7 @@ import { OpenShellSandboxNameSchema } from "./openshell.js";
 
 const TimestampSchema = z.string().datetime({ offset: true });
 
-export const SessionEpochSchema = z
+export const SessionGenerationSchema = z
   .number()
   .int()
   .positive()
@@ -24,32 +24,32 @@ export type SessionStatus = z.infer<typeof SessionStatusSchema>;
 export const SessionIdentitySchema = z
   .object({
     run: IdentifierSchema,
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     session: IdentifierSchema,
-    epoch: SessionEpochSchema,
+    generation: SessionGenerationSchema,
   })
   .strict();
 export type SessionIdentity = z.infer<typeof SessionIdentitySchema>;
 
-export const SeatRecordSchema = z
+export const AgentRecordSchema = z
   .object({
     role: IdentifierSchema,
     model: ModelAliasSchema,
     session: IdentifierSchema.nullable(),
-    epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     created_at: TimestampSchema,
     updated_at: TimestampSchema,
   })
   .strict()
-  .superRefine((seat, context) => {
-    if ((seat.session === null) !== (seat.epoch === 0)) {
+  .superRefine((agent, context) => {
+    if ((agent.session === null) !== (agent.generation === 0)) {
       context.addIssue({
         code: "custom",
         path: ["session"],
-        message: "a Seat has no Session exactly when its epoch is zero",
+        message: "an Agent has no Session exactly when its generation is zero",
       });
     }
-    if (Date.parse(seat.updated_at) < Date.parse(seat.created_at)) {
+    if (Date.parse(agent.updated_at) < Date.parse(agent.created_at)) {
       context.addIssue({
         code: "custom",
         path: ["updated_at"],
@@ -57,7 +57,7 @@ export const SeatRecordSchema = z
       });
     }
   });
-export type SeatRecord = z.infer<typeof SeatRecordSchema>;
+export type AgentRecord = z.infer<typeof AgentRecordSchema>;
 
 export const SessionSandboxSchema = z
   .object({
@@ -191,8 +191,8 @@ export function sameSessionIdentity(
 ): boolean {
   return (
     left.run === right.run &&
-    left.seat === right.seat &&
+    left.agent === right.agent &&
     left.session === right.session &&
-    left.epoch === right.epoch
+    left.generation === right.generation
   );
 }

@@ -23,7 +23,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   type ReadSessionOpenShell,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { ProjectStore, writeJsonAtomic } from "../src/state.js";
 import { commitFixture, createFixtureProject } from "./fixture.js";
 
@@ -273,8 +273,8 @@ describe("planning questionnaire", () => {
       expect(first.record.questionnaire.questions).toHaveLength(1);
       expect(first.record.identity).toMatchObject({
         run: "fixture-planning",
-        seat: "lead",
-        epoch: 1,
+        agent: "lead",
+        generation: 1,
       });
       expect(first.reused).toBe(false);
 
@@ -371,6 +371,31 @@ describe("planning questionnaire", () => {
       expect(listed).toMatchObject([
         { id: "fixture-planning", status: "answered", attempts: 1 },
       ]);
+
+      await writeJsonAtomic(
+        path.join(
+          context.store.planningDirectory("fixture-planning"),
+          "state.json",
+        ),
+        { ...listed[0], version: 1 },
+      );
+      await expect(
+        new PlanningStore(context.store).get("fixture-planning"),
+      ).rejects.toMatchObject({
+        code: "unsupported_state_version",
+        message: expect.stringContaining("unfinished v0.2 planning"),
+      });
+      await expect(
+        runPlanningQuestionnaire({
+          store: context.store,
+          project: context.project,
+          local: localConfig(),
+          client: client(),
+          goal: "Introduce a bounded fixture boundary",
+          planningId: "fixture-planning",
+          launchSession: launcher(),
+        }),
+      ).rejects.toMatchObject({ code: "unsupported_state_version" });
     } finally {
       await context.store.close();
     }

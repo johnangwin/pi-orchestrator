@@ -23,13 +23,13 @@ function frame(
   data: Record<string, unknown>,
 ): LinkEventFrame {
   return {
-    version: 1,
+    version: 2,
     id: "event-one",
     identity: {
       run: "run-one",
-      seat: "implementer",
+      agent: "implementer",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     },
     type: "event",
     payload: { event, data },

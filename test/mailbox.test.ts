@@ -10,7 +10,7 @@ import {
 } from "../src/mailbox.js";
 import { MessageSchema, type Message } from "../src/message.js";
 import { MetricStore } from "../src/metric.js";
-import { SeatRegistry } from "../src/registry.js";
+import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 
@@ -24,7 +24,7 @@ afterEach(async () => {
 
 async function setup(): Promise<{
   store: ProjectStore;
-  registry: SeatRegistry;
+  registry: AgentRegistry;
   identity: SessionIdentity;
 }> {
   const home = await mkdtemp(path.join(os.tmpdir(), "pi-mailbox-test-"));
@@ -35,7 +35,7 @@ async function setup(): Promise<{
     projectRoot: "/project",
   });
   await store.writeRun({
-    version: 1,
+    version: 2,
     id: "run-one",
     project_id: "fixture",
     plan_id: "fixture-plan",
@@ -49,10 +49,10 @@ async function setup(): Promise<{
     created_at: "2026-08-18T12:00:00.000Z",
     updated_at: "2026-08-18T12:00:00.000Z",
   });
-  const registry = new SeatRegistry(store, "run-one");
-  await registry.register({ seat: "lead", role: "lead", model: "plan" });
+  const registry = new AgentRegistry(store, "run-one");
+  await registry.register({ agent: "lead", role: "lead", model: "plan" });
   const session = await registry.start({
-    seat: "lead",
+    agent: "lead",
     session: "session-one",
   });
   return { store, registry, identity: session.identity };
@@ -60,9 +60,9 @@ async function setup(): Promise<{
 
 function target(identity: SessionIdentity): Message["to"] {
   return {
-    seat: identity.seat,
+    agent: identity.agent,
     session: identity.session,
-    epoch: identity.epoch,
+    generation: identity.generation,
   };
 }
 
@@ -71,11 +71,11 @@ function message(
   overrides: Partial<Pick<Message, "body" | "to">> = {},
 ): Message {
   return MessageSchema.parse({
-    version: 1,
+    version: 2,
     id,
     run: "run-one",
     from: { host: true },
-    to: { seat: "lead" },
+    to: { agent: "lead" },
     type: "instruction",
     priority: "normal",
     reply_to: null,
@@ -96,7 +96,7 @@ function link(
 }
 
 describe("durable Mailbox routing", () => {
-  it("binds a Seat Message to the current Session and queues it only after acknowledgement", async () => {
+  it("binds an Agent Message to the current Session and queues it only after acknowledgement", async () => {
     const { store, registry, identity } = await setup();
     try {
       const delivered: Message[] = [];
@@ -118,9 +118,9 @@ describe("durable Mailbox routing", () => {
         stored: { lifecycle: "queued" },
       });
       expect(result.stored.message.to).toEqual({
-        seat: "lead",
+        agent: "lead",
         session: "session-one",
-        epoch: 1,
+        generation: 1,
       });
       expect(delivered).toEqual([result.stored.message]);
       expect(await router.mailbox.list("answered")).toEqual([]);
@@ -276,7 +276,7 @@ describe("durable Mailbox routing", () => {
     }
   });
 
-  it("does not record a late acknowledgement after the Session epoch changes", async () => {
+  it("does not record a late acknowledgement after the Session generation changes", async () => {
     const { store, registry, identity } = await setup();
     try {
       const router = new MailboxRouter(store, "run-one");
@@ -334,13 +334,13 @@ describe("durable Mailbox routing", () => {
     }
   });
 
-  it("requires Session and epoch targets as one identity pair", () => {
+  it("requires Session and generation targets as one identity pair", () => {
     expect(() =>
       message("msg-partial", {
-        to: { seat: "lead", session: "session-one" },
+        to: { agent: "lead", session: "session-one" },
       }),
     ).toThrow(
-      "session and epoch must either both be present or both be absent",
+      "session and generation must either both be present or both be absent",
     );
   });
 

@@ -25,7 +25,7 @@ import {
   type ReadSessionInfo,
   type ReadSessionOpenShell,
   type StartReadSessionOptions,
-} from "./seat.js";
+} from "./agent.js";
 import {
   ModelTurnResultSchema,
   SessionIdentitySchema,
@@ -254,7 +254,7 @@ function emptySynthesisProgress(): PlanningSynthesisProgress {
 
 export const PlanningStateSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     id: PlanningIdSchema,
     project_id: IdentifierSchema,
     goal: HumanTextSchema,
@@ -671,7 +671,7 @@ export function compilePlanningBrief(input: {
   const required = [
     planningSection(
       "Identity",
-      `Planning: ${input.identity.run}\nSeat: ${input.identity.seat}\nSession: ${input.identity.session}\nEpoch: ${input.identity.epoch}`,
+      `Planning: ${input.identity.run}\nAgent: ${input.identity.agent}\nSession: ${input.identity.session}\nGeneration: ${input.identity.generation}`,
     ),
     planningSection("Project Instructions", input.project.agents),
     planningSection(
@@ -800,6 +800,27 @@ function parseStored<T>(
   return parsed.data;
 }
 
+function parsePlanningState(source: string, filePath: string): PlanningState {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source);
+  } catch {
+    return parseStored(PlanningStateSchema, source, filePath);
+  }
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    "version" in raw &&
+    raw.version === 1
+  ) {
+    throw new OrchestratorError(
+      "unsupported_state_version",
+      `Planning state at ${filePath} uses unsupported schema version 1; unfinished v0.2 planning operations are not migrated or resumed automatically`,
+    );
+  }
+  return parseStored(PlanningStateSchema, source, filePath);
+}
+
 async function readOptional(filePath: string): Promise<string | undefined> {
   try {
     return await readFile(filePath, "utf8");
@@ -871,7 +892,7 @@ export class PlanningStore {
         `Planning request '${id}' does not exist`,
       );
     }
-    return parseStored(PlanningStateSchema, source, filePath);
+    return parsePlanningState(source, filePath);
   }
 
   async list(): Promise<PlanningState[]> {
@@ -917,11 +938,7 @@ export class PlanningStore {
     const goal = HumanTextSchema.parse(input.goal);
     const existingSource = await readOptional(this.stateFile(id));
     if (existingSource !== undefined) {
-      const existing = parseStored(
-        PlanningStateSchema,
-        existingSource,
-        this.stateFile(id),
-      );
+      const existing = parsePlanningState(existingSource, this.stateFile(id));
       if (
         existing.project_id !== input.projectId ||
         existing.goal !== goal ||
@@ -947,7 +964,7 @@ export class PlanningStore {
 
     const timestamp = input.now.toISOString();
     const state = PlanningStateSchema.parse({
-      version: 1,
+      version: 2,
       id,
       project_id: input.projectId,
       goal,
@@ -1129,8 +1146,8 @@ export class PlanningStore {
       input.request.source_digest !== current.source_digest ||
       input.request.source_entries !== current.source_entries ||
       input.request.identity.run !== current.id ||
-      input.request.identity.seat !== "lead" ||
-      input.request.identity.epoch !== input.request.attempt ||
+      input.request.identity.agent !== "lead" ||
+      input.request.identity.generation !== input.request.attempt ||
       input.request.brief_digest !== input.brief.digest
     ) {
       throw new OrchestratorError(
@@ -1798,8 +1815,8 @@ function requireCurrentPlanningRequest(input: {
     input.request.policy_digest !== input.policyDigest ||
     input.request.brief_digest !== input.brief.digest ||
     input.request.identity.run !== input.state.id ||
-    input.request.identity.seat !== "lead" ||
-    input.request.identity.epoch !== input.request.attempt
+    input.request.identity.agent !== "lead" ||
+    input.request.identity.generation !== input.request.attempt
   ) {
     throw new OrchestratorError(
       "planning_attempt_stale",
@@ -2059,9 +2076,9 @@ export async function runPlanningQuestionnaire(
         .parse(rawNonce);
       const identity = SessionIdentitySchema.parse({
         run: planningId,
-        seat: "lead",
+        agent: "lead",
         session: `planning-${attempt}-${nonce}`,
-        epoch: attempt,
+        generation: attempt,
       });
       brief = compilePlanningBrief({
         identity,
@@ -2124,11 +2141,15 @@ export async function runPlanningQuestionnaire(
         brief,
       });
       const message = MessageSchema.parse({
-        version: 1,
+        version: 2,
         id: messageId,
         run: planningId,
         from: { host: true },
-        to: { seat: "lead", session: identity.session, epoch: identity.epoch },
+        to: {
+          agent: "lead",
+          session: identity.session,
+          generation: identity.generation,
+        },
         type: "planning-request",
         priority: "normal",
         reply_to: null,

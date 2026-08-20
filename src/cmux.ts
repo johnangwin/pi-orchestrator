@@ -254,12 +254,12 @@ export const CmuxRunStateSchema = z
 
     const paneOwners = new Map<string, string>();
     const surfaceOwners = new Map<string, string>();
-    for (const [seat, pane] of Object.entries(state.panes)) {
-      if (pane.identity.seat !== seat) {
+    for (const [agent, pane] of Object.entries(state.panes)) {
+      if (pane.identity.agent !== agent) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "identity", "seat"],
-          message: `must equal registry key '${seat}'`,
+          path: ["panes", agent, "identity", "agent"],
+          message: `must equal registry key '${agent}'`,
         });
       }
       for (const [field, value] of [
@@ -270,7 +270,7 @@ export const CmuxRunStateSchema = z
         if (value && value.workspace_id !== workspaceId) {
           context.addIssue({
             code: "custom",
-            path: ["panes", seat, field, "workspace_id"],
+            path: ["panes", agent, field, "workspace_id"],
             message: "must equal the bound Run Workspace",
           });
         }
@@ -280,21 +280,21 @@ export const CmuxRunStateSchema = z
       if (paneOwner) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "binding", "pane_id"],
-          message: `is already bound to Seat '${paneOwner}'`,
+          path: ["panes", agent, "binding", "pane_id"],
+          message: `is already bound to Agent '${paneOwner}'`,
         });
       } else {
-        paneOwners.set(pane.binding.pane_id, seat);
+        paneOwners.set(pane.binding.pane_id, agent);
       }
       const surfaceOwner = surfaceOwners.get(pane.binding.surface_id);
       if (surfaceOwner) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "binding", "surface_id"],
-          message: `is already bound to Seat '${surfaceOwner}'`,
+          path: ["panes", agent, "binding", "surface_id"],
+          message: `is already bound to Agent '${surfaceOwner}'`,
         });
       } else {
-        surfaceOwners.set(pane.binding.surface_id, seat);
+        surfaceOwners.set(pane.binding.surface_id, agent);
       }
     }
   });
@@ -309,11 +309,11 @@ export const CmuxProjectionSchema = z
   .superRefine((projection, context) => {
     const paneOwners = new Map<string, string>();
     const surfaceOwners = new Map<string, string>();
-    for (const [seat, pane] of Object.entries(projection.panes)) {
+    for (const [agent, pane] of Object.entries(projection.panes)) {
       if (pane.workspace_id !== projection.workspace.workspace_id) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "workspace_id"],
+          path: ["panes", agent, "workspace_id"],
           message: "must equal the projection workspace_id",
         });
       }
@@ -321,21 +321,21 @@ export const CmuxProjectionSchema = z
       if (paneOwner) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "pane_id"],
-          message: `is already bound to Seat '${paneOwner}'`,
+          path: ["panes", agent, "pane_id"],
+          message: `is already bound to Agent '${paneOwner}'`,
         });
       } else {
-        paneOwners.set(pane.pane_id, seat);
+        paneOwners.set(pane.pane_id, agent);
       }
       const surfaceOwner = surfaceOwners.get(pane.surface_id);
       if (surfaceOwner) {
         context.addIssue({
           code: "custom",
-          path: ["panes", seat, "surface_id"],
-          message: `is already bound to Seat '${surfaceOwner}'`,
+          path: ["panes", agent, "surface_id"],
+          message: `is already bound to Agent '${surfaceOwner}'`,
         });
       } else {
-        surfaceOwners.set(pane.surface_id, seat);
+        surfaceOwners.set(pane.surface_id, agent);
       }
     }
   });
@@ -1073,7 +1073,7 @@ export class CmuxClient {
     if (!binding && !intent) {
       throw new OrchestratorError(
         "cmux_intent_required",
-        "A durable cmux Pane creation intent is required before creating or recovering a Seat Pane",
+        "A durable cmux Pane creation intent is required before creating or recovering an Agent Pane",
       );
     }
     if (
@@ -1162,7 +1162,7 @@ export class CmuxClient {
       if (matches.some((match) => match.pane.id !== pane.id)) {
         throw new OrchestratorError(
           "cmux_ambiguous_pane",
-          `Seat title '${parsed.title}' and operation '${intent!.operation_id}' resolve to different Panes`,
+          `Agent title '${parsed.title}' and operation '${intent!.operation_id}' resolve to different Panes`,
         );
       }
       if (
@@ -1204,7 +1204,7 @@ export class CmuxClient {
       ) {
         throw new OrchestratorError(
           "cmux_pane_shape",
-          `Cannot recover Seat title '${parsed.title}' from a multi-Surface Pane`,
+          `Cannot recover Agent title '${parsed.title}' from a multi-Surface Pane`,
         );
       }
       return {
@@ -1245,8 +1245,8 @@ export class CmuxClient {
     );
     if (!actualWorkspace) {
       const panes = Object.fromEntries(
-        Object.entries(expected.panes).map(([seat, binding]) => [
-          seat,
+        Object.entries(expected.panes).map(([agent, binding]) => [
+          agent,
           { binding, status: "workspace_missing" as const },
         ]),
       );
@@ -1278,26 +1278,26 @@ export class CmuxClient {
     );
 
     const paneResults: Record<string, CmuxReconciliation["panes"][string]> = {};
-    for (const [seat, binding] of Object.entries(expected.panes)) {
+    for (const [agent, binding] of Object.entries(expected.panes)) {
       const pane = actualPanes.find(
         (candidate) => candidate.id === binding.pane_id,
       );
       if (!pane) {
-        paneResults[seat] = { binding, status: "missing" };
+        paneResults[agent] = { binding, status: "missing" };
         continue;
       }
       if (!pane.surface_ids.includes(binding.surface_id)) {
-        paneResults[seat] = { binding, status: "surface_missing" };
+        paneResults[agent] = { binding, status: "surface_missing" };
         continue;
       }
       const surface = surfaceLists
         .get(binding.pane_id)
         ?.find((candidate) => candidate.id === binding.surface_id);
       if (!surface) {
-        paneResults[seat] = { binding, status: "surface_missing" };
+        paneResults[agent] = { binding, status: "surface_missing" };
         continue;
       }
-      paneResults[seat] =
+      paneResults[agent] =
         surface.title === binding.title
           ? { binding, status: "present", actualTitle: surface.title }
           : {

@@ -434,7 +434,7 @@ describe("cmux lifecycle", () => {
     expect(fake.createWorkspaceCount).toBe(1);
   });
 
-  it("creates, titles, and recovers one Seat Pane without running a Node shell", async () => {
+  it("creates, titles, and recovers one Agent Pane without running a Node shell", async () => {
     const fake = new FakeCmux();
     const client = new CmuxClient({ runner: fake.runner });
     const workspace = (await createWorkspace(client)).binding;

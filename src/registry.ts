@@ -6,13 +6,13 @@ import {
 } from "./config.js";
 import { OrchestratorError } from "./error.js";
 import {
-  SeatRecordSchema,
+  AgentRecordSchema,
   SessionIdentitySchema,
   SessionRecordSchema,
   SessionSandboxSchema,
   SessionStatusSchema,
   transitionSessionStatus,
-  type SeatRecord,
+  type AgentRecord,
   type SessionIdentity,
   type SessionRecord,
   type SessionSandbox,
@@ -22,9 +22,9 @@ import type { ProjectStore, RunState } from "./state.js";
 
 type RegistryStore = Pick<ProjectStore, "readRun" | "updateRun">;
 
-const RegisterSeatInputSchema = z
+const RegisterAgentInputSchema = z
   .object({
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     role: IdentifierSchema,
     model: ModelAliasSchema,
   })
@@ -32,7 +32,7 @@ const RegisterSeatInputSchema = z
 
 const StartSessionInputSchema = z
   .object({
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     session: IdentifierSchema,
   })
   .strict();
@@ -64,37 +64,37 @@ export const SessionTransitionSchema = z.union([
 ]);
 export type SessionTransition = z.infer<typeof SessionTransitionSchema>;
 
-export interface SeatSnapshot {
+export interface AgentSnapshot {
   readonly id: string;
-  readonly record: SeatRecord;
+  readonly record: AgentRecord;
   readonly session: SessionRecord | null;
 }
 
-function requireSeat(state: RunState, seatId: string): SeatRecord {
-  const seat = state.seats[seatId];
-  if (!seat) {
+function requireAgent(state: RunState, agentId: string): AgentRecord {
+  const agent = state.agents[agentId];
+  if (!agent) {
     throw new OrchestratorError(
-      "seat_not_found",
-      `Run '${state.id}' has no Seat '${seatId}'`,
+      "agent_not_found",
+      `Run '${state.id}' has no Agent '${agentId}'`,
     );
   }
-  return seat;
+  return agent;
 }
 
 function requireCurrentSession(
   state: RunState,
   identity: SessionIdentity,
 ): SessionRecord {
-  const seat = state.seats[identity.seat];
+  const agent = state.agents[identity.agent];
   if (
     identity.run !== state.id ||
-    !seat ||
-    seat.session !== identity.session ||
-    seat.epoch !== identity.epoch
+    !agent ||
+    agent.session !== identity.session ||
+    agent.generation !== identity.generation
   ) {
     throw new OrchestratorError(
       "stale_session",
-      `Session '${identity.session}' at epoch ${identity.epoch} is not current for Seat '${identity.seat}' in Run '${state.id}'`,
+      `Session '${identity.session}' at generation ${identity.generation} is not current for Agent '${identity.agent}' in Run '${state.id}'`,
     );
   }
 
@@ -120,7 +120,7 @@ function terminal(status: SessionStatus): boolean {
   return status === "stopped" || status === "failed";
 }
 
-export class SeatRegistry {
+export class AgentRegistry {
   readonly runId: string;
 
   constructor(
@@ -135,9 +135,9 @@ export class SeatRegistry {
     return this.now().toISOString();
   }
 
-  async list(): Promise<SeatSnapshot[]> {
+  async list(): Promise<AgentSnapshot[]> {
     const state = await this.store.readRun(this.runId);
-    return Object.entries(state.seats)
+    return Object.entries(state.agents)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, record]) => ({
         id,
@@ -146,31 +146,31 @@ export class SeatRegistry {
       }));
   }
 
-  async get(seatId: string): Promise<SeatSnapshot> {
-    const parsedSeatId = IdentifierSchema.parse(seatId);
+  async get(agentId: string): Promise<AgentSnapshot> {
+    const parsedAgentId = IdentifierSchema.parse(agentId);
     const state = await this.store.readRun(this.runId);
-    const record = requireSeat(state, parsedSeatId);
+    const record = requireAgent(state, parsedAgentId);
     return {
-      id: parsedSeatId,
+      id: parsedAgentId,
       record,
       session: record.session ? state.sessions[record.session]! : null,
     };
   }
 
   async register(input: {
-    readonly seat: string;
+    readonly agent: string;
     readonly role: string;
     readonly model: ModelAlias;
-  }): Promise<SeatRecord> {
-    const parsed = RegisterSeatInputSchema.parse(input);
-    let result: SeatRecord | undefined;
+  }): Promise<AgentRecord> {
+    const parsed = RegisterAgentInputSchema.parse(input);
+    let result: AgentRecord | undefined;
     await this.store.updateRun(this.runId, (state) => {
-      const existing = state.seats[parsed.seat];
+      const existing = state.agents[parsed.agent];
       if (existing) {
         if (existing.role !== parsed.role || existing.model !== parsed.model) {
           throw new OrchestratorError(
-            "seat_conflict",
-            `Seat '${parsed.seat}' is already registered as Role '${existing.role}' on model '${existing.model}'`,
+            "agent_conflict",
+            `Agent '${parsed.agent}' is already registered as Role '${existing.role}' on model '${existing.model}'`,
           );
         }
         result = existing;
@@ -178,38 +178,38 @@ export class SeatRegistry {
       }
 
       const timestamp = this.timestamp();
-      result = SeatRecordSchema.parse({
+      result = AgentRecordSchema.parse({
         role: parsed.role,
         model: parsed.model,
         session: null,
-        epoch: 0,
+        generation: 0,
         created_at: timestamp,
         updated_at: timestamp,
       });
       return {
         ...state,
-        seats: { ...state.seats, [parsed.seat]: result },
+        agents: { ...state.agents, [parsed.agent]: result },
       };
     });
     return result!;
   }
 
   async start(input: {
-    readonly seat: string;
+    readonly agent: string;
     readonly session: string;
   }): Promise<SessionRecord> {
     const parsed = StartSessionInputSchema.parse(input);
     let result: SessionRecord | undefined;
     await this.store.updateRun(this.runId, (state) => {
-      const seat = requireSeat(state, parsed.seat);
-      if (seat.session !== null) {
-        if (seat.session === parsed.session) {
+      const agent = requireAgent(state, parsed.agent);
+      if (agent.session !== null) {
+        if (agent.session === parsed.session) {
           result = state.sessions[parsed.session];
           return state;
         }
         throw new OrchestratorError(
           "session_already_started",
-          `Seat '${parsed.seat}' already has Session '${seat.session}'`,
+          `Agent '${parsed.agent}' already has Session '${agent.session}'`,
         );
       }
       if (state.sessions[parsed.session]) {
@@ -222,13 +222,13 @@ export class SeatRegistry {
       const timestamp = this.timestamp();
       const identity = SessionIdentitySchema.parse({
         run: state.id,
-        seat: parsed.seat,
+        agent: parsed.agent,
         session: parsed.session,
-        epoch: 1,
+        generation: 1,
       });
       result = SessionRecordSchema.parse({
         identity,
-        model: seat.model,
+        model: agent.model,
         status: "starting",
         sandbox: null,
         replaces: null,
@@ -239,12 +239,12 @@ export class SeatRegistry {
       });
       return {
         ...state,
-        seats: {
-          ...state.seats,
-          [parsed.seat]: {
-            ...seat,
+        agents: {
+          ...state.agents,
+          [parsed.agent]: {
+            ...agent,
             session: parsed.session,
-            epoch: 1,
+            generation: 1,
             updated_at: timestamp,
           },
         },
@@ -268,12 +268,12 @@ export class SeatRegistry {
           `Session '${parsed.expected.session}' belongs to Run '${parsed.expected.run}', not '${state.id}'`,
         );
       }
-      const seat = requireSeat(state, parsed.expected.seat);
+      const agent = requireAgent(state, parsed.expected.agent);
 
-      if (seat.session === parsed.session) {
+      if (agent.session === parsed.session) {
         const existing = state.sessions[parsed.session];
         if (
-          existing?.identity.epoch === parsed.expected.epoch + 1 &&
+          existing?.identity.generation === parsed.expected.generation + 1 &&
           existing.replaces?.session === parsed.expected.session &&
           existing.replaces.reason === parsed.reason
         ) {
@@ -293,15 +293,15 @@ export class SeatRegistry {
           `Session ID '${parsed.session}' already exists in Run '${state.id}'`,
         );
       }
-      if (seat.epoch === Number.MAX_SAFE_INTEGER) {
+      if (agent.generation === Number.MAX_SAFE_INTEGER) {
         throw new OrchestratorError(
-          "epoch_exhausted",
-          `Seat '${parsed.expected.seat}' cannot allocate another Session epoch`,
+          "generation_exhausted",
+          `Agent '${parsed.expected.agent}' cannot allocate another Session generation`,
         );
       }
 
       const timestamp = this.timestamp();
-      const epoch = seat.epoch + 1;
+      const generation = agent.generation + 1;
       const stoppedPrevious = terminal(previous.status)
         ? previous
         : SessionRecordSchema.parse({
@@ -313,13 +313,13 @@ export class SeatRegistry {
           });
       const identity = SessionIdentitySchema.parse({
         run: state.id,
-        seat: parsed.expected.seat,
+        agent: parsed.expected.agent,
         session: parsed.session,
-        epoch,
+        generation,
       });
       result = SessionRecordSchema.parse({
         identity,
-        model: seat.model,
+        model: agent.model,
         status: "starting",
         sandbox: null,
         replaces: {
@@ -333,12 +333,12 @@ export class SeatRegistry {
       });
       return {
         ...state,
-        seats: {
-          ...state.seats,
-          [parsed.expected.seat]: {
-            ...seat,
+        agents: {
+          ...state.agents,
+          [parsed.expected.agent]: {
+            ...agent,
             session: parsed.session,
-            epoch,
+            generation,
             updated_at: timestamp,
           },
         },

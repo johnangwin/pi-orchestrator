@@ -10,6 +10,7 @@ import {
 } from "./session.js";
 import {
   LinkFrameSchema,
+  LINK_PROTOCOL_VERSION,
   LinkTokenSchema,
   MAX_LINK_FRAME_BYTES,
   type LinkFrame,
@@ -327,7 +328,7 @@ export class HostLink {
     const helloId = `hello-${randomUUID()}`;
     try {
       await options.transport.send({
-        version: 1,
+        version: LINK_PROTOCOL_VERSION,
         id: helloId,
         identity,
         type: "hello",
@@ -336,8 +337,8 @@ export class HostLink {
       const ready = await nextFrame(iterator, timeoutMs);
       if (!sameSessionIdentity(ready.identity, identity)) {
         throw new OrchestratorError(
-          "stale_session_epoch",
-          "Link peer returned another Session identity or epoch",
+          "stale_session_generation",
+          "Link peer returned another Session identity or generation",
         );
       }
       if (ready.type === "error") throw remoteError(ready);
@@ -379,7 +380,7 @@ export class HostLink {
   async ping(): Promise<string> {
     const nonce = randomBytes(16).toString("hex");
     const response = await this.exchange({
-      version: 1,
+      version: LINK_PROTOCOL_VERSION,
       id: `ping-${randomUUID()}`,
       identity: this.identity,
       type: "ping",
@@ -397,19 +398,19 @@ export class HostLink {
   async deliver(message: Message): Promise<"queued" | "duplicate"> {
     if (
       message.run !== this.identity.run ||
-      message.to.seat !== this.identity.seat ||
+      message.to.agent !== this.identity.agent ||
       (message.to.session !== undefined &&
         message.to.session !== this.identity.session) ||
-      (message.to.epoch !== undefined &&
-        message.to.epoch !== this.identity.epoch)
+      (message.to.generation !== undefined &&
+        message.to.generation !== this.identity.generation)
     ) {
       throw new OrchestratorError(
-        "stale_session_epoch",
+        "stale_session_generation",
         `Message '${message.id}' does not target the active Session`,
       );
     }
     const response = await this.exchange({
-      version: 1,
+      version: LINK_PROTOCOL_VERSION,
       id: `deliver-${randomUUID()}`,
       identity: this.identity,
       type: "deliver",
@@ -472,8 +473,8 @@ export class HostLink {
         );
         if (!sameSessionIdentity(response.identity, this.identity)) {
           throw new OrchestratorError(
-            "stale_session_epoch",
-            "Link peer emitted a frame for another Session identity or epoch",
+            "stale_session_generation",
+            "Link peer emitted a frame for another Session identity or generation",
           );
         }
         if (response.type === "event") {

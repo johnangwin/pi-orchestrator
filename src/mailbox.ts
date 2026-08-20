@@ -8,7 +8,7 @@ import {
   type StoredMessage,
 } from "./message.js";
 import { MetricStore } from "./metric.js";
-import { SeatRegistry } from "./registry.js";
+import { AgentRegistry } from "./registry.js";
 import {
   sameSessionIdentity,
   SessionIdentitySchema,
@@ -46,25 +46,25 @@ function terminal(session: SessionRecord): boolean {
   return session.status === "stopped" || session.status === "failed";
 }
 
-function currentSession(state: RunState, seatId: string): SessionRecord {
-  const seat = state.seats[seatId];
-  if (!seat) {
+function currentSession(state: RunState, agentId: string): SessionRecord {
+  const agent = state.agents[agentId];
+  if (!agent) {
     throw new OrchestratorError(
-      "seat_not_found",
-      `Run '${state.id}' has no Seat '${seatId}'`,
+      "agent_not_found",
+      `Run '${state.id}' has no Agent '${agentId}'`,
     );
   }
-  if (seat.session === null) {
+  if (agent.session === null) {
     throw new OrchestratorError(
-      "seat_dormant",
-      `Seat '${seatId}' in Run '${state.id}' has no active Session`,
+      "agent_dormant",
+      `Agent '${agentId}' in Run '${state.id}' has no active Session`,
     );
   }
-  const session = state.sessions[seat.session];
+  const session = state.sessions[agent.session];
   if (!session) {
     throw new OrchestratorError(
       "invalid_state",
-      `Current Session '${seat.session}' is missing from Run '${state.id}'`,
+      `Current Session '${agent.session}' is missing from Run '${state.id}'`,
     );
   }
   if (terminal(session)) {
@@ -79,7 +79,7 @@ function currentSession(state: RunState, seatId: string): SessionRecord {
 export class MailboxRouter {
   readonly runId: string;
   readonly mailbox: Mailbox;
-  private readonly registry: SeatRegistry;
+  private readonly registry: AgentRegistry;
   private readonly metrics: Pick<MetricStore, "recordMessageDelivery">;
   private readonly now: () => Date;
   private readonly links = new Map<string, MailboxLink>();
@@ -92,7 +92,7 @@ export class MailboxRouter {
   ) {
     this.runId = IdentifierSchema.parse(runId);
     this.mailbox = new Mailbox(store.runDirectory(this.runId));
-    this.registry = new SeatRegistry(store, this.runId);
+    this.registry = new AgentRegistry(store, this.runId);
     this.metrics =
       options.metrics ??
       new MetricStore(store.runDirectory(this.runId), this.runId);
@@ -119,7 +119,7 @@ export class MailboxRouter {
         );
       }
 
-      this.links.set(identity.seat, link);
+      this.links.set(identity.agent, link);
       try {
         if (
           session.status === "starting" ||
@@ -139,9 +139,9 @@ export class MailboxRouter {
     return this.serialize(async () => {
       const parsed = SessionIdentitySchema.parse(identity);
       await this.registry.requireCurrent(parsed);
-      const link = this.links.get(parsed.seat);
+      const link = this.links.get(parsed.agent);
       if (link && sameSessionIdentity(link.identity, parsed)) {
-        this.links.delete(parsed.seat);
+        this.links.delete(parsed.agent);
       }
       await this.markDisconnected(parsed);
     });
@@ -155,23 +155,23 @@ export class MailboxRouter {
         return { stored, acknowledgement: null };
       }
 
-      const link = this.links.get(bound.to.seat);
+      const link = this.links.get(bound.to.agent);
       if (!link || !this.targets(bound, link.identity)) {
-        if (link) this.links.delete(bound.to.seat);
+        if (link) this.links.delete(bound.to.agent);
         return { stored, acknowledgement: null };
       }
       return this.deliverStored(stored, link);
     });
   }
 
-  async flush(seatId: string): Promise<MailboxDelivery[]> {
+  async flush(agentId: string): Promise<MailboxDelivery[]> {
     return this.serialize(async () => {
-      const seat = IdentifierSchema.parse(seatId);
-      const link = this.links.get(seat);
+      const agent = IdentifierSchema.parse(agentId);
+      const link = this.links.get(agent);
       if (!link) {
         throw new OrchestratorError(
           "link_disconnected",
-          `Seat '${seat}' has no attached Link`,
+          `Agent '${agent}' has no attached Link`,
         );
       }
       return this.deliverPending(link);
@@ -204,26 +204,27 @@ export class MailboxRouter {
 
     const session = currentSession(
       await this.store.readRun(this.runId),
-      parsed.to.seat,
+      parsed.to.agent,
     );
     const identity = session.identity;
     if (
       (parsed.to.session !== undefined &&
         parsed.to.session !== identity.session) ||
-      (parsed.to.epoch !== undefined && parsed.to.epoch !== identity.epoch)
+      (parsed.to.generation !== undefined &&
+        parsed.to.generation !== identity.generation)
     ) {
       throw new OrchestratorError(
         "stale_session",
-        `Message '${parsed.id}' does not target the current Session for Seat '${parsed.to.seat}'`,
+        `Message '${parsed.id}' does not target the current Session for Agent '${parsed.to.agent}'`,
       );
     }
 
     return MessageSchema.parse({
       ...parsed,
       to: {
-        seat: identity.seat,
+        agent: identity.agent,
         session: identity.session,
-        epoch: identity.epoch,
+        generation: identity.generation,
       },
     });
   }
@@ -231,9 +232,9 @@ export class MailboxRouter {
   private targets(message: Message, identity: SessionIdentity): boolean {
     return (
       message.run === identity.run &&
-      message.to.seat === identity.seat &&
+      message.to.agent === identity.agent &&
       message.to.session === identity.session &&
-      message.to.epoch === identity.epoch
+      message.to.generation === identity.generation
     );
   }
 
@@ -248,14 +249,14 @@ export class MailboxRouter {
           `Message '${stored.message.id}' belongs to Run '${stored.message.run}', not '${this.runId}'`,
         );
       }
-      if (stored.message.to.seat !== identity.seat) continue;
+      if (stored.message.to.agent !== identity.agent) continue;
       if (
         stored.message.to.session === undefined ||
-        stored.message.to.epoch === undefined
+        stored.message.to.generation === undefined
       ) {
         throw new OrchestratorError(
           "invalid_message_target",
-          `Pending Message '${stored.message.id}' is not bound to a Session epoch`,
+          `Pending Message '${stored.message.id}' is not bound to a Session generation`,
         );
       }
       if (!this.targets(stored.message, identity)) continue;
@@ -275,7 +276,7 @@ export class MailboxRouter {
     if (!this.targets(stored.message, identity)) {
       throw new OrchestratorError(
         "stale_session",
-        `Message '${stored.message.id}' does not target Link Session '${identity.session}' at epoch ${identity.epoch}`,
+        `Message '${stored.message.id}' does not target Link Session '${identity.session}' at generation ${identity.generation}`,
       );
     }
     await this.registry.requireCurrent(identity);
@@ -328,8 +329,8 @@ export class MailboxRouter {
   }
 
   private removeLink(link: MailboxLink): void {
-    const current = this.links.get(link.identity.seat);
-    if (current === link) this.links.delete(link.identity.seat);
+    const current = this.links.get(link.identity.agent);
+    if (current === link) this.links.delete(link.identity.agent);
   }
 
   private async markDisconnected(identity: SessionIdentity): Promise<void> {

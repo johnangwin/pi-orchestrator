@@ -423,27 +423,27 @@ function requireCurrentArtifactSession(
   task: PlanTask,
   record: ReturnType<typeof ArtifactRecordSchema.parse>,
 ): void {
-  const seat = run.seats[record.seat];
+  const agent = run.agents[record.agent];
   const session = run.sessions[record.session];
   if (
-    !seat ||
+    !agent ||
     !session ||
-    seat.session !== record.session ||
-    seat.epoch !== record.epoch ||
+    agent.session !== record.session ||
+    agent.generation !== record.generation ||
     session.identity.run !== run.id ||
-    session.identity.seat !== record.seat ||
+    session.identity.agent !== record.agent ||
     session.identity.session !== record.session ||
-    session.identity.epoch !== record.epoch
+    session.identity.generation !== record.generation
   ) {
     throw new OrchestratorError(
       "stale_session",
-      `Patch Artifact '${record.id}' was not emitted by the current Session epoch`,
+      `Patch Artifact '${record.id}' was not emitted by the current Session generation`,
     );
   }
-  if (seat.role !== task.role) {
+  if (agent.role !== task.role) {
     throw new OrchestratorError(
       "artifact_role_mismatch",
-      `Patch Artifact Seat '${record.seat}' does not have Task Role '${task.role}'`,
+      `Patch Artifact Agent '${record.agent}' does not have Task Role '${task.role}'`,
     );
   }
   if (
@@ -463,9 +463,9 @@ function applicationIdentity(application: PatchApplication): unknown {
   return {
     artifact_id: application.artifact_id,
     artifact_content_digest: application.artifact_content_digest,
-    seat: application.seat,
+    agent: application.agent,
     session: application.session,
-    epoch: application.epoch,
+    generation: application.generation,
     sandbox_id: application.sandbox_id,
     source_commit: application.source_commit,
     source_paths: application.source_paths,
@@ -543,9 +543,9 @@ function preparedApplication(options: {
   return PatchApplicationSchema.parse({
     artifact_id: options.record.id,
     artifact_content_digest: options.record.content_digest,
-    seat: options.record.seat,
+    agent: options.record.agent,
     session: options.record.session,
-    epoch: options.record.epoch,
+    generation: options.record.generation,
     sandbox_id: options.record.source.sandbox_id,
     source_commit: options.patch.source.commit,
     source_paths: options.patch.source.selected_paths,

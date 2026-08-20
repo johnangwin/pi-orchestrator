@@ -165,11 +165,11 @@ Do not populate source under a writable policy and attempt to switch to `read`. 
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 
-OpenShell Sandbox names are limited to 19 characters in this release. Generated names must reserve room for stable Run/Seat identity without exceeding that limit.
+OpenShell Sandbox names are limited to 19 characters in this release. Generated names must reserve room for stable Run/Agent identity without exceeding that limit.
 
 ## Link consequence
 
-Non-interactive `sandbox exec` buffers stdin until the input producer closes. A delayed-input test delivered all records to the remote command only after EOF, so it cannot carry an indefinitely open duplex `seatctl stream`. The host adapter explicitly closes stdin for ordinary one-shot commands to avoid deadlock.
+Non-interactive `sandbox exec` buffers stdin until the input producer closes. A delayed-input test delivered all records to the remote command only after EOF, so it cannot carry an indefinitely open duplex Session-bridge stream. The host adapter explicitly closes stdin for ordinary one-shot commands to avoid deadlock.
 
 The Link adapter will therefore use `openshell forward service`:
 
@@ -181,7 +181,7 @@ OpenShell gRPC service forward
 Pi client extension
 ```
 
-The Link protocol uses authenticated, identity-bound, 64 KiB JSONL frames. Unit coverage verifies bounded framing, duplicate Message suppression, authentication, and stale-epoch rejection. The live Session test verifies a real Pi extension handshake and host reconnection through OpenShell forwarding:
+The Link protocol uses authenticated, identity-bound, 64 KiB JSONL frames. Unit coverage verifies bounded framing, duplicate Message suppression, authentication, and stale-generation rejection. The live Session test verifies a real Pi extension handshake and host reconnection through OpenShell forwarding:
 
 ```sh
 PI_ORCHESTRATOR_LIVE_OPENSHELL=1 npm test -- test/session.live.test.ts

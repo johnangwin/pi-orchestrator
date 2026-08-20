@@ -53,7 +53,7 @@ import {
 import type { VerifiedPatch } from "./patch.js";
 import { loadSandboxPolicy } from "./policy.js";
 import { loadProject, type Project } from "./project.js";
-import { SeatRegistry } from "./registry.js";
+import { AgentRegistry } from "./registry.js";
 import type { LoadedRole } from "./role.js";
 import {
   PI_CLIENT_VERSION,
@@ -63,7 +63,7 @@ import {
   type ReadSessionInfo,
   type ReadSessionOpenShell,
   type StartReadSessionOptions,
-} from "./seat.js";
+} from "./agent.js";
 import {
   ModelTurnResultSchema,
   SessionIdentitySchema,
@@ -1541,39 +1541,39 @@ async function moveMessageIfPresent(
 }
 
 async function allocateReviewSession(options: {
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly lens: ReviewLens;
   readonly model: ResolvedModelRoute;
   readonly nonce: string;
 }) {
-  const seatId = IdentifierSchema.parse(`review-${options.lens}`);
+  const agentId = IdentifierSchema.parse(`review-${options.lens}`);
   await options.registry.register({
-    seat: seatId,
+    agent: agentId,
     role: "reviewer",
     model: options.model.alias,
   });
-  const seat = await options.registry.get(seatId);
+  const agent = await options.registry.get(agentId);
   const sessionId = IdentifierSchema.parse(
     `review-${options.lens}-${options.nonce}`,
   );
-  if (seat.record.session === null) {
-    return options.registry.start({ seat: seatId, session: sessionId });
+  if (agent.record.session === null) {
+    return options.registry.start({ agent: agentId, session: sessionId });
   }
-  if (!seat.session || !["stopped", "failed"].includes(seat.session.status)) {
+  if (!agent.session || !["stopped", "failed"].includes(agent.session.status)) {
     throw new OrchestratorError(
       "review_session_active",
-      `Review Seat '${seatId}' already has a nonterminal Session`,
+      `Review Agent '${agentId}' already has a nonterminal Session`,
     );
   }
   return options.registry.replace({
-    expected: seat.session.identity,
+    expected: agent.session.identity,
     session: sessionId,
     reason: "Fresh independent Review attempt",
   });
 }
 
 async function failSession(
-  registry: SeatRegistry,
+  registry: AgentRegistry,
   identity: SessionIdentity,
   reason: string,
 ): Promise<void> {
@@ -1589,7 +1589,7 @@ async function failSession(
 
 async function settleRecoveredSession(options: {
   readonly client: ReadSessionOpenShell;
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly intent: ReviewIntent;
 }): Promise<void> {
   let current;
@@ -1703,7 +1703,7 @@ export async function runReview(
       options.store.runDirectory(initialRun.id),
       initialRun.id,
     );
-    const registry = new SeatRegistry(options.store, initialRun.id, now);
+    const registry = new AgentRegistry(options.store, initialRun.id, now);
     const existingGate = taskState.gates[gateKey(lens)];
     if (
       (existingGate?.status === "pass" || existingGate?.status === "fail") &&
@@ -1869,14 +1869,14 @@ export async function runReview(
       model,
     });
     const message = MessageSchema.parse({
-      version: 1,
+      version: 2,
       id: `review-request-${lens}-${nonce}`,
       run: initialRun.id,
       from: { host: true },
       to: {
-        seat: identity.seat,
+        agent: identity.agent,
         session: identity.session,
-        epoch: identity.epoch,
+        generation: identity.generation,
       },
       type: "review-request",
       priority: "normal",

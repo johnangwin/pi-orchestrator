@@ -33,7 +33,7 @@ import {
   PI_RUNTIME_VERSION,
   type AgentSessionProfile,
   type ReadSessionInfo,
-} from "./seat.js";
+} from "./agent.js";
 import {
   sameSessionIdentity,
   SessionIdentitySchema,
@@ -293,9 +293,9 @@ export function createHandoffReport(input: {
     id,
     kind: "handoff",
     run: identity.run,
-    seat: identity.seat,
+    agent: identity.agent,
     session: identity.session,
-    epoch: identity.epoch,
+    generation: identity.generation,
     ...(checkpoint.task ? { task: checkpoint.task } : {}),
     source_digest: checkpoint.source_digest,
     ...(checkpoint.patch_digest
@@ -318,9 +318,9 @@ export function compileHandoffBrief(input: {
   if (
     report.kind !== "handoff" ||
     report.run !== from.run ||
-    report.seat !== from.seat ||
+    report.agent !== from.agent ||
     report.session !== from.session ||
-    report.epoch !== from.epoch
+    report.generation !== from.generation
   ) {
     throw new OrchestratorError(
       "handoff_report_mismatch",
@@ -329,13 +329,13 @@ export function compileHandoffBrief(input: {
   }
   if (
     to.run !== from.run ||
-    to.seat !== from.seat ||
+    to.agent !== from.agent ||
     to.session === from.session ||
-    to.epoch !== from.epoch + 1
+    to.generation !== from.generation + 1
   ) {
     throw new OrchestratorError(
       "handoff_identity_mismatch",
-      "Replacement Session must preserve Run and Seat and advance one epoch",
+      "Replacement Session must preserve Run and Agent and advance one generation",
     );
   }
   if (report.task !== undefined && report.task !== input.brief.task.id) {
@@ -402,7 +402,7 @@ const HandoffIntentWithoutDigestSchema = z
     version: z.literal(1),
     id: HandoffIdSchema,
     run: IdentifierSchema,
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     from: SessionIdentitySchema,
     to: SessionIdentitySchema,
     trigger: HandoffTriggerSchema,
@@ -428,7 +428,7 @@ const HandoffResultWithoutDigestSchema = z
     version: z.literal(1),
     id: HandoffIdSchema,
     run: IdentifierSchema,
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     from: SessionIdentitySchema,
     to: SessionIdentitySchema,
     intent_digest: DigestSchema,
@@ -477,9 +477,9 @@ function validateIntent(raw: unknown): HandoffIntent {
   if (
     intent.run !== intent.from.run ||
     intent.run !== intent.to.run ||
-    intent.seat !== intent.from.seat ||
-    intent.seat !== intent.to.seat ||
-    intent.to.epoch !== intent.from.epoch + 1 ||
+    intent.agent !== intent.from.agent ||
+    intent.agent !== intent.to.agent ||
+    intent.to.generation !== intent.from.generation + 1 ||
     intent.to.session === intent.from.session
   ) {
     throw new OrchestratorError(
@@ -579,16 +579,16 @@ export class HandoffStore {
     this.directory = path.join(path.resolve(runDirectory), "handoffs");
   }
 
-  private operationDirectory(seat: string, id: string): string {
+  private operationDirectory(agent: string, id: string): string {
     return path.join(
       this.directory,
-      IdentifierSchema.parse(seat),
+      IdentifierSchema.parse(agent),
       HandoffIdSchema.parse(id),
     );
   }
 
-  async get(seat: string, id: string): Promise<StoredHandoff | undefined> {
-    const directory = this.operationDirectory(seat, id);
+  async get(agent: string, id: string): Promise<StoredHandoff | undefined> {
+    const directory = this.operationDirectory(agent, id);
     let intentSource: string;
     try {
       intentSource = await readFile(
@@ -609,7 +609,7 @@ export class HandoffStore {
       const brief = fromBriefArtifact(artifact);
       toBriefArtifact(brief);
       if (
-        intent.seat !== IdentifierSchema.parse(seat) ||
+        intent.agent !== IdentifierSchema.parse(agent) ||
         intent.id !== HandoffIdSchema.parse(id) ||
         intent.brief_digest !== brief.digest
       ) {
@@ -655,7 +655,7 @@ export class HandoffStore {
         `Handoff '${intent.id}' does not bind its replacement Brief`,
       );
     }
-    const existing = await this.get(intent.seat, intent.id);
+    const existing = await this.get(intent.agent, intent.id);
     if (existing) {
       if (
         canonicalJson(existing.intent) !== canonicalJson(intent) ||
@@ -670,7 +670,7 @@ export class HandoffStore {
     }
 
     const parent = path.dirname(
-      this.operationDirectory(intent.seat, intent.id),
+      this.operationDirectory(intent.agent, intent.id),
     );
     await mkdir(parent, { recursive: true, mode: 0o700 });
     const staging = await mkdtemp(path.join(parent, `.${intent.id}-`));
@@ -681,12 +681,12 @@ export class HandoffStore {
         toBriefArtifact(brief),
       );
       try {
-        await rename(staging, this.operationDirectory(intent.seat, intent.id));
+        await rename(staging, this.operationDirectory(intent.agent, intent.id));
         await syncDirectory(parent);
         return { intent, brief };
       } catch (error) {
         if (!isRenameConflict(error)) throw error;
-        const raced = await this.get(intent.seat, intent.id);
+        const raced = await this.get(intent.agent, intent.id);
         if (
           !raced ||
           canonicalJson(raced.intent) !== canonicalJson(intent) ||
@@ -705,29 +705,29 @@ export class HandoffStore {
   }
 
   async list(): Promise<StoredHandoff[]> {
-    let seatEntries;
+    let agentEntries;
     try {
-      seatEntries = await readdir(this.directory, { withFileTypes: true });
+      agentEntries = await readdir(this.directory, { withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
     const handoffs: StoredHandoff[] = [];
-    for (const seatEntry of seatEntries.sort((left, right) =>
+    for (const agentEntry of agentEntries.sort((left, right) =>
       left.name.localeCompare(right.name),
     )) {
-      if (seatEntry.name.startsWith(".")) continue;
+      if (agentEntry.name.startsWith(".")) continue;
       if (
-        !seatEntry.isDirectory() ||
-        !IdentifierSchema.safeParse(seatEntry.name).success
+        !agentEntry.isDirectory() ||
+        !IdentifierSchema.safeParse(agentEntry.name).success
       ) {
         throw new OrchestratorError(
           "handoff_store_corrupt",
-          `Unexpected Handoff Seat entry '${path.join(this.directory, seatEntry.name)}'`,
+          `Unexpected Handoff Agent entry '${path.join(this.directory, agentEntry.name)}'`,
         );
       }
-      const seatDirectory = path.join(this.directory, seatEntry.name);
-      const operationEntries = await readdir(seatDirectory, {
+      const agentDirectory = path.join(this.directory, agentEntry.name);
+      const operationEntries = await readdir(agentDirectory, {
         withFileTypes: true,
       });
       for (const operationEntry of operationEntries.sort((left, right) =>
@@ -740,10 +740,10 @@ export class HandoffStore {
         ) {
           throw new OrchestratorError(
             "handoff_store_corrupt",
-            `Unexpected Handoff operation entry '${path.join(seatDirectory, operationEntry.name)}'`,
+            `Unexpected Handoff operation entry '${path.join(agentDirectory, operationEntry.name)}'`,
           );
         }
-        const handoff = await this.get(seatEntry.name, operationEntry.name);
+        const handoff = await this.get(agentEntry.name, operationEntry.name);
         if (!handoff) {
           throw new OrchestratorError(
             "handoff_store_corrupt",
@@ -762,7 +762,7 @@ export class HandoffStore {
 
   async complete(requested: HandoffResult): Promise<HandoffResult> {
     const result = validateResult(requested);
-    const stored = await this.get(result.seat, result.id);
+    const stored = await this.get(result.agent, result.id);
     if (!stored) {
       throw new OrchestratorError(
         "handoff_intent_missing",
@@ -780,7 +780,7 @@ export class HandoffStore {
       return stored.result;
     }
 
-    const operation = this.operationDirectory(result.seat, result.id);
+    const operation = this.operationDirectory(result.agent, result.id);
     const staging = await mkdtemp(path.join(operation, ".result-"));
     try {
       await writeJsonAtomic(path.join(staging, "result.json"), result);
@@ -790,7 +790,7 @@ export class HandoffStore {
         return result;
       } catch (error) {
         if (!isRenameConflict(error)) throw error;
-        const raced = await this.get(result.seat, result.id);
+        const raced = await this.get(result.agent, result.id);
         if (
           !raced?.result ||
           canonicalJson(raced.result) !== canonicalJson(result)
@@ -815,7 +815,7 @@ function requireResultIntent(
   if (
     result.id !== intent.id ||
     result.run !== intent.run ||
-    result.seat !== intent.seat ||
+    result.agent !== intent.agent ||
     !sameSessionIdentity(result.from, intent.from) ||
     !sameSessionIdentity(result.to, intent.to) ||
     result.intent_digest !== intent.intent_digest ||
@@ -933,7 +933,7 @@ function createIntent(input: {
     version: 1,
     id: input.id,
     run: input.from.run,
-    seat: input.from.seat,
+    agent: input.from.agent,
     from: input.from,
     to: input.to,
     trigger: input.trigger,
@@ -966,7 +966,7 @@ function createResult(input: {
     version: 1,
     id: input.intent.id,
     run: input.intent.run,
-    seat: input.intent.seat,
+    agent: input.intent.agent,
     from: input.intent.from,
     to: input.intent.to,
     intent_digest: input.intent.intent_digest,
@@ -1040,7 +1040,7 @@ function requireReplacementState(
   ) {
     throw new OrchestratorError(
       "handoff_session_conflict",
-      `Seat '${intent.seat}' is not at the intended replacement epoch`,
+      `Agent '${intent.agent}' is not at the intended replacement generation`,
     );
   }
 }
@@ -1163,9 +1163,9 @@ export async function runHandoff(
   });
   const to = SessionIdentitySchema.parse({
     run: expected.run,
-    seat: expected.seat,
+    agent: expected.agent,
     session: identifiers.replacementSession,
-    epoch: expected.epoch + 1,
+    generation: expected.generation + 1,
   });
   const handoffs = new HandoffStore(options.store.runDirectory(expected.run));
   const reports = new ReportStore(options.store.runDirectory(expected.run));
@@ -1173,7 +1173,7 @@ export async function runHandoff(
     options.store.runDirectory(expected.run),
     expected.run,
   );
-  let stored = await handoffs.get(expected.seat, identifiers.id);
+  let stored = await handoffs.get(expected.agent, identifiers.id);
   let report: Report;
   let brief: CompiledBrief;
 
@@ -1284,8 +1284,8 @@ export async function runHandoff(
     };
   }
 
-  const seat = await options.reconciler.registry.get(expected.seat);
-  if (seat.session && sameSessionIdentity(seat.session.identity, expected)) {
+  const agent = await options.reconciler.registry.get(expected.agent);
+  if (agent.session && sameSessionIdentity(agent.session.identity, expected)) {
     await options.reconciler.replace({
       expected,
       session: stored.intent.to.session,
@@ -1293,7 +1293,7 @@ export async function runHandoff(
       ...(options.fromRuntime ? { runtime: options.fromRuntime } : {}),
     });
   } else {
-    requireReplacementState(seat.session, stored.intent);
+    requireReplacementState(agent.session, stored.intent);
   }
 
   const replacement = await options.reconciler.registry.requireCurrent(to);

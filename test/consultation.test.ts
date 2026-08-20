@@ -25,7 +25,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   type ReadSessionOpenShell,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { ProjectStore } from "../src/state.js";
 import { commitFixture, createFixtureProject } from "./fixture.js";
 
@@ -193,15 +193,15 @@ const quantOutput = {
 
 function launcher(input: {
   readonly responses: Readonly<Record<string, string>>;
-  readonly launches?: Array<{ seat: string; brief: string; model: string }>;
+  readonly launches?: Array<{ agent: string; brief: string; model: string }>;
 }): PlanningSessionLauncher {
   return async (options) => {
     if (!options.model || !options.brief || !options.snapshot) {
       throw new Error("Fixture Session lacks exact model inputs");
     }
-    const seat = options.identity.seat;
+    const agent = options.identity.agent;
     input.launches?.push({
-      seat,
+      agent,
       brief: options.brief.content,
       model: options.model.pi_model,
     });
@@ -214,13 +214,13 @@ function launcher(input: {
       created_at: "2026-08-18 18:00:00",
       current_policy_version: 1,
       id:
-        seat === "architect"
+        agent === "architect"
           ? "00000000-0000-4000-8000-000000000002"
-          : seat === "quant"
+          : agent === "quant"
             ? "00000000-0000-4000-8000-000000000003"
             : "00000000-0000-4000-8000-000000000001",
       labels: {},
-      name: `pio-${seat}`,
+      name: `pio-${agent}`,
       phase: "Ready",
       resource_version: 1,
       workspace: "planning",
@@ -248,7 +248,7 @@ function launcher(input: {
         requested_model: model.pi_model,
         response_model: model.pi_model,
         stop_reason: "stop",
-        text: input.responses[seat] ?? "{}",
+        text: input.responses[agent] ?? "{}",
         truncated: false,
         usage: { input: 100, output: 50 },
       }),
@@ -327,7 +327,7 @@ describe("planning consultation", () => {
 
   it("runs independent Architecture and Quant Sessions and reuses exact Reports", async () => {
     const context = await planningFixture();
-    const launches: Array<{ seat: string; brief: string; model: string }> = [];
+    const launches: Array<{ agent: string; brief: string; model: string }> = [];
     try {
       const first = await runPlanningConsultations({
         store: context.store,
@@ -354,7 +354,7 @@ describe("planning consultation", () => {
         "quant",
       ]);
       expect(first.consultations.every((item) => !item.reused)).toBe(true);
-      expect(launches.map((item) => [item.seat, item.model])).toEqual([
+      expect(launches.map((item) => [item.agent, item.model])).toEqual([
         ["architect", "fixture-planner"],
         ["quant", "fixture-quant"],
       ]);
@@ -427,7 +427,7 @@ describe("planning consultation", () => {
         },
       });
 
-      const launches: Array<{ seat: string; brief: string; model: string }> =
+      const launches: Array<{ agent: string; brief: string; model: string }> =
         [];
       const recovered = await runPlanningConsultations({
         store: context.store,
@@ -454,7 +454,7 @@ describe("planning consultation", () => {
         reused: false,
         request: { attempt: 2 },
       });
-      expect(launches.map((item) => item.seat)).toEqual(["quant"]);
+      expect(launches.map((item) => item.agent)).toEqual(["quant"]);
     } finally {
       await context.store.close();
     }

@@ -45,9 +45,9 @@ async function temporaryRoot(): Promise<string> {
 
 const identity: SessionIdentity = {
   run: "run-one",
-  seat: "implementer",
+  agent: "implementer",
   session: "session-one",
-  epoch: 3,
+  generation: 3,
 };
 
 const sourceSandbox: OpenShellSandbox = {
@@ -79,9 +79,9 @@ function descriptor(
     id,
     kind: "fixture",
     run: identity.run,
-    seat: identity.seat,
+    agent: identity.agent,
     session: identity.session,
-    epoch: identity.epoch,
+    generation: identity.generation,
     task: "task-one",
     sandbox_path: artifactSandboxPath(id),
     media_type: "application/json",
@@ -435,9 +435,9 @@ describe("Artifact import", () => {
       id: "report-one",
       kind: "consultation",
       run: identity.run,
-      seat: identity.seat,
+      agent: identity.agent,
       session: identity.session,
-      epoch: identity.epoch,
+      generation: identity.generation,
       task: "task-one",
       content: "# Conclusion\n\nThe boundary holds.",
       created_at: "2026-08-17T18:42:00Z",

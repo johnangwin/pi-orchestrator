@@ -532,9 +532,9 @@ export async function collectRunMetrics(input: {
       const message = messagesById.get(metric.message);
       if (
         !message ||
-        message.to.seat !== metric.identity.seat ||
+        message.to.agent !== metric.identity.agent ||
         message.to.session !== metric.identity.session ||
-        message.to.epoch !== metric.identity.epoch ||
+        message.to.generation !== metric.identity.generation ||
         message.created_at !== metric.message_created_at
       ) {
         throw new OrchestratorError(
@@ -589,8 +589,8 @@ export async function collectRunMetrics(input: {
       report.run !== run.id ||
       (report.task !== undefined && !run.tasks[report.task]) ||
       !session ||
-      session.identity.seat !== report.seat ||
-      session.identity.epoch !== report.epoch
+      session.identity.agent !== report.agent ||
+      session.identity.generation !== report.generation
     ) {
       throw new OrchestratorError(
         "metric_evidence_mismatch",
@@ -689,14 +689,14 @@ export async function collectRunMetrics(input: {
     if (observation.metric.kind !== "context-pressure") continue;
     const metric = observation.metric;
     pressureByKey.set(
-      `${metric.identity.session}:${metric.identity.epoch}:${observation.observed_at}:${metric.pressure.tokens}`,
+      `${metric.identity.session}:${metric.identity.generation}:${observation.observed_at}:${metric.pressure.tokens}`,
       metric.pressure,
     );
   }
   for (const handoff of handoffs) {
     if (!handoff.intent.pressure) continue;
     pressureByKey.set(
-      `${handoff.intent.from.session}:${handoff.intent.from.epoch}:${handoff.intent.created_at}:${handoff.intent.pressure.tokens}`,
+      `${handoff.intent.from.session}:${handoff.intent.from.generation}:${handoff.intent.created_at}:${handoff.intent.pressure.tokens}`,
       handoff.intent.pressure,
     );
   }

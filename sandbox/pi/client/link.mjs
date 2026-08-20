@@ -7,6 +7,9 @@ import {
 } from "./context.mjs";
 
 export const MAX_LINK_FRAME_BYTES = 64 * 1024;
+const LINK_PROTOCOL_VERSION = 2;
+const CLIENT_CONFIG_VERSION = 2;
+const MESSAGE_PROTOCOL_VERSION = 2;
 const frameIdPattern = /^[a-z][a-z0-9-]{0,127}$/;
 const identifierPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -43,21 +46,21 @@ function exactKeys(value, required, optional = []) {
 
 function validIdentity(value) {
   return (
-    exactKeys(value, ["run", "seat", "session", "epoch"]) &&
+    exactKeys(value, ["run", "agent", "session", "generation"]) &&
     identifierPattern.test(value.run) &&
-    identifierPattern.test(value.seat) &&
+    identifierPattern.test(value.agent) &&
     identifierPattern.test(value.session) &&
-    Number.isSafeInteger(value.epoch) &&
-    value.epoch >= 0
+    Number.isSafeInteger(value.generation) &&
+    value.generation >= 0
   );
 }
 
 function sameIdentity(left, right) {
   return (
     left.run === right.run &&
-    left.seat === right.seat &&
+    left.agent === right.agent &&
     left.session === right.session &&
-    left.epoch === right.epoch
+    left.generation === right.generation
   );
 }
 
@@ -76,22 +79,24 @@ function validMessage(message, identity) {
       "references",
       "created_at",
     ]) ||
-    message.version !== 1 ||
+    message.version !== MESSAGE_PROTOCOL_VERSION ||
     !identifierPattern.test(message.id) ||
     message.run !== identity.run ||
-    !exactKeys(message.from, [], ["seat", "host"]) ||
-    (!identifierPattern.test(message.from.seat ?? "") &&
+    !exactKeys(message.from, [], ["agent", "host"]) ||
+    (!identifierPattern.test(message.from.agent ?? "") &&
       message.from.host !== true) ||
     (message.from.host !== undefined && message.from.host !== true) ||
-    !exactKeys(message.to, ["seat"], ["session", "epoch"]) ||
-    message.to.seat !== identity.seat ||
+    !exactKeys(message.to, ["agent"], ["session", "generation"]) ||
+    message.to.agent !== identity.agent ||
     (message.to.session !== undefined &&
       message.to.session !== identity.session) ||
     (message.to.session !== undefined &&
       !identifierPattern.test(message.to.session)) ||
-    (message.to.epoch !== undefined && message.to.epoch !== identity.epoch) ||
-    (message.to.epoch !== undefined &&
-      (!Number.isSafeInteger(message.to.epoch) || message.to.epoch < 0)) ||
+    (message.to.generation !== undefined &&
+      message.to.generation !== identity.generation) ||
+    (message.to.generation !== undefined &&
+      (!Number.isSafeInteger(message.to.generation) ||
+        message.to.generation < 0)) ||
     !identifierPattern.test(message.type) ||
     !["normal", "urgent"].includes(message.priority) ||
     (message.reply_to !== null && !identifierPattern.test(message.reply_to)) ||
@@ -108,7 +113,7 @@ function validMessage(message, identity) {
 function validFrame(frame) {
   return (
     exactKeys(frame, ["version", "id", "identity", "type", "payload"]) &&
-    frame.version === 1 &&
+    frame.version === LINK_PROTOCOL_VERSION &&
     frameIdPattern.test(frame.id) &&
     validIdentity(frame.identity) &&
     ["hello", "ping", "deliver"].includes(frame.type) &&
@@ -193,7 +198,7 @@ function parseConfig(value) {
         "inputs",
       ],
     ) ||
-    value.version !== 1 ||
+    value.version !== CLIENT_CONFIG_VERSION ||
     !validIdentity(value.identity) ||
     !tokenPattern.test(value.token) ||
     !exactKeys(value.listen, ["host", "port"]) ||
@@ -239,7 +244,7 @@ function tokenMatches(actual, expected) {
 
 function response(config, id, type, payload) {
   return {
-    version: 1,
+    version: LINK_PROTOCOL_VERSION,
     id,
     identity: config.identity,
     type,
@@ -325,8 +330,8 @@ export async function startLinkServer({ config: rawConfig, deliver }) {
       if (!sameIdentity(frame.identity, config.identity)) {
         fail(
           frame,
-          "stale-epoch",
-          "Frame targets another Session identity or epoch",
+          "stale-generation",
+          "Frame targets another Session identity or generation",
         );
         return;
       }

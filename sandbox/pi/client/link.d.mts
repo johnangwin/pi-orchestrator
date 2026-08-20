@@ -1,12 +1,12 @@
 export interface ClientIdentity {
   readonly run: string;
-  readonly seat: string;
+  readonly agent: string;
   readonly session: string;
-  readonly epoch: number;
+  readonly generation: number;
 }
 
 export interface ClientConfig {
-  readonly version: 1;
+  readonly version: 2;
   readonly identity: ClientIdentity;
   readonly token: string;
   readonly listen: {
@@ -53,14 +53,14 @@ export interface ClientConfig {
 }
 
 export interface ClientMessage {
-  readonly version: 1;
+  readonly version: 2;
   readonly id: string;
   readonly run: string;
-  readonly from: { readonly seat?: string; readonly host?: true };
+  readonly from: { readonly agent?: string; readonly host?: true };
   readonly to: {
-    readonly seat: string;
+    readonly agent: string;
     readonly session?: string;
-    readonly epoch?: number;
+    readonly generation?: number;
   };
   readonly type: string;
   readonly priority: "normal" | "urgent";

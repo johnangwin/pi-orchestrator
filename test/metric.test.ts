@@ -24,9 +24,9 @@ async function temporary(): Promise<string> {
 
 const identity = {
   run: "run-one",
-  seat: "implementer",
+  agent: "implementer",
   session: "session-one",
-  epoch: 1,
+  generation: 1,
 } as const;
 
 describe("Metric observations", () => {

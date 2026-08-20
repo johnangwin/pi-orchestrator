@@ -23,7 +23,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   type ReadSessionOpenShell,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { ProjectStore, writeJsonAtomic } from "../src/state.js";
 import {
   parsePlanSynthesisOutput,
@@ -319,24 +319,24 @@ const resolvedPlanOutput = {
 };
 
 interface LaunchRecord {
-  readonly seat: string;
+  readonly agent: string;
   readonly session: string;
   readonly brief: string;
   readonly model: string;
 }
 
 function launcher(input: {
-  readonly response: (seat: string, session: string) => string;
+  readonly response: (agent: string, session: string) => string;
   readonly launches?: LaunchRecord[];
 }): PlanningSessionLauncher {
   return async (options) => {
     if (!options.model || !options.brief || !options.snapshot) {
       throw new Error("Fixture Session lacks exact model inputs");
     }
-    const seat = options.identity.seat;
+    const agent = options.identity.agent;
     const session = options.identity.session;
     input.launches?.push({
-      seat,
+      agent,
       session,
       brief: options.brief.content,
       model: options.model.pi_model,
@@ -352,7 +352,7 @@ function launcher(input: {
       current_policy_version: 1,
       id: `00000000-0000-4000-8000-${suffix}`,
       labels: {},
-      name: `pio-${seat}`,
+      name: `pio-${agent}`,
       phase: "Ready",
       resource_version: 1,
       workspace: "planning",
@@ -380,7 +380,7 @@ function launcher(input: {
         requested_model: model.pi_model,
         response_model: model.pi_model,
         stop_reason: "stop",
-        text: input.response(seat, session),
+        text: input.response(agent, session),
         truncated: false,
         usage: { input: 100, output: 50 },
       }),
@@ -434,8 +434,10 @@ async function consultedFixture() {
     nonce: (role) => (role === "architecture" ? "00000002" : "00000003"),
     now: () => new Date("2026-08-18T18:10:00.000Z"),
     launchSession: launcher({
-      response: (seat) =>
-        JSON.stringify(seat === "architect" ? architectureOutput : quantOutput),
+      response: (agent) =>
+        JSON.stringify(
+          agent === "architect" ? architectureOutput : quantOutput,
+        ),
     }),
   });
   return { root, home, project, store };
@@ -501,15 +503,15 @@ describe("planning critique and synthesis", () => {
         nonce: (stage) => (stage === "critique" ? "00000004" : "00000005"),
         now: () => new Date("2026-08-18T18:15:00.000Z"),
         launchSession: launcher({
-          response: (seat) =>
-            JSON.stringify(seat === "critic" ? critiqueOutput : planOutput),
+          response: (agent) =>
+            JSON.stringify(agent === "critic" ? critiqueOutput : planOutput),
           launches,
         }),
       });
       expect(first.state.status).toBe("drafted");
       expect(first.critique.reused).toBe(false);
       expect(first.synthesis.reused).toBe(false);
-      expect(launches.map(({ seat, model }) => [seat, model])).toEqual([
+      expect(launches.map(({ agent, model }) => [agent, model])).toEqual([
         ["critic", "fixture-reviewer"],
         ["lead", "fixture-planner"],
       ]);
@@ -585,8 +587,8 @@ describe("planning critique and synthesis", () => {
           planningId: "fixture-planning",
           nonce: (stage) => (stage === "critique" ? "00000006" : "00000007"),
           launchSession: launcher({
-            response: (seat) =>
-              seat === "critic" ? JSON.stringify(critiqueOutput) : "{}",
+            response: (agent) =>
+              agent === "critic" ? JSON.stringify(critiqueOutput) : "{}",
           }),
         }),
       ).rejects.toMatchObject({ code: "invalid_planning_stage_output" });
@@ -616,7 +618,7 @@ describe("planning critique and synthesis", () => {
         reused: false,
         request: { attempt: 2 },
       });
-      expect(launches.map(({ seat }) => seat)).toEqual(["lead"]);
+      expect(launches.map(({ agent }) => agent)).toEqual(["lead"]);
     } finally {
       await context.store.close();
     }
@@ -634,9 +636,9 @@ describe("planning critique and synthesis", () => {
           planningId: "fixture-planning",
           nonce: () => "00000009",
           launchSession: launcher({
-            response: (seat) =>
+            response: (agent) =>
               JSON.stringify(
-                seat === "critic" ? reviseCritiqueOutput : planOutput,
+                agent === "critic" ? reviseCritiqueOutput : planOutput,
               ),
           }),
         }),
@@ -695,8 +697,8 @@ describe("planning critique and synthesis", () => {
         planningId: "fixture-planning",
         nonce: () => "0000000a",
         launchSession: launcher({
-          response: (seat) =>
-            JSON.stringify(seat === "critic" ? critiqueOutput : planOutput),
+          response: (agent) =>
+            JSON.stringify(agent === "critic" ? critiqueOutput : planOutput),
         }),
       });
       await writeFile(

@@ -23,9 +23,9 @@ export type Decision = z.infer<typeof DecisionSchema>;
 
 export interface BriefIdentity {
   readonly run: string;
-  readonly seat: string;
+  readonly agent: string;
   readonly session: string;
-  readonly epoch: number;
+  readonly generation: number;
 }
 
 export interface BriefInput {
@@ -103,7 +103,7 @@ export function compileBrief(input: BriefInput): CompiledBrief {
   const required = [
     section(
       "Identity",
-      `Run: ${input.identity.run}\nSeat: ${input.identity.seat}\nSession: ${input.identity.session}\nEpoch: ${input.identity.epoch}`,
+      `Run: ${input.identity.run}\nAgent: ${input.identity.agent}\nSession: ${input.identity.session}\nGeneration: ${input.identity.generation}`,
     ),
     section("Project Instructions", input.agents),
     section(
@@ -238,7 +238,7 @@ export function briefStaleReasons(
     reasons.push("Handoff changed");
   }
   if (canonicalJson(previous.identity) !== canonicalJson(current.identity)) {
-    reasons.push("Session identity or epoch changed");
+    reasons.push("Session identity or generation changed");
   }
   return reasons;
 }

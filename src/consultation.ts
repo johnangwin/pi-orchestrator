@@ -41,7 +41,7 @@ import {
   startReadSession,
   type ReadSessionInfo,
   type ReadSessionOpenShell,
-} from "./seat.js";
+} from "./agent.js";
 import {
   ModelTurnResultSchema,
   SessionIdentitySchema,
@@ -372,7 +372,7 @@ export function compileConsultationBrief(input: {
   const required = [
     section(
       "Identity",
-      `Planning: ${input.identity.run}\nSeat: ${input.identity.seat}\nSession: ${input.identity.session}\nEpoch: ${input.identity.epoch}`,
+      `Planning: ${input.identity.run}\nAgent: ${input.identity.agent}\nSession: ${input.identity.session}\nGeneration: ${input.identity.generation}`,
     ),
     section("Project Instructions", input.project.agents),
     section(
@@ -642,9 +642,9 @@ class ConsultationStore {
       id: `${record.role}-consultation`,
       kind: "consultation",
       run: record.planning,
-      seat: record.identity.seat,
+      agent: record.identity.agent,
       session: record.identity.session,
-      epoch: record.identity.epoch,
+      generation: record.identity.generation,
       source_digest: record.source_digest,
       content: renderReport(parsedOutput),
       created_at: record.created_at,
@@ -824,8 +824,8 @@ function requireCurrentRequest(input: {
     input.request.policy_digest !== input.policyDigest ||
     input.request.brief_digest !== input.brief.digest ||
     input.request.identity.run !== input.state.id ||
-    input.request.identity.seat !== roleNames[role] ||
-    input.request.identity.epoch !== input.request.attempt
+    input.request.identity.agent !== roleNames[role] ||
+    input.request.identity.generation !== input.request.attempt
   ) {
     throw new OrchestratorError(
       "consultation_attempt_stale",
@@ -856,9 +856,9 @@ function createRecord(input: {
     id: `${input.request.role}-consultation`,
     kind: "consultation",
     run: input.request.planning,
-    seat: input.request.identity.seat,
+    agent: input.request.identity.agent,
     session: input.request.identity.session,
-    epoch: input.request.identity.epoch,
+    generation: input.request.identity.generation,
     source_digest: input.request.source_digest,
     content: renderReport(input.output),
     created_at: input.now.toISOString(),
@@ -1161,9 +1161,9 @@ async function executeRole(input: {
       );
     const identity = SessionIdentitySchema.parse({
       run: state.id,
-      seat: roleNames[input.role],
+      agent: roleNames[input.role],
       session: `consult-${input.role}-${attempt}-${nonce}`,
-      epoch: attempt,
+      generation: attempt,
     });
     brief = compileConsultationBrief({
       identity,
@@ -1234,14 +1234,14 @@ async function executeRole(input: {
       brief,
     });
     const message = MessageSchema.parse({
-      version: 1,
+      version: 2,
       id: request.message_id,
       run: state.id,
       from: { host: true },
       to: {
-        seat: request.identity.seat,
+        agent: request.identity.agent,
         session: request.identity.session,
-        epoch: request.identity.epoch,
+        generation: request.identity.generation,
       },
       type: "consultation",
       priority: "normal",

@@ -26,8 +26,8 @@ import {
   type SessionLifecycleOpenShell,
   type SessionRuntime,
 } from "../src/reconcile.js";
-import { SeatRegistry } from "../src/registry.js";
-import { PI_CLIENT_VERSION, PiClientConfigSchema } from "../src/seat.js";
+import { AgentRegistry } from "../src/registry.js";
+import { PI_CLIENT_VERSION, PiClientConfigSchema } from "../src/agent.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 import { loadSandboxPolicy } from "../src/policy.js";
@@ -144,8 +144,8 @@ class FakeProjectionCmux implements ProjectionCmux {
         status: this.workspaceStatus,
       },
       panes: Object.fromEntries(
-        Object.entries(projection.panes).map(([seat, binding]) => [
-          seat,
+        Object.entries(projection.panes).map(([agent, binding]) => [
+          agent,
           { binding, status: this.paneStatus },
         ]),
       ),
@@ -197,7 +197,7 @@ class FakeOpenShell implements SessionLifecycleOpenShell {
 
 async function setup(): Promise<{
   readonly store: ProjectStore;
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly identity: SessionIdentity;
   readonly cmux: FakeProjectionCmux;
   readonly projection: ProjectionRegistry;
@@ -212,7 +212,7 @@ async function setup(): Promise<{
     projectRoot: "/project",
   });
   await store.writeRun({
-    version: 1,
+    version: 2,
     id: "run-one",
     project_id: "fixture",
     plan_id: "fixture-plan",
@@ -226,10 +226,10 @@ async function setup(): Promise<{
     created_at: "2026-08-18T12:00:00.000Z",
     updated_at: "2026-08-18T12:00:00.000Z",
   });
-  const registry = new SeatRegistry(store, "run-one");
-  await registry.register({ seat: "lead", role: "lead", model: "plan" });
+  const registry = new AgentRegistry(store, "run-one");
+  await registry.register({ agent: "lead", role: "lead", model: "plan" });
   const session = await registry.start({
-    seat: "lead",
+    agent: "lead",
     session: "session-one",
   });
   const cmux = new FakeProjectionCmux();
@@ -283,11 +283,11 @@ function runtime(
 
 function instruction(id = "msg-one") {
   return MessageSchema.parse({
-    version: 1,
+    version: 2,
     id,
     run: "run-one",
     from: { host: true },
-    to: { seat: "lead" },
+    to: { agent: "lead" },
     type: "instruction",
     priority: "normal",
     reply_to: null,
@@ -379,7 +379,7 @@ describe("Session lifecycle reconciliation", () => {
     }
   });
 
-  it("retries ordered teardown and advances the epoch only after cleanup", async () => {
+  it("retries ordered teardown and advances the generation only after cleanup", async () => {
     const {
       store,
       registry,
@@ -422,7 +422,7 @@ describe("Session lifecycle reconciliation", () => {
         reason: "Replace a lost Session",
       });
       expect(replacement).toMatchObject({
-        identity: { session: "session-two", epoch: 2 },
+        identity: { session: "session-two", generation: 2 },
         status: "starting",
         replaces: {
           session: "session-one",
@@ -509,7 +509,7 @@ describe("Session lifecycle reconciliation", () => {
       path.join(process.cwd(), "sandbox", "policies", "read.yaml"),
     );
     const config = PiClientConfigSchema.parse({
-      version: 1,
+      version: 2,
       identity,
       token: "a".repeat(64),
       listen: { host: "127.0.0.1", port },

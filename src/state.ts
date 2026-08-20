@@ -8,7 +8,7 @@ import { ApprovalSchema, type Approval } from "./approval.js";
 import { CmuxRunStateSchema } from "./cmux.js";
 import { IdentifierSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
-import { SeatRecordSchema, SessionRecordSchema } from "./session.js";
+import { AgentRecordSchema, SessionRecordSchema } from "./session.js";
 import { GateStatusSchema, RunStatusSchema, TaskStatusSchema } from "./task.js";
 
 export interface AtomicWriteOptions {
@@ -90,9 +90,9 @@ export const PatchApplicationSchema = z
   .object({
     artifact_id: IdentifierSchema.max(128),
     artifact_content_digest: DigestSchema,
-    seat: IdentifierSchema,
+    agent: IdentifierSchema,
     session: IdentifierSchema,
-    epoch: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     sandbox_id: z.string().uuid(),
     source_commit: GitCommitSchema,
     source_paths: z.array(SourcePathSchema).min(1),
@@ -225,7 +225,7 @@ export type TaskRecord = z.infer<typeof TaskRecordSchema>;
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     id: IdentifierSchema,
     project_id: IdentifierSchema,
     plan_id: IdentifierSchema,
@@ -241,7 +241,7 @@ export const RunStateSchema = z
     worktree: z.string().refine(path.isAbsolute, "must be absolute"),
     status: RunStatusSchema,
     tasks: z.record(IdentifierSchema, TaskRecordSchema),
-    seats: z.record(IdentifierSchema, SeatRecordSchema).default({}),
+    agents: z.record(IdentifierSchema, AgentRecordSchema).default({}),
     sessions: z.record(IdentifierSchema, SessionRecordSchema).default({}),
     cmux: CmuxRunStateSchema.default({ workspace: null, panes: {} }),
     created_at: z.string().datetime({ offset: true }),
@@ -249,7 +249,7 @@ export const RunStateSchema = z
   })
   .strict()
   .superRefine((run, context) => {
-    const sessionsBySeat = new Map<
+    const sessionsByAgent = new Map<
       string,
       Map<number, { id: string; status: string }>
     >();
@@ -271,106 +271,106 @@ export const RunStateSchema = z
         });
       }
 
-      const seat = run.seats[identity.seat];
-      if (!seat) {
+      const agent = run.agents[identity.agent];
+      if (!agent) {
         context.addIssue({
           code: "custom",
-          path: ["sessions", sessionId, "identity", "seat"],
-          message: `references unknown Seat '${identity.seat}'`,
+          path: ["sessions", sessionId, "identity", "agent"],
+          message: `references unknown Agent '${identity.agent}'`,
         });
         continue;
       }
-      if (session.model !== seat.model) {
+      if (session.model !== agent.model) {
         context.addIssue({
           code: "custom",
           path: ["sessions", sessionId, "model"],
-          message: `must equal Seat model '${seat.model}'`,
+          message: `must equal Agent model '${agent.model}'`,
         });
       }
 
-      let epochs = sessionsBySeat.get(identity.seat);
-      if (!epochs) {
-        epochs = new Map();
-        sessionsBySeat.set(identity.seat, epochs);
+      let generations = sessionsByAgent.get(identity.agent);
+      if (!generations) {
+        generations = new Map();
+        sessionsByAgent.set(identity.agent, generations);
       }
-      if (epochs.has(identity.epoch)) {
+      if (generations.has(identity.generation)) {
         context.addIssue({
           code: "custom",
-          path: ["sessions", sessionId, "identity", "epoch"],
-          message: `duplicates epoch ${identity.epoch} for Seat '${identity.seat}'`,
+          path: ["sessions", sessionId, "identity", "generation"],
+          message: `duplicates generation ${identity.generation} for Agent '${identity.agent}'`,
         });
       } else {
-        epochs.set(identity.epoch, {
+        generations.set(identity.generation, {
           id: sessionId,
           status: session.status,
         });
       }
     }
 
-    for (const [seatId, seat] of Object.entries(run.seats)) {
-      const epochs = sessionsBySeat.get(seatId) ?? new Map();
-      if (seat.session === null) {
-        if (epochs.size > 0) {
+    for (const [agentId, agent] of Object.entries(run.agents)) {
+      const generations = sessionsByAgent.get(agentId) ?? new Map();
+      if (agent.session === null) {
+        if (generations.size > 0) {
           context.addIssue({
             code: "custom",
-            path: ["seats", seatId, "session"],
-            message: "a dormant Seat cannot have Session records",
+            path: ["agents", agentId, "session"],
+            message: "a dormant Agent cannot have Session records",
           });
         }
         continue;
       }
 
-      const current = run.sessions[seat.session];
+      const current = run.sessions[agent.session];
       if (!current) {
         context.addIssue({
           code: "custom",
-          path: ["seats", seatId, "session"],
-          message: `references unknown Session '${seat.session}'`,
+          path: ["agents", agentId, "session"],
+          message: `references unknown Session '${agent.session}'`,
         });
       } else if (
-        current.identity.seat !== seatId ||
-        current.identity.epoch !== seat.epoch
+        current.identity.agent !== agentId ||
+        current.identity.generation !== agent.generation
       ) {
         context.addIssue({
           code: "custom",
-          path: ["seats", seatId, "session"],
-          message: "must reference the current Session at the Seat epoch",
+          path: ["agents", agentId, "session"],
+          message: "must reference the current Session at the Agent generation",
         });
       }
 
-      const orderedEpochs = [...epochs.entries()].sort(
+      const orderedGenerations = [...generations.entries()].sort(
         ([left], [right]) => left - right,
       );
-      for (let index = 0; index < orderedEpochs.length; index += 1) {
-        const [epoch, entry] = orderedEpochs[index]!;
-        const expectedEpoch = index + 1;
-        if (epoch !== expectedEpoch) {
+      for (let index = 0; index < orderedGenerations.length; index += 1) {
+        const [generation, entry] = orderedGenerations[index]!;
+        const expectedGeneration = index + 1;
+        if (generation !== expectedGeneration) {
           context.addIssue({
             code: "custom",
-            path: ["sessions", entry.id, "identity", "epoch"],
-            message: `expected contiguous epoch ${expectedEpoch}, received ${epoch}`,
+            path: ["sessions", entry.id, "identity", "generation"],
+            message: `expected contiguous generation ${expectedGeneration}, received ${generation}`,
           });
         }
         const session = run.sessions[entry.id]!;
-        if (epoch === 1 && session.replaces !== null) {
+        if (generation === 1 && session.replaces !== null) {
           context.addIssue({
             code: "custom",
             path: ["sessions", entry.id, "replaces"],
             message: "the first Session cannot replace another Session",
           });
         }
-        if (epoch > 1) {
-          const predecessor = epochs.get(epoch - 1);
+        if (generation > 1) {
+          const predecessor = generations.get(generation - 1);
           if (session.replaces?.session !== predecessor?.id) {
             context.addIssue({
               code: "custom",
               path: ["sessions", entry.id, "replaces"],
-              message: `must reference the Session at epoch ${epoch - 1}`,
+              message: `must reference the Session at generation ${generation - 1}`,
             });
           }
         }
         if (
-          epoch < seat.epoch &&
+          generation < agent.generation &&
           !["stopped", "failed"].includes(entry.status)
         ) {
           context.addIssue({
@@ -380,34 +380,34 @@ export const RunStateSchema = z
           });
         }
       }
-      if (epochs.size !== seat.epoch) {
+      if (generations.size !== agent.generation) {
         context.addIssue({
           code: "custom",
-          path: ["seats", seatId, "epoch"],
+          path: ["agents", agentId, "generation"],
           message: "must equal the contiguous Session history length",
         });
       }
     }
 
-    for (const [seatId, pane] of Object.entries(run.cmux.panes)) {
-      const seat = run.seats[seatId];
-      if (!seat) {
+    for (const [agentId, pane] of Object.entries(run.cmux.panes)) {
+      const agent = run.agents[agentId];
+      if (!agent) {
         context.addIssue({
           code: "custom",
-          path: ["cmux", "panes", seatId],
-          message: `references unknown Seat '${seatId}'`,
+          path: ["cmux", "panes", agentId],
+          message: `references unknown Agent '${agentId}'`,
         });
         continue;
       }
       if (
         pane.identity.run !== run.id ||
-        pane.identity.session !== seat.session ||
-        pane.identity.epoch !== seat.epoch
+        pane.identity.session !== agent.session ||
+        pane.identity.generation !== agent.generation
       ) {
         context.addIssue({
           code: "custom",
-          path: ["cmux", "panes", seatId, "identity"],
-          message: "must identify the current Session for the Seat",
+          path: ["cmux", "panes", agentId, "identity"],
+          message: "must identify the current Session for the Agent",
         });
       }
     }
@@ -653,6 +653,17 @@ export class ProjectStore {
         "invalid_state",
         `Invalid JSON in ${filePath}`,
         { cause: error },
+      );
+    }
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "version" in value &&
+      value.version === 1
+    ) {
+      throw new OrchestratorError(
+        "unsupported_state_version",
+        `Run '${runId}' uses unsupported state schema version 1; unfinished v0.2 Runs are not migrated or resumed automatically`,
       );
     }
     const result = RunStateSchema.safeParse(value);

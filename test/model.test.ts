@@ -110,12 +110,12 @@ checks:
 
 describe("Pi model route", () => {
   const config = {
-    version: 1 as const,
+    version: 2 as const,
     identity: {
       run: "run-one",
-      seat: "scout",
+      agent: "scout",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     },
     token: "a".repeat(64),
     listen: { host: "127.0.0.1" as const, port: 41727 },

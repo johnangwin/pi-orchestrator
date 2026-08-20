@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { PI_CLIENT_VERSION } from "../src/agent.js";
 import type { BriefInput } from "../src/brief.js";
 import { DEFAULT_CONTEXT_THRESHOLDS } from "../src/config.js";
 import { sha256, type Digest } from "../src/digest.js";
@@ -25,7 +26,7 @@ import {
   SessionReconciler,
   type SessionLifecycleOpenShell,
 } from "../src/reconcile.js";
-import { SeatRegistry } from "../src/registry.js";
+import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 import { createFixtureProject, createPlan } from "./fixture.js";
@@ -81,7 +82,7 @@ function sandbox(index: number): OpenShellSandbox {
 interface Fixture {
   readonly root: string;
   readonly store: ProjectStore;
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly reconciler: SessionReconciler;
   readonly expected: SessionIdentity;
   readonly brief: Omit<BriefInput, "identity" | "handoff">;
@@ -105,7 +106,7 @@ async function fixture(
     projectRoot: root,
   });
   await store.writeRun({
-    version: 1,
+    version: 2,
     id: "run-one",
     project_id: project.config.project.id,
     plan_id: plan.id,
@@ -119,14 +120,14 @@ async function fixture(
     created_at: "2026-08-18T12:00:00.000Z",
     updated_at: "2026-08-18T12:00:00.000Z",
   });
-  const registry = new SeatRegistry(store, "run-one");
+  const registry = new AgentRegistry(store, "run-one");
   await registry.register({
-    seat: "implementer",
+    agent: "implementer",
     role: "implementer",
     model: "code",
   });
   const initial = await registry.start({
-    seat: "implementer",
+    agent: "implementer",
     session: "session-one",
   });
   await registry.transition(
@@ -205,7 +206,7 @@ function launcher(input: {
       readPolicyDigest: input.policyDigest,
       openshell: preflight,
       piVersion: "0.84.2",
-      clientVersion: "0.2.2",
+      clientVersion: PI_CLIENT_VERSION,
       context: DEFAULT_CONTEXT_THRESHOLDS,
       model,
       inference: { provider: "fixture", model: model.pi_model },
@@ -330,12 +331,12 @@ describe("Handoff lifecycle", () => {
 
       expect(result.intent).toMatchObject({
         trigger: "recovery",
-        from: { session: "session-one", epoch: 1 },
-        to: { epoch: 2 },
+        from: { session: "session-one", generation: 1 },
+        to: { generation: 2 },
       });
       expect(result.report.content).toContain("# Current State");
       expect(result.brief.content).toContain("## Current Handoff");
-      expect(result.brief.content).toContain("Epoch: 2");
+      expect(result.brief.content).toContain("Generation: 2");
       expect(result.brief.content).not.toContain("PREDECESSOR TRANSCRIPT");
       expect(result.result.sandbox).toEqual({
         id: result.runtime!.info.sandbox.id,
@@ -418,7 +419,7 @@ describe("Handoff lifecycle", () => {
     }
   });
 
-  it("resumes after interruption between epoch replacement and Session launch", async () => {
+  it("resumes after interruption between generation replacement and Session launch", async () => {
     const context = await fixture();
     const calls = { value: 0 };
     const launchSession = launcher({
@@ -437,14 +438,14 @@ describe("Handoff lifecycle", () => {
       );
       expect((await context.registry.get("implementer")).session).toMatchObject(
         {
-          identity: { epoch: 2 },
+          identity: { generation: 2 },
           status: "starting",
           sandbox: null,
         },
       );
 
       const resumed = await runHandoff(request);
-      expect(resumed.result.to.epoch).toBe(2);
+      expect(resumed.result.to.generation).toBe(2);
       expect(resumed.runtime).toBeDefined();
       expect((await context.registry.get("implementer")).session?.status).toBe(
         "active",
@@ -455,7 +456,7 @@ describe("Handoff lifecycle", () => {
     }
   });
 
-  it("rejects replacement source drift before changing the Session epoch", async () => {
+  it("rejects replacement source drift before changing the Session generation", async () => {
     const context = await fixture();
     const calls = { value: 0 };
     const base = options(

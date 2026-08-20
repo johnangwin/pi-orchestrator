@@ -283,13 +283,13 @@ function patchDigest(bundle) {
 function validSessionConfig(value) {
   const identity = value?.identity;
   if (
-    value?.version !== 1 ||
+    value?.version !== 2 ||
     !identity ||
     !identifierPattern.test(identity.run) ||
-    !identifierPattern.test(identity.seat) ||
+    !identifierPattern.test(identity.agent) ||
     !identifierPattern.test(identity.session) ||
-    !Number.isSafeInteger(identity.epoch) ||
-    identity.epoch < 1 ||
+    !Number.isSafeInteger(identity.generation) ||
+    identity.generation < 1 ||
     value.profile !== "write" ||
     !digestPattern.test(value.source_digest)
   ) {
@@ -410,9 +410,9 @@ export async function exportPatch(options) {
     id: artifactId,
     kind: "patch",
     run: config.identity.run,
-    seat: config.identity.seat,
+    agent: config.identity.agent,
     session: config.identity.session,
-    epoch: config.identity.epoch,
+    generation: config.identity.generation,
     task,
     sandbox_path: `/sandbox/output/artifacts/${artifactId}`,
     media_type: "application/json",

@@ -4,6 +4,7 @@ import { MessageSchema } from "./message.js";
 import { SessionIdentitySchema } from "./session.js";
 
 export const MAX_LINK_FRAME_BYTES = 64 * 1024;
+export const LINK_PROTOCOL_VERSION = 2 as const;
 
 export const LinkFrameIdSchema = z
   .string()
@@ -18,7 +19,7 @@ export const LinkTokenSchema = z
 
 const LinkBaseSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(LINK_PROTOCOL_VERSION),
     id: LinkFrameIdSchema,
     identity: SessionIdentitySchema,
   })

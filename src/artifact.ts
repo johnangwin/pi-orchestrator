@@ -55,9 +55,9 @@ const descriptorShape = {
   id: ArtifactIdSchema,
   kind: IdentifierSchema.max(80),
   run: IdentifierSchema,
-  seat: IdentifierSchema,
+  agent: IdentifierSchema,
   session: IdentifierSchema,
-  epoch: z.number().int().nonnegative(),
+  generation: z.number().int().nonnegative(),
   task: IdentifierSchema.optional(),
   sandbox_path: z.string().min(1),
   media_type: MediaTypeSchema,
@@ -162,9 +162,9 @@ export function reportArtifactContract(
       }
       if (
         report.run !== descriptor.run ||
-        report.seat !== descriptor.seat ||
+        report.agent !== descriptor.agent ||
         report.session !== descriptor.session ||
-        report.epoch !== descriptor.epoch ||
+        report.generation !== descriptor.generation ||
         report.task !== descriptor.task
       ) {
         throw new Error(
@@ -258,9 +258,9 @@ function validateBinding(
 ): void {
   const descriptorIdentity = SessionIdentitySchema.parse({
     run: descriptor.run,
-    seat: descriptor.seat,
+    agent: descriptor.agent,
     session: descriptor.session,
-    epoch: descriptor.epoch,
+    generation: descriptor.generation,
   });
   if (
     !sameSessionIdentity(descriptorIdentity, identity) ||
@@ -268,7 +268,7 @@ function validateBinding(
   ) {
     throw new OrchestratorError(
       "artifact_binding_mismatch",
-      `Artifact '${descriptor.id}' does not match the expected Run, Task, Seat, Session, or epoch`,
+      `Artifact '${descriptor.id}' does not match the expected Run, Task, Agent, Session, or generation`,
     );
   }
 }
@@ -358,9 +358,9 @@ function recordDescriptor(record: ArtifactRecord): ArtifactDescriptor {
     id: record.id,
     kind: record.kind,
     run: record.run,
-    seat: record.seat,
+    agent: record.agent,
     session: record.session,
-    epoch: record.epoch,
+    generation: record.generation,
     ...(record.task ? { task: record.task } : {}),
     sandbox_path: record.sandbox_path,
     media_type: record.media_type,

@@ -38,7 +38,7 @@ export * from "./reconcile.js";
 export * from "./role.js";
 export * from "./run.js";
 export * from "./scope.js";
-export * from "./seat.js";
+export * from "./agent.js";
 export * from "./session.js";
 export * from "./snapshot.js";
 export * from "./state.js";

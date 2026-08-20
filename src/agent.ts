@@ -48,8 +48,9 @@ import {
 import { verifySourceSnapshot, type SourceSnapshot } from "./snapshot.js";
 
 export const PI_RUNTIME_VERSION = "0.84.2";
-export const PI_CLIENT_VERSION = "0.2.2";
+export const PI_CLIENT_VERSION = "0.3.0";
 export const PI_LINK_PORT = 41_727;
+export const PI_CLIENT_CONFIG_VERSION = 2 as const;
 
 export const PiSessionModelSchema = z
   .object({
@@ -119,7 +120,7 @@ export interface WorkspaceSessionSource {
 
 export const PiClientConfigSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(PI_CLIENT_CONFIG_VERSION),
     identity: SessionIdentitySchema,
     token: z.string().regex(/^[a-f0-9]{64}$/),
     listen: z
@@ -964,8 +965,8 @@ async function resumeSession(
   const config = PiClientConfigSchema.parse(rawConfig);
   if (!sameSessionIdentity(config.identity, identity)) {
     throw new OrchestratorError(
-      "stale_session_epoch",
-      "Immutable Sandbox configuration identifies another Session or epoch",
+      "stale_session_generation",
+      "Immutable Sandbox configuration identifies another Session or generation",
     );
   }
   if (
@@ -1008,7 +1009,7 @@ async function resumeSession(
   if ((config.model === undefined) !== (model === undefined)) {
     throw new OrchestratorError(
       "model_route_mismatch",
-      "Recovered Session model routing does not match the current Seat route",
+      "Recovered Session model routing does not match the current Agent route",
     );
   }
   if (
@@ -1222,7 +1223,7 @@ async function startSession(
 
   const token = randomBytes(32).toString("hex");
   const config = PiClientConfigSchema.parse({
-    version: 1,
+    version: PI_CLIENT_CONFIG_VERSION,
     identity,
     token,
     listen: { host: "127.0.0.1", port: linkPort },

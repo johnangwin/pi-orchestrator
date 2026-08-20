@@ -22,7 +22,7 @@ import {
   PI_CLIENT_VERSION,
   PI_RUNTIME_VERSION,
   type StartWriteSessionOptions,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import type { PatchApplication, ProjectStore, RunState } from "../src/state.js";
 import { commitFixture, createFixtureProject, createPlan } from "./fixture.js";
 
@@ -223,9 +223,9 @@ describe("implementation orchestration", () => {
       const application: PatchApplication = {
         artifact_id: "implementation-patch-00000001",
         artifact_content_digest: sha256("artifact"),
-        seat: "implementer",
+        agent: "implementer",
         session: "implementation-00000001",
-        epoch: 1,
+        generation: 1,
         sandbox_id: sandbox.id,
         source_commit: task.input_commit!,
         source_paths: ["."],

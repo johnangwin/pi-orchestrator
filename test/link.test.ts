@@ -13,9 +13,9 @@ import { startLinkServer } from "../sandbox/pi/client/link.mjs";
 
 const identity: SessionIdentity = {
   run: "run-one",
-  seat: "scout",
+  agent: "scout",
   session: "session-one",
-  epoch: 1,
+  generation: 1,
 };
 const token = "a".repeat(64);
 
@@ -35,14 +35,14 @@ async function availablePort(): Promise<number> {
 
 function message(): Message {
   return MessageSchema.parse({
-    version: 1,
+    version: 2,
     id: "msg-one",
     run: identity.run,
     from: { host: true },
     to: {
-      seat: identity.seat,
+      agent: identity.agent,
       session: identity.session,
-      epoch: identity.epoch,
+      generation: identity.generation,
     },
     type: "instruction",
     priority: "normal",
@@ -56,7 +56,7 @@ function message(): Message {
 describe("Link framing", () => {
   it("decodes frames split across UTF-8 chunks", () => {
     const frame: LinkFrame = {
-      version: 1,
+      version: 2,
       id: "ping-one",
       identity,
       type: "ping",
@@ -75,13 +75,13 @@ describe("Link framing", () => {
       new LinkFrameDecoder(8).push(Buffer.from("123456789")),
     ).toThrow("exceeds 8 bytes");
     const decoder = new LinkFrameDecoder();
-    decoder.push(Buffer.from('{"version":1'));
+    decoder.push(Buffer.from('{"version":2'));
     expect(() => decoder.end()).toThrow("partial frame");
   });
 
   it("requires LF rather than CRLF framing", () => {
     const frame: LinkFrame = {
-      version: 1,
+      version: 2,
       id: "ping-one",
       identity,
       type: "ping",
@@ -93,9 +93,21 @@ describe("Link framing", () => {
     expect(() => new LinkFrameDecoder().push(encoded)).toThrow("requires LF");
   });
 
+  it("rejects version-one Link frames", () => {
+    expect(() =>
+      encodeLinkFrame({
+        version: 1,
+        id: "ping-legacy",
+        identity,
+        type: "ping",
+        payload: { nonce: "legacy" },
+      } as never),
+    ).toThrow("version");
+  });
+
   it("rejects malformed UTF-8", () => {
     const encoded = encodeLinkFrame({
-      version: 1,
+      version: 2,
       id: "ping-one",
       identity,
       type: "ping",
@@ -115,7 +127,7 @@ describe("Pi client Link", () => {
     const delivered: string[] = [];
     const server = await startLinkServer({
       config: {
-        version: 1,
+        version: 2,
         identity,
         token,
         listen: { host: "127.0.0.1", port },
@@ -161,7 +173,7 @@ describe("Pi client Link", () => {
     const port = await availablePort();
     const server = await startLinkServer({
       config: {
-        version: 1,
+        version: 2,
         identity,
         token,
         listen: { host: "127.0.0.1", port },
@@ -205,7 +217,7 @@ describe("Pi client Link", () => {
     const delivered: string[] = [];
     const server = await startLinkServer({
       config: {
-        version: 1,
+        version: 2,
         identity,
         token,
         listen: { host: "127.0.0.1", port },
@@ -222,7 +234,7 @@ describe("Pi client Link", () => {
       await transport.connect();
       const frames = transport.receive()[Symbol.asyncIterator]();
       await transport.send({
-        version: 1,
+        version: 2,
         id: "hello-concurrent",
         identity,
         type: "hello",
@@ -231,14 +243,14 @@ describe("Pi client Link", () => {
       expect((await frames.next()).value?.type).toBe("ready");
       await Promise.all([
         transport.send({
-          version: 1,
+          version: 2,
           id: "deliver-one",
           identity,
           type: "deliver",
           payload: { message: message() },
         }),
         transport.send({
-          version: 1,
+          version: 2,
           id: "deliver-two",
           identity,
           type: "deliver",
@@ -262,11 +274,11 @@ describe("Pi client Link", () => {
     }
   });
 
-  it("rejects an unauthorized host and a stale epoch", async () => {
+  it("rejects an unauthorized host and a stale generation", async () => {
     const port = await availablePort();
     const server = await startLinkServer({
       config: {
-        version: 1,
+        version: 2,
         identity,
         token,
         listen: { host: "127.0.0.1", port },
@@ -289,12 +301,12 @@ describe("Pi client Link", () => {
       await expect(
         HostLink.connect({
           transport: new TcpLinkTransport({ port }),
-          identity: { ...identity, epoch: 2 },
+          identity: { ...identity, generation: 2 },
           token,
           expectedClientVersion: "0.2.0",
           expectedPiVersion: "0.84.2",
         }),
-      ).rejects.toMatchObject({ code: "stale_session_epoch" });
+      ).rejects.toMatchObject({ code: "stale_session_generation" });
     } finally {
       await server.close();
     }
@@ -314,7 +326,7 @@ describe("Pi client Link", () => {
         const hello = sent[0];
         if (!hello || hello.type !== "hello") throw new Error("Missing hello");
         yield {
-          version: 1,
+          version: 2,
           id: "ready-timeout",
           identity,
           type: "ready",

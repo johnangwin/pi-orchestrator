@@ -90,11 +90,11 @@ describe("filesystem state", () => {
     const run = await temporaryRoot();
     const mailbox = new Mailbox(run);
     const message: Message = {
-      version: 1,
+      version: 2,
       id: "msg-0001",
       run: "run-0001",
-      from: { seat: "implementer" },
-      to: { seat: "quant", session: "session-001", epoch: 5 },
+      from: { agent: "implementer" },
+      to: { agent: "quant", session: "session-001", generation: 5 },
       type: "consultation",
       priority: "normal",
       reply_to: null,
@@ -134,9 +134,9 @@ describe("filesystem state", () => {
       id: "report-001",
       kind: "implementation",
       run: "run-001",
-      seat: "implementer",
+      agent: "implementer",
       session: "session-001",
-      epoch: 1,
+      generation: 1,
       task: "bounded-change",
       content,
       created_at: new Date().toISOString(),

@@ -27,14 +27,14 @@ describe("Run metrics and reports", () => {
       const metrics = new MetricStore(runDirectory, fixture.runId);
       const mailbox = new Mailbox(runDirectory);
       const message = MessageSchema.parse({
-        version: 1,
+        version: 2,
         id: "implementation-metric-request",
         run: fixture.runId,
         from: { host: true },
         to: {
-          seat: implementation.identity.seat,
+          agent: implementation.identity.agent,
           session: implementation.identity.session,
-          epoch: implementation.identity.epoch,
+          generation: implementation.identity.generation,
         },
         type: "implementation-request",
         priority: "normal",
@@ -114,9 +114,9 @@ describe("Run metrics and reports", () => {
           id: "consultation-metric",
           kind: "consultation",
           run: fixture.runId,
-          seat: implementation.identity.seat,
+          agent: implementation.identity.agent,
           session: implementation.identity.session,
-          epoch: implementation.identity.epoch,
+          generation: implementation.identity.generation,
           task: fixture.task.id,
           content: "# Conclusion\n\nSynthetic durable consultation evidence.\n",
           created_at: at(11_000).toISOString(),
@@ -198,9 +198,9 @@ describe("Run metrics and reports", () => {
       await metrics.recordLinkFailure({
         identity: {
           run: fixture.runId,
-          seat: "implementer",
+          agent: "implementer",
           session: "missing-session",
-          epoch: 1,
+          generation: 1,
         },
         operation: "connect",
         occurredAt: new Date(),

@@ -38,7 +38,7 @@ import {
 import { importPatchArtifact, type VerifiedPatch } from "../src/patch.js";
 import { catalogFromConfig, loadPlan, type PlanTask } from "../src/plan.js";
 import { loadProject, type Project } from "../src/project.js";
-import { SeatRegistry } from "../src/registry.js";
+import { AgentRegistry } from "../src/registry.js";
 import { startRun } from "../src/run.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 import { ProjectStore } from "../src/state.js";
@@ -301,14 +301,14 @@ export async function createAppliedFixture(
       createApproval({ plan, baseCommit: commit, approvedBy: "fixture" }),
     );
     const started = await startRun({ store, project, plan, worktreeRoot });
-    const registry = new SeatRegistry(store, started.run.id);
+    const registry = new AgentRegistry(store, started.run.id);
     await registry.register({
-      seat: "implementer",
+      agent: "implementer",
       role: task.role,
       model: "code",
     });
     const session = await registry.start({
-      seat: "implementer",
+      agent: "implementer",
       session: "implementation-one",
     });
     await registry.bindSandbox(session.identity, {
@@ -341,7 +341,7 @@ export async function createAppliedFixture(
       await writeFile(
         sessionConfigPath,
         JSON.stringify({
-          version: 1,
+          version: 2,
           identity: session.identity,
           profile: "write",
           source_digest: snapshot.manifest.source_digest,

@@ -6,14 +6,14 @@ import { MetricStore, type SessionMetricRecorder } from "./metric.js";
 import type { ResolvedModelRoute } from "./model.js";
 import type { OpenShellClient, OpenShellSandbox } from "./openshell.js";
 import { ProjectionRegistry, type ProjectionInspection } from "./projection.js";
-import { SeatRegistry } from "./registry.js";
+import { AgentRegistry } from "./registry.js";
 import {
   ReadSession,
   resumeReadSession,
   resumeWriteSession,
   type AgentSessionProfile,
   type ResumeReadSessionOpenShell,
-} from "./seat.js";
+} from "./agent.js";
 import {
   sameSessionIdentity,
   SessionIdentitySchema,
@@ -52,7 +52,7 @@ export const LinkObservationSchema = z.enum([
 export type LinkObservation = z.infer<typeof LinkObservationSchema>;
 
 export interface SessionReconciliation {
-  readonly seat: string;
+  readonly agent: string;
   readonly identity: SessionIdentity | null;
   readonly sessionStatus: SessionRecord["status"] | null;
   readonly sandbox: SandboxObservation;
@@ -131,9 +131,9 @@ function replacementRetry(
 ): boolean {
   return (
     session?.identity.run === expected.run &&
-    session.identity.seat === expected.seat &&
+    session.identity.agent === expected.agent &&
     session.identity.session === replacement &&
-    session.identity.epoch === expected.epoch + 1 &&
+    session.identity.generation === expected.generation + 1 &&
     session.replaces?.session === expected.session &&
     session.replaces.reason === reason
   );
@@ -141,7 +141,7 @@ function replacementRetry(
 
 export class SessionReconciler {
   readonly runId: string;
-  readonly registry: SeatRegistry;
+  readonly registry: AgentRegistry;
   readonly mailbox: MailboxRouter;
 
   constructor(
@@ -152,32 +152,32 @@ export class SessionReconciler {
     mailbox?: MailboxRouter,
   ) {
     this.runId = IdentifierSchema.parse(runId);
-    this.registry = new SeatRegistry(store, this.runId);
+    this.registry = new AgentRegistry(store, this.runId);
     this.mailbox = mailbox ?? new MailboxRouter(store, this.runId);
   }
 
   async inspect(
-    seatId: string,
+    agentId: string,
     runtime?: Pick<SessionRuntime, "identity" | "info" | "ping">,
   ): Promise<SessionReconciliation> {
-    const seat = await this.registry.get(IdentifierSchema.parse(seatId));
-    const session = seat.session;
+    const agent = await this.registry.get(IdentifierSchema.parse(agentId));
+    const session = agent.session;
     if (!session) {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity: null,
         sessionStatus: null,
         sandbox: "unbound",
         link: "missing",
         projection: null,
         action: "start",
-        reasons: ["Seat has no Session"],
+        reasons: ["Agent has no Session"],
       };
     }
     const identity = session.identity;
     if (terminalSession(session)) {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: session.sandbox ? "pending" : "unbound",
@@ -189,7 +189,7 @@ export class SessionReconciler {
     }
     if (!session.sandbox) {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "unbound",
@@ -206,7 +206,7 @@ export class SessionReconciler {
     );
     if (!actual) {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "missing",
@@ -218,7 +218,7 @@ export class SessionReconciler {
     }
     if (!sameSandbox(session.sandbox, actual)) {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "identity_mismatch",
@@ -231,7 +231,7 @@ export class SessionReconciler {
     if (actual.phase !== "Ready") {
       const terminal = terminalSandbox(actual);
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: terminal ? "terminal" : "pending",
@@ -247,7 +247,7 @@ export class SessionReconciler {
     if (runtime) {
       if (!sameSessionIdentity(runtime.identity, identity)) {
         link = "stale";
-        reasons.push("Live runtime identifies another Session or epoch");
+        reasons.push("Live runtime identifies another Session or generation");
       } else if (!sameSandbox(session.sandbox, runtime.info.sandbox)) {
         link = "stale";
         reasons.push("Live runtime identifies another Sandbox provenance");
@@ -267,7 +267,7 @@ export class SessionReconciler {
     const projection = await this.projection.inspect(identity);
     if (link === "stale") {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "ready",
@@ -279,7 +279,7 @@ export class SessionReconciler {
     }
     if (link !== "connected") {
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "ready",
@@ -295,7 +295,7 @@ export class SessionReconciler {
     ) {
       reasons.push(`Run Workspace is ${projection.workspace}`);
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "ready",
@@ -310,7 +310,7 @@ export class SessionReconciler {
         `Visible projection is ${projection.workspace}/${projection.pane}`,
       );
       return {
-        seat: seat.id,
+        agent: agent.id,
         identity,
         sessionStatus: session.status,
         sandbox: "ready",
@@ -321,7 +321,7 @@ export class SessionReconciler {
       };
     }
     return {
-      seat: seat.id,
+      agent: agent.id,
       identity,
       sessionStatus: session.status,
       sandbox: "ready",
@@ -419,7 +419,7 @@ export class SessionReconciler {
     const expected = SessionIdentitySchema.parse(options.expected);
     const sessionId = IdentifierSchema.parse(options.session);
     const reason = ReplacementReasonSchema.parse(options.reason);
-    const snapshot = await this.registry.get(expected.seat);
+    const snapshot = await this.registry.get(expected.agent);
     if (replacementRetry(snapshot.session, expected, sessionId, reason)) {
       return snapshot.session!;
     }

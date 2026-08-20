@@ -8,7 +8,7 @@ import { loadLocalConfig } from "../src/local.js";
 import { MessageSchema } from "../src/message.js";
 import { OpenShellClient } from "../src/openshell.js";
 import { gitHead } from "../src/project.js";
-import { startReadSession, type ReadSession } from "../src/seat.js";
+import { startReadSession, type ReadSession } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
 
 const execFileAsync = promisify(execFile);
@@ -145,9 +145,9 @@ async function close(server: Server): Promise<void> {
           client,
           identity: {
             run: "live-inference",
-            seat: "scout",
+            agent: "scout",
             session: "session-one",
-            epoch: 1,
+            generation: 1,
           },
           snapshot,
           model: {
@@ -176,11 +176,11 @@ async function close(server: Server): Promise<void> {
         );
         expect(isolation.exitCode).toBe(0);
         const message = MessageSchema.parse({
-          version: 1,
+          version: 2,
           id: "live-model-turn",
           run: "live-inference",
           from: { host: true },
-          to: { seat: "scout", session: "session-one", epoch: 1 },
+          to: { agent: "scout", session: "session-one", generation: 1 },
           type: "instruction",
           priority: "normal",
           reply_to: null,

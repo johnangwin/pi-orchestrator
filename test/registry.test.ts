@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { SeatRegistry } from "../src/registry.js";
+import { AgentRegistry } from "../src/registry.js";
 import { RunStateSchema, ProjectStore, writeJsonAtomic } from "../src/state.js";
 
 const roots: string[] = [];
@@ -29,7 +29,7 @@ async function openStore(home: string): Promise<ProjectStore> {
 
 async function writeEmptyRun(store: ProjectStore): Promise<void> {
   await store.writeRun({
-    version: 1,
+    version: 2,
     id: "run-one",
     project_id: "fixture",
     plan_id: "fixture-plan",
@@ -51,64 +51,85 @@ function clock(): () => Date {
 }
 
 async function activeRegistry(store: ProjectStore): Promise<{
-  registry: SeatRegistry;
+  registry: AgentRegistry;
   identity: {
     run: string;
-    seat: string;
+    agent: string;
     session: string;
-    epoch: number;
+    generation: number;
   };
 }> {
-  const registry = new SeatRegistry(store, "run-one", clock());
-  await registry.register({ seat: "lead", role: "lead", model: "plan" });
+  const registry = new AgentRegistry(store, "run-one", clock());
+  await registry.register({ agent: "lead", role: "lead", model: "plan" });
   const session = await registry.start({
-    seat: "lead",
+    agent: "lead",
     session: "session-one",
   });
   await registry.transition(session.identity, { status: "active" });
   return { registry, identity: session.identity };
 }
 
-describe("durable Seat and Session registry", () => {
-  it("upgrades an older Run state and survives host restart", async () => {
+describe("durable Agent and Session registry", () => {
+  it("persists the Agent roster and survives host restart", async () => {
     const home = await temporaryHome();
     let store = await openStore(home);
     await writeEmptyRun(store);
 
     const initial = await store.readRun("run-one");
-    expect(initial.seats).toEqual({});
+    expect(initial.agents).toEqual({});
     expect(initial.sessions).toEqual({});
 
-    const registry = new SeatRegistry(store, "run-one", clock());
+    const registry = new AgentRegistry(store, "run-one", clock());
     await registry.register({
-      seat: "implementer",
+      agent: "implementer",
       role: "implementer",
       model: "code",
     });
     const started = await registry.start({
-      seat: "implementer",
+      agent: "implementer",
       session: "session-one",
     });
     expect(started.identity).toEqual({
       run: "run-one",
-      seat: "implementer",
+      agent: "implementer",
       session: "session-one",
-      epoch: 1,
+      generation: 1,
     });
     await store.close();
 
     store = await openStore(home);
     try {
-      const recovered = await new SeatRegistry(store, "run-one").get(
+      const recovered = await new AgentRegistry(store, "run-one").get(
         "implementer",
       );
       expect(recovered.record).toMatchObject({
         role: "implementer",
         model: "code",
         session: "session-one",
-        epoch: 1,
+        generation: 1,
       });
       expect(recovered.session).toEqual(started);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("rejects unfinished version-one Run state without migrating it", async () => {
+    const home = await temporaryHome();
+    const store = await openStore(home);
+    try {
+      await writeEmptyRun(store);
+      const current = await store.readRun("run-one");
+      const { agents: _agents, ...legacy } = current;
+      await writeJsonAtomic(
+        path.join(store.runDirectory("run-one"), "state.json"),
+        { ...legacy, version: 1, seats: {} },
+      );
+
+      await expect(store.readRun("run-one")).rejects.toMatchObject({
+        code: "unsupported_state_version",
+        message: expect.stringContaining("unfinished v0.2 Runs"),
+      });
     } finally {
       await store.close();
     }
@@ -119,10 +140,10 @@ describe("durable Seat and Session registry", () => {
     const store = await openStore(home);
     try {
       await writeEmptyRun(store);
-      const registry = new SeatRegistry(store, "run-one", clock());
-      await registry.register({ seat: "scout", role: "scout", model: "fast" });
+      const registry = new AgentRegistry(store, "run-one", clock());
+      await registry.register({ agent: "scout", role: "scout", model: "fast" });
       const started = await registry.start({
-        seat: "scout",
+        agent: "scout",
         session: "session-one",
       });
       const sandbox = {
@@ -182,7 +203,7 @@ describe("durable Seat and Session registry", () => {
     }
   });
 
-  it("allocates one monotonic epoch under concurrent replacement retries", async () => {
+  it("allocates one monotonic generation under concurrent replacement retries", async () => {
     const home = await temporaryHome();
     const store = await openStore(home);
     try {
@@ -208,7 +229,7 @@ describe("durable Seat and Session registry", () => {
       ).toHaveLength(1);
 
       const current = (await registry.get("lead")).session!;
-      expect(current.identity.epoch).toBe(2);
+      expect(current.identity.generation).toBe(2);
       expect(current.replaces).toMatchObject({ session: "session-one" });
       const reason = current.replaces!.reason;
       const beforeRetry = await store.readRun("run-one");
@@ -271,10 +292,10 @@ describe("durable Seat and Session registry", () => {
       };
       expect(RunStateSchema.safeParse(nonterminalHistory).success).toBe(false);
 
-      const missingEpoch = structuredClone(valid);
-      missingEpoch.seats.lead!.epoch = 3;
-      missingEpoch.sessions["session-two"]!.identity.epoch = 3;
-      expect(RunStateSchema.safeParse(missingEpoch).success).toBe(false);
+      const missingGeneration = structuredClone(valid);
+      missingGeneration.agents.lead!.generation = 3;
+      missingGeneration.sessions["session-two"]!.identity.generation = 3;
+      expect(RunStateSchema.safeParse(missingGeneration).success).toBe(false);
 
       const danglingCurrent = structuredClone(valid);
       delete danglingCurrent.sessions["session-two"];

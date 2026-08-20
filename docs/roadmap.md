@@ -10,14 +10,14 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 and 1 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Runtime behavior remains v0.2 until the later replacement phases connect this substrate to Sessions.
+Phases 0 through 2 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime. Filesystem behavior remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
 |     0 | Freeze v0.3 contracts and replacement ADRs        | Complete |
 |     1 | Prove shared OpenShell Workspace volumes          | Complete |
-|     2 | Rename Seats and epochs to Agents and generations | Next     |
-|     3 | Enforce explicit Role permissions                 | Pending  |
+|     2 | Rename Seats and epochs to Agents and generations | Complete |
+|     3 | Enforce explicit Role permissions                 | Next     |
 |     4 | Add policy-bound Model Profiles                   | Pending  |
 |     5 | Add complete Workspace manifests                  | Pending  |
 |     6 | Add Write Leases, Change Sets, and Candidates     | Pending  |
@@ -59,6 +59,14 @@ The shared-volume profile remains version-bound to a live canary proving all of 
 10. Sandbox and disposable volume cleanup is complete.
 
 If the OpenShell adapter cannot enforce and inspect that mount shape, implementation returns to design review. It does not silently retain source archives as a v0.3 fallback.
+
+## Phase 2 outcome
+
+- renamed the durable roster, Session identity, Messages, Reports, metrics, Mailboxes, recovery, and cmux bindings to Agent and generation terminology;
+- renamed `seat.ts` and its tests to `agent.ts` and updated the public exports;
+- advanced Run and planning state to schema version 2 and the Link and Pi client protocols to version 2;
+- rejected unfinished version-one Run and planning state with explicit no-migration diagnostics;
+- preserved contiguous Session history, stale-generation rejection, Handoffs, recovery, and existing scheduling and filesystem behavior.
 
 ## Later proof gates
 

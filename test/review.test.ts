@@ -26,7 +26,7 @@ import {
   PI_RUNTIME_VERSION,
   type ReadSessionOpenShell,
   type StartReadSessionOptions,
-} from "../src/seat.js";
+} from "../src/agent.js";
 import { fixtureTask } from "./fixture.js";
 import {
   createAppliedFixture,
@@ -348,9 +348,9 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(runtime.briefs[0]).toContain('"check":"project-test"');
     expect(runtime.briefs[0]).toContain("## Dependency Reports\n\nNone.");
     expect(runtime.messages[0]?.to).toEqual({
-      seat: "review-spec",
+      agent: "review-spec",
       session: first.record.identity.session,
-      epoch: 1,
+      generation: 1,
     });
     expect(runtime.stopCalls).toBe(1);
 
@@ -541,9 +541,9 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       nonce: () => nonces.shift()!,
     });
     expect(passed.record.identity).toMatchObject({
-      seat: "review-spec",
+      agent: "review-spec",
       session: "review-spec-22222222",
-      epoch: 2,
+      generation: 2,
     });
     expect(passed.task.review_rounds).toBe(1);
     expect(runtime.launches).toHaveLength(2);
@@ -651,7 +651,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       gateway: "quant-gateway",
       pi_model: "fixture-quant",
     });
-    expect(result.record.identity.seat).toBe("review-quant");
+    expect(result.record.identity.agent).toBe("review-quant");
     expect(runtime.briefs[0]).toContain("Lens: quant");
   });
 
@@ -772,7 +772,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(runtime.launches).toHaveLength(4);
   });
 
-  it("reuses passed Lenses and retries only the failed Session epoch", async () => {
+  it("reuses passed Lenses and retries only the failed Session generation", async () => {
     const fixture = await checked(
       fixtureTask({ reviews: ["spec", "architecture", "quality"] }),
     );
@@ -812,9 +812,9 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       false,
     ]);
     expect(retry.reviews[1]?.record.identity).toMatchObject({
-      seat: "review-architecture",
+      agent: "review-architecture",
       session: "review-architecture-33333333",
-      epoch: 2,
+      generation: 2,
     });
     expect(retry.task.review_rounds).toBe(1);
     expect(runtime.launches).toHaveLength(4);

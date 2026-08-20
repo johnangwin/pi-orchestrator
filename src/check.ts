@@ -21,8 +21,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { GitPatchWorktree, loadPreparedPatch } from "./apply.js";
-import { requireFreshApproval } from "./approval.js";
+import { approvalDigest, requireFreshApproval } from "./approval.js";
 import { ArtifactStore } from "./artifact.js";
+import type { Candidate } from "./candidate.js";
 import {
   IdentifierSchema,
   loadProjectConfig,
@@ -31,6 +32,12 @@ import {
 import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { GitCommitSchema } from "./git.js";
+import type { LocalConfig } from "./local.js";
+import {
+  validateOpenShellMountTable,
+  type OpenShellMountSet,
+  type MountTableEvidence,
+} from "./mount.js";
 import type {
   OpenShellClient,
   OpenShellPreflight,
@@ -58,6 +65,13 @@ import { routingPolicyDigest } from "./model.js";
 import type { Project } from "./project.js";
 import { createSourceSnapshot } from "./snapshot.js";
 import {
+  createRunSourceWorkspace,
+  type CreateRunSourceWorkspaceOptions,
+  type RunSourceWorkspace,
+  type WorkspaceSourceManifest,
+} from "./source.js";
+import { WorkspaceLifecycle } from "./lifecycle.js";
+import {
   syncDirectory,
   writeJsonAtomic,
   type ProjectRecord,
@@ -65,6 +79,12 @@ import {
   type RunState,
   type TaskRecord,
 } from "./state.js";
+import { DockerVolumeNameSchema } from "./volume.js";
+import {
+  createWorkspaceManifestFromEntries,
+  effectiveRestrictedPaths,
+  type WorkspaceManifest,
+} from "./workspace.js";
 
 const MAX_CHECK_SOURCE_BYTES = 1024 * 1024 * 1024;
 const MAX_CHECK_LOG_BYTES = 16 * 1024 * 1024;
@@ -148,9 +168,89 @@ const CheckIntentImageSchema = z
   })
   .strict();
 
+const CandidateCheckBindingSchema = z
+  .object({
+    id: IdentifierSchema,
+    digest: DigestSchema,
+  })
+  .strict();
+
+const CandidateWorkspaceBindingSchema = z
+  .object({
+    generation: z.number().int().nonnegative(),
+    manifest_digest: DigestSchema,
+    git_diff_digest: DigestSchema,
+    source_digest: DigestSchema,
+    volume_name: DockerVolumeNameSchema,
+    volume_digest: DigestSchema,
+    mount_set_digest: DigestSchema,
+  })
+  .strict();
+
+const CheckEnvironmentKeySchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const CheckEnvironmentValueSchema = z
+  .string()
+  .max(16_384)
+  .refine((value) => !value.includes("\0"), "must not contain NUL");
+
+function scratchDigest(input: {
+  readonly root: string;
+  readonly environment: Readonly<Record<string, string>>;
+}): Digest {
+  return digestParts("pi-orchestrator/check-scratch/v1", [
+    ["root", input.root],
+    ["environment", canonicalJson(input.environment)],
+  ]);
+}
+
+export const CheckScratchSchema = z
+  .object({
+    root: z.literal("/sandbox/check-scratch"),
+    environment: z.record(
+      CheckEnvironmentKeySchema,
+      CheckEnvironmentValueSchema,
+    ),
+    digest: DigestSchema,
+  })
+  .strict()
+  .superRefine((scratch, context) => {
+    if (scratchDigest(scratch) !== scratch.digest) {
+      context.addIssue({
+        code: "custom",
+        path: ["digest"],
+        message: "must bind the exact private-scratch configuration",
+      });
+    }
+  });
+export type CheckScratch = z.infer<typeof CheckScratchSchema>;
+
+export function createCheckScratch(): CheckScratch {
+  const root = "/sandbox/check-scratch" as const;
+  const environment = {
+    CARGO_HOME: `${root}/cache/cargo`,
+    CARGO_TARGET_DIR: `${root}/build/cargo`,
+    GOCACHE: `${root}/cache/go-build`,
+    GOMODCACHE: `${root}/cache/go-mod`,
+    GOPATH: `${root}/cache/go`,
+    HOME: `${root}/home`,
+    NODE_COMPILE_CACHE: `${root}/cache/node`,
+    NPM_CONFIG_CACHE: `${root}/cache/npm`,
+    PIP_CACHE_DIR: `${root}/cache/pip`,
+    PYTHONPYCACHEPREFIX: `${root}/cache/python`,
+    TMPDIR: `${root}/tmp`,
+    UV_CACHE_DIR: `${root}/cache/uv`,
+    XDG_CACHE_HOME: `${root}/cache`,
+  };
+  return CheckScratchSchema.parse({
+    root,
+    environment,
+    digest: scratchDigest({ root, environment }),
+  });
+}
+
 export const CheckIntentSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id: CheckJobIdSchema,
     run: IdentifierSchema,
     task: IdentifierSchema,
@@ -165,12 +265,48 @@ export const CheckIntentSchema = z
     timeout_ms: CheckTimeoutSchema,
     image: CheckIntentImageSchema,
     policy_digest: DigestSchema,
+    candidate: CandidateCheckBindingSchema.optional(),
+    workspace: CandidateWorkspaceBindingSchema.optional(),
+    scratch: CheckScratchSchema.optional(),
     sandbox: z.string().min(1).max(19),
     token: CheckTokenSchema,
     binding_digest: DigestSchema,
     prepared_at: TimestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((intent, context) => {
+    const candidateFields = [
+      intent.candidate,
+      intent.workspace,
+      intent.scratch,
+    ];
+    const candidateBound =
+      candidateFields.every((value) => value !== undefined) &&
+      candidateFields.length > 0;
+    const legacyBound = candidateFields.every((value) => value === undefined);
+    if (
+      (intent.version === 2 && !candidateBound) ||
+      (intent.version === 1 && !legacyBound)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "version two requires Candidate, Workspace, and scratch bindings exclusively",
+      });
+    }
+    if (
+      intent.version === 2 &&
+      (intent.task_source_digest !== intent.workspace?.manifest_digest ||
+        intent.diff_digest !== intent.workspace?.git_diff_digest ||
+        intent.source_digest !== intent.workspace?.source_digest)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Candidate Check source digests must match its Workspace binding",
+      });
+    }
+  });
 export type CheckIntent = z.infer<typeof CheckIntentSchema>;
 
 const CheckLogSchema = z
@@ -197,9 +333,15 @@ const CheckOpenShellSchema = z
   })
   .strict();
 
+const CheckCleanupSchema = z
+  .object({
+    sandbox_deleted: z.literal(true),
+  })
+  .strict();
+
 const CheckRecordWithoutDigestSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id: CheckJobIdSchema,
     run: IdentifierSchema,
     task: IdentifierSchema,
@@ -221,6 +363,11 @@ const CheckRecordWithoutDigestSchema = z
     plan_digest: DigestSchema,
     image: CheckIntentImageSchema,
     policy_digest: DigestSchema,
+    candidate: CandidateCheckBindingSchema.optional(),
+    workspace: CandidateWorkspaceBindingSchema.optional(),
+    scratch: CheckScratchSchema.optional(),
+    mount_table_digest: DigestSchema.optional(),
+    cleanup: CheckCleanupSchema.optional(),
     sandbox: CheckSandboxSchema,
     openshell: CheckOpenShellSchema,
     intent_digest: DigestSchema,
@@ -239,6 +386,42 @@ const CheckRecordWithoutDigestSchema = z
         code: "custom",
         path: ["ended_at"],
         message: "must not precede started_at",
+      });
+    }
+    const candidateBound = [
+      record.candidate,
+      record.workspace,
+      record.scratch,
+      record.mount_table_digest,
+      record.cleanup,
+    ].every((value) => value !== undefined);
+    const legacyBound = [
+      record.candidate,
+      record.workspace,
+      record.scratch,
+      record.mount_table_digest,
+      record.cleanup,
+    ].every((value) => value === undefined);
+    if (
+      (record.version === 2 && !candidateBound) ||
+      (record.version === 1 && !legacyBound)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "version two requires Candidate, Workspace, scratch, mount-table, and cleanup bindings exclusively",
+      });
+    }
+    if (
+      record.version === 2 &&
+      (record.task_source_digest !== record.workspace?.manifest_digest ||
+        record.diff_digest !== record.workspace?.git_diff_digest ||
+        record.source_digest !== record.workspace?.source_digest)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Candidate Check source digests must match its Workspace binding",
       });
     }
   });
@@ -265,7 +448,7 @@ export type CheckProjectStore = Pick<
   "read" | "readRun" | "runDirectory" | "updateRun"
 >;
 
-export interface RunCheckOptions {
+interface CheckExecutionOptions {
   readonly store: CheckProjectStore;
   readonly project: Project;
   readonly plan: LoadedPlan;
@@ -280,6 +463,16 @@ export interface RunCheckOptions {
   readonly now?: () => Date;
   readonly token?: () => string;
 }
+
+export interface RunCheckOptions extends CheckExecutionOptions {
+  readonly local: LocalConfig;
+  readonly workspaceClient?: Pick<CheckOpenShell, "listSandboxes">;
+  readonly workspaceFactory?: (
+    options: CreateRunSourceWorkspaceOptions,
+  ) => Promise<RunSourceWorkspace>;
+}
+
+export type LegacyRunCheckOptions = CheckExecutionOptions;
 
 export interface RunCheckResult {
   readonly intent: CheckIntent;
@@ -695,9 +888,29 @@ function intentBinding(
     "id" | "sandbox" | "token" | "binding_digest" | "prepared_at"
   >,
 ): Digest {
-  return digestParts("pi-orchestrator/check-job/v1", [
+  return digestParts(`pi-orchestrator/check-job/v${input.version}`, [
     ["binding", canonicalJson(input)],
   ]);
+}
+
+function createDurableIntent(
+  input: Omit<
+    CheckIntent,
+    "id" | "sandbox" | "token" | "binding_digest" | "prepared_at"
+  >,
+  token: string,
+  now: Date,
+): CheckIntent {
+  const bindingDigest = intentBinding(input);
+  const suffix = bindingDigest.slice("sha256:".length);
+  return CheckIntentSchema.parse({
+    ...input,
+    id: `check-${suffix.slice(0, 16)}`,
+    sandbox: `pio-c-${suffix.slice(0, 12)}`,
+    token: CheckTokenSchema.parse(token),
+    binding_digest: bindingDigest,
+    prepared_at: now.toISOString(),
+  });
 }
 
 function createIntent(
@@ -708,17 +921,7 @@ function createIntent(
   token: string,
   now: Date,
 ): CheckIntent {
-  const bindingInput = { version: 1 as const, ...input };
-  const bindingDigest = intentBinding(bindingInput);
-  const suffix = bindingDigest.slice("sha256:".length);
-  return CheckIntentSchema.parse({
-    ...bindingInput,
-    id: `check-${suffix.slice(0, 16)}`,
-    sandbox: `pio-c-${suffix.slice(0, 12)}`,
-    token: CheckTokenSchema.parse(token),
-    binding_digest: bindingDigest,
-    prepared_at: now.toISOString(),
-  });
+  return createDurableIntent({ version: 1, ...input }, token, now);
 }
 
 function sameIntentBinding(left: CheckIntent, right: CheckIntent): boolean {
@@ -732,7 +935,7 @@ function sameIntentBinding(left: CheckIntent, right: CheckIntent): boolean {
 function recordDigest(
   record: z.infer<typeof CheckRecordWithoutDigestSchema>,
 ): Digest {
-  return digestParts("pi-orchestrator/check-record/v1", [
+  return digestParts(`pi-orchestrator/check-record/v${record.version}`, [
     ["record", canonicalJson(record)],
   ]);
 }
@@ -749,6 +952,7 @@ function createRecord(
 
 function requireRecordIntent(record: CheckRecord, intent: CheckIntent): void {
   const recordBinding = {
+    version: record.version,
     id: record.id,
     run: record.run,
     task: record.task,
@@ -763,9 +967,13 @@ function requireRecordIntent(record: CheckRecord, intent: CheckIntent): void {
     timeout_ms: record.timeout_ms,
     image: record.image,
     policy_digest: record.policy_digest,
+    candidate: record.candidate ?? null,
+    workspace: record.workspace ?? null,
+    scratch: record.scratch ?? null,
     intent_digest: record.intent_digest,
   };
   const intentBinding = {
+    version: intent.version,
     id: intent.id,
     run: intent.run,
     task: intent.task,
@@ -780,6 +988,9 @@ function requireRecordIntent(record: CheckRecord, intent: CheckIntent): void {
     timeout_ms: intent.timeout_ms,
     image: intent.image,
     policy_digest: intent.policy_digest,
+    candidate: intent.candidate ?? null,
+    workspace: intent.workspace ?? null,
+    scratch: intent.scratch ?? null,
     intent_digest: intent.binding_digest,
   };
   if (canonicalJson(recordBinding) !== canonicalJson(intentBinding)) {
@@ -1404,6 +1615,14 @@ function sandboxOwnership(
   return {
     "pio-check-job": intent.id,
     "pio-check-token": tokenFingerprint,
+    ...(intent.version === 2
+      ? {
+          "pio.run": intent.run,
+          "pio.access": "read",
+          "pio.candidate": intent.candidate!.digest.slice(7, 63),
+          "pio.volume": intent.workspace!.volume_digest.slice(7, 63),
+        }
+      : {}),
   };
 }
 
@@ -1456,6 +1675,7 @@ async function createFreshSandbox(options: {
   readonly intent: CheckIntent;
   readonly image: CheckImage;
   readonly policy: LoadedSandboxPolicy;
+  readonly mountSet?: OpenShellMountSet;
 }): Promise<OpenShellSandbox> {
   await removeAbandonedSandbox(options.client, options.intent);
   let sandbox: OpenShellSandbox | undefined;
@@ -1465,6 +1685,7 @@ async function createFreshSandbox(options: {
       from: options.image.source,
       policyPath: options.policy.path,
       labels: sandboxOwnership(options.intent),
+      ...(options.mountSet ? { mountSet: options.mountSet } : {}),
       command: [
         "/usr/local/bin/orchestrator-prepare-check",
         "init",
@@ -1672,8 +1893,8 @@ async function inspectExactWorktree(options: {
   }
 }
 
-export async function runCheck(
-  options: RunCheckOptions,
+export async function runLegacyCheckForMigration(
+  options: LegacyRunCheckOptions,
 ): Promise<RunCheckResult> {
   const now = options.now ?? (() => new Date());
   const [projectRecord, run] = await Promise.all([
@@ -1860,6 +2081,16 @@ export async function runCheck(
     if (sandbox) {
       try {
         await options.client.deleteSandbox(sandbox.name, { missingOk: true });
+        if (
+          (await options.client.listSandboxes()).some(
+            (candidate) => candidate.name === sandbox!.name,
+          )
+        ) {
+          throw new OrchestratorError(
+            "check_sandbox_cleanup_failed",
+            `Check Sandbox '${sandbox.name}' still exists after deletion`,
+          );
+        }
       } catch (error) {
         cleanupError = error;
       }
@@ -1951,6 +2182,643 @@ export async function runCheck(
   } finally {
     await stagedImage?.dispose();
     await source.dispose();
+  }
+}
+
+interface FrozenCandidateContext {
+  readonly run: RunState;
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+  readonly source: WorkspaceSourceManifest;
+  readonly mountSet: OpenShellMountSet;
+}
+
+function assertCurrentCandidate(
+  run: RunState,
+  task: PlanTask,
+  candidate: Candidate,
+): TaskRecord {
+  const workspace = run.workspace;
+  const taskState = run.tasks[task.id];
+  if (
+    !taskState?.input_commit ||
+    !workspace ||
+    workspace.phase !== "frozen" ||
+    workspace.active_lease !== null ||
+    workspace.drift !== null ||
+    workspace.candidate?.status !== "frozen" ||
+    workspace.candidate.id !== candidate.id ||
+    workspace.candidate.digest !== candidate.digest ||
+    workspace.generation !== candidate.workspace_generation ||
+    workspace.manifest_digest !== candidate.manifest_digest ||
+    workspace.git_diff_digest !== candidate.git_diff_digest
+  ) {
+    throw new OrchestratorError(
+      "check_candidate_stale",
+      `Task '${task.id}' does not have the expected frozen Candidate`,
+    );
+  }
+  return taskState;
+}
+
+async function requireFrozenCandidate(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly run: RunState;
+  readonly task: PlanTask;
+  readonly approvalDigest: Digest;
+}): Promise<{
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+}> {
+  const reference = options.run.workspace?.candidate;
+  if (!reference || reference.status !== "frozen") {
+    throw new OrchestratorError(
+      "check_candidate_missing",
+      `Task '${options.task.id}' has no frozen Candidate ready for Checks`,
+    );
+  }
+  const candidate = await options.lifecycle.candidates.get(reference);
+  const taskState = assertCurrentCandidate(
+    options.run,
+    options.task,
+    candidate,
+  );
+  if (
+    candidate.run !== options.run.id ||
+    candidate.plan !== options.run.plan_id ||
+    candidate.plan_revision !== options.run.plan_revision ||
+    candidate.plan_digest !== options.run.plan_digest ||
+    candidate.approval_digest !== options.approvalDigest ||
+    candidate.task !== options.task.id ||
+    candidate.input_commit !== taskState.input_commit ||
+    candidate.permission_policy_digest !==
+      options.run.permission_policy_digest ||
+    candidate.routing_policy_digest !== options.run.routing_policy_digest
+  ) {
+    throw new OrchestratorError(
+      "check_candidate_stale",
+      `Candidate '${candidate.id}' does not match the approved Run and Task`,
+    );
+  }
+  return {
+    taskState,
+    candidate,
+    manifest: await options.lifecycle.manifests.get(candidate.manifest_digest),
+  };
+}
+
+async function requireNoCandidateWriters(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly client: Pick<CheckOpenShell, "listSandboxes">;
+  readonly runId: string;
+}): Promise<void> {
+  const writers = (await options.client.listSandboxes()).filter(
+    (sandbox) =>
+      sandbox.labels["pio.run"] === options.runId &&
+      sandbox.labels["pio.access"] === "write",
+  );
+  if (writers.length > 0) {
+    await options.lifecycle.blockUnleasedWriters(
+      writers.map((sandbox) => sandbox.id),
+    );
+  }
+}
+
+async function verifyFrozenCandidateWorkspace(options: {
+  readonly store: CheckProjectStore;
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly workspace: RunSourceWorkspace;
+  readonly writerClient: Pick<CheckOpenShell, "listSandboxes">;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+  readonly restrictedPatterns: readonly string[];
+}): Promise<FrozenCandidateContext> {
+  const run = await options.store.readRun(options.lifecycle.runId);
+  const taskState = assertCurrentCandidate(
+    run,
+    options.task,
+    options.candidate,
+  );
+  await requireNoCandidateWriters({
+    lifecycle: options.lifecycle,
+    client: options.writerClient,
+    runId: run.id,
+  });
+  const source = await options.workspace.inspect(
+    options.candidate.workspace_generation,
+  );
+  const observedManifest = createWorkspaceManifestFromEntries(source.entries);
+  const gitDiff = await options.workspace.gitDiff(source);
+  await options.lifecycle.observe({
+    manifest: observedManifest,
+    gitDiff,
+    writableSandboxIds: [],
+  });
+  if (
+    options.workspace.inputCommit !== options.candidate.input_commit ||
+    source.commit !== options.candidate.input_commit ||
+    source.manifest_digest !== options.candidate.manifest_digest ||
+    observedManifest.digest !== options.manifest.digest ||
+    canonicalJson(observedManifest.entries) !==
+      canonicalJson(options.manifest.entries) ||
+    gitDiff.digest !== options.candidate.git_diff_digest
+  ) {
+    throw new OrchestratorError(
+      "check_candidate_stale",
+      `Candidate '${options.candidate.id}' does not match the complete Run Workspace`,
+    );
+  }
+  return {
+    run: await options.store.readRun(run.id),
+    taskState,
+    candidate: options.candidate,
+    manifest: options.manifest,
+    source,
+    mountSet: options.workspace.readMountSet({
+      source,
+      restrictedPatterns: options.restrictedPatterns,
+    }),
+  };
+}
+
+async function candidateCheckImage(
+  options: RunCheckOptions,
+): Promise<CheckImage> {
+  const configured =
+    options.image ??
+    (options.local.openshell.images?.check
+      ? {
+          source: options.local.openshell.images.check,
+          digest: options.local.openshell.images.check.slice(
+            options.local.openshell.images.check.lastIndexOf("@") + 1,
+          ) as Digest,
+        }
+      : undefined);
+  if (!configured) {
+    throw new OrchestratorError(
+      "check_image_missing",
+      "Candidate Checks require a digest-pinned Check image",
+    );
+  }
+  const image = await verifyCheckImage(configured);
+  if (!/@sha256:[a-f0-9]{64}$/.test(image.source)) {
+    throw new OrchestratorError(
+      "check_image_unpinned",
+      "Candidate Checks require a static OCI image pinned by digest",
+    );
+  }
+  return image;
+}
+
+async function recordCandidatePendingGate(options: {
+  readonly store: CheckProjectStore;
+  readonly runId: string;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly intent: CheckIntent;
+  readonly timestamp: string;
+}): Promise<void> {
+  await options.store.updateRun(options.runId, (run) => {
+    const current = assertCurrentCandidate(
+      run,
+      options.task,
+      options.candidate,
+    );
+    if (current.status !== "checking") {
+      throw new OrchestratorError(
+        "task_not_checking",
+        `Task '${options.task.id}' must be checking before a new Check starts`,
+      );
+    }
+    const key = gateKey(options.intent.check);
+    const existing = current.gates[key];
+    if (
+      existing?.status === "pending" &&
+      existing.digest === options.intent.binding_digest
+    ) {
+      return run;
+    }
+    if (existing && existing.status !== "stale") {
+      throw new OrchestratorError(
+        "check_gate_conflict",
+        `Check Gate '${key}' already contains other evidence`,
+      );
+    }
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.task.id]: {
+          ...current,
+          gates: {
+            ...current.gates,
+            [key]: {
+              status: "pending",
+              digest: options.intent.binding_digest,
+              updated_at: options.timestamp,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
+async function finalizeCandidateGate(options: {
+  readonly store: CheckProjectStore;
+  readonly runId: string;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly record: CheckRecord;
+  readonly timestamp: string;
+}): Promise<TaskRecord> {
+  const updated = await options.store.updateRun(options.runId, (run) => {
+    const current = assertCurrentCandidate(
+      run,
+      options.task,
+      options.candidate,
+    );
+    const key = gateKey(options.record.check);
+    const existing = current.gates[key];
+    if (
+      existing?.status === options.record.verdict &&
+      existing.digest === options.record.record_digest
+    ) {
+      return run;
+    }
+    if (
+      !existing ||
+      existing.status !== "pending" ||
+      existing.digest !== options.record.intent_digest
+    ) {
+      throw new OrchestratorError(
+        "check_gate_conflict",
+        `Check Gate '${key}' does not contain this Candidate Check intent`,
+      );
+    }
+    if (!["checking", "rework", "reviewing"].includes(current.status)) {
+      throw new OrchestratorError(
+        "task_state_changed",
+        `Task '${options.task.id}' cannot accept Check evidence while ${current.status}`,
+      );
+    }
+    const gates = {
+      ...current.gates,
+      [key]: {
+        status: options.record.verdict,
+        digest: options.record.record_digest,
+        updated_at: options.timestamp,
+      },
+    };
+    const allPass = options.task.checks.every(
+      (check) => gates[gateKey(check)]?.status === "pass",
+    );
+    const status =
+      options.record.verdict === "fail"
+        ? "rework"
+        : allPass
+          ? "reviewing"
+          : "checking";
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.task.id]: { ...current, status, gates },
+      },
+    };
+  });
+  return updated.tasks[options.task.id]!;
+}
+
+export async function runCheck(
+  options: RunCheckOptions,
+): Promise<RunCheckResult> {
+  if (!options.local) {
+    throw new OrchestratorError(
+      "check_workspace_config_missing",
+      "Candidate Checks require machine-local shared Workspace configuration",
+    );
+  }
+  const now = options.now ?? (() => new Date());
+  const [projectRecord, initialRun] = await Promise.all([
+    options.store.read(),
+    options.store.readRun(options.runId),
+  ]);
+  requireRunBinding({
+    run: initialRun,
+    project: options.project,
+    plan: options.plan,
+    projectRecord,
+  });
+  const task = findTask(options.plan, options.taskId);
+  const definition = requireCheckDefinition(
+    options.project,
+    task,
+    options.checkId,
+  );
+  await requireCurrentCheckInputs({
+    project: options.project,
+    plan: options.plan,
+    task,
+    checkId: options.checkId,
+    definition,
+  });
+  const approval = projectRecord.approvals[options.plan.id]!;
+  const lifecycle = new WorkspaceLifecycle(options.store, initialRun.id, now);
+  const frozen = await requireFrozenCandidate({
+    lifecycle,
+    run: initialRun,
+    task,
+    approvalDigest: approvalDigest(approval),
+  });
+  const runWorkspace = await (
+    options.workspaceFactory ?? createRunSourceWorkspace
+  )({
+    projectRoot: options.project.root,
+    projectId: options.project.config.project.id,
+    runId: initialRun.id,
+    commit: initialRun.base_commit,
+    local: options.local,
+    binding: {
+      volumeName: initialRun.workspace!.volume_name,
+      volumeDigest: initialRun.workspace!.volume_digest,
+    },
+  });
+  const restrictedPatterns = effectiveRestrictedPaths(
+    options.project.config.restricted_paths,
+    options.local.workspace.restricted_paths,
+  );
+  const writerClient = options.workspaceClient ?? options.client;
+  const before = await verifyFrozenCandidateWorkspace({
+    store: options.store,
+    lifecycle,
+    workspace: runWorkspace,
+    writerClient,
+    task,
+    candidate: frozen.candidate,
+    manifest: frozen.manifest,
+    restrictedPatterns,
+  });
+  const image = await candidateCheckImage(options);
+  const scratch = createCheckScratch();
+  const stagingRoot = path.resolve(options.temporaryRoot ?? os.tmpdir());
+  await mkdir(stagingRoot, { recursive: true });
+  const staging = await mkdtemp(path.join(stagingRoot, "pi-check-policy-"));
+  try {
+    const policy = await stageCheckPolicy(
+      await loadSandboxPolicy(
+        "check",
+        options.policyDirectory
+          ? path.join(path.resolve(options.policyDirectory), "check.yaml")
+          : bundledCheckPolicy(),
+      ),
+      staging,
+    );
+    const requested = createDurableIntent(
+      {
+        version: 2,
+        run: initialRun.id,
+        task: task.id,
+        check: IdentifierSchema.parse(options.checkId),
+        plan_digest: initialRun.plan_digest as Digest,
+        input_commit: frozen.candidate.input_commit,
+        task_source_digest: frozen.candidate.manifest_digest,
+        source_digest: before.source.source_digest,
+        diff_digest: frozen.candidate.git_diff_digest,
+        argv: definition.argv,
+        cwd: definition.cwd ?? ".",
+        timeout_ms: CheckTimeoutSchema.parse(
+          options.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+        ),
+        image,
+        policy_digest: policy.digest,
+        candidate: {
+          id: frozen.candidate.id,
+          digest: frozen.candidate.digest,
+        },
+        workspace: {
+          generation: frozen.candidate.workspace_generation,
+          manifest_digest: frozen.candidate.manifest_digest,
+          git_diff_digest: frozen.candidate.git_diff_digest,
+          source_digest: before.source.source_digest,
+          volume_name: runWorkspace.volume.name,
+          volume_digest: runWorkspace.volume.digest,
+          mount_set_digest: before.mountSet.digest,
+        },
+        scratch,
+      },
+      (options.token ?? (() => randomBytes(32).toString("hex")))(),
+      now(),
+    );
+    const checks = new CheckStore(options.store.runDirectory(initialRun.id));
+    const intent = await checks.prepare(requested);
+    const existing = await checks.getResult(task.id, intent.check, intent.id);
+    if (existing) {
+      requireRecordIntent(existing, intent);
+      await verifyFrozenCandidateWorkspace({
+        store: options.store,
+        lifecycle,
+        workspace: runWorkspace,
+        writerClient,
+        task,
+        candidate: frozen.candidate,
+        manifest: frozen.manifest,
+        restrictedPatterns,
+      });
+      const finalized = await finalizeCandidateGate({
+        store: options.store,
+        runId: initialRun.id,
+        task,
+        candidate: frozen.candidate,
+        record: existing,
+        timestamp: now().toISOString(),
+      });
+      return { intent, record: existing, reused: true, task: finalized };
+    }
+
+    const preflight = await options.client.preflight();
+    requirePinnedPreflight(preflight);
+    const expectedGateway = options.local.openshell.gateways.check;
+    if (!expectedGateway || preflight.status.gateway !== expectedGateway) {
+      throw new OrchestratorError(
+        "check_gateway_mismatch",
+        `Candidate Checks require the configured no-inference gateway '${expectedGateway ?? "<missing>"}', not '${preflight.status.gateway}'`,
+      );
+    }
+    await requireNoInference(options.client);
+    await recordCandidatePendingGate({
+      store: options.store,
+      runId: initialRun.id,
+      task,
+      candidate: frozen.candidate,
+      intent,
+      timestamp: now().toISOString(),
+    });
+
+    let sandbox: OpenShellSandbox | undefined;
+    let commandResult: ProcessResult | undefined;
+    let mountEvidence: MountTableEvidence | undefined;
+    let startedAt: string | undefined;
+    let endedAt: string | undefined;
+    let operationError: unknown;
+    try {
+      sandbox = await createFreshSandbox({
+        client: options.client,
+        intent,
+        image,
+        policy,
+        mountSet: before.mountSet,
+      });
+      const mountInfo = await options.client.execSandbox(sandbox.name, [
+        "/usr/bin/cat",
+        "/proc/self/mountinfo",
+      ]);
+      if (mountInfo.exitCode !== 0) {
+        throw new OrchestratorError(
+          "mount_table_unavailable",
+          `Cannot inspect Candidate mounts: ${mountInfo.stderr.trim() || mountInfo.stdout.trim()}`,
+        );
+      }
+      mountEvidence = validateOpenShellMountTable(
+        mountInfo.stdout,
+        before.mountSet,
+      );
+      startedAt = now().toISOString();
+      commandResult = await options.client.execSandbox(
+        sandbox.name,
+        intent.argv,
+        {
+          timeoutMs: intent.timeout_ms,
+          workdir:
+            intent.cwd === "."
+              ? "/workspace/project"
+              : path.posix.join("/workspace/project", intent.cwd),
+          env: intent.scratch!.environment,
+        },
+      );
+      endedAt = now().toISOString();
+    } catch (error) {
+      operationError = error;
+    }
+
+    let cleanupError: unknown;
+    if (sandbox) {
+      try {
+        await options.client.deleteSandbox(sandbox.name, { missingOk: true });
+        if (
+          (await options.client.listSandboxes()).some(
+            (candidate) => candidate.name === sandbox!.name,
+          )
+        ) {
+          throw new OrchestratorError(
+            "check_sandbox_cleanup_failed",
+            `Check Sandbox '${sandbox.name}' still exists after deletion`,
+          );
+        }
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    if (operationError || cleanupError) {
+      throw new OrchestratorError(
+        "check_execution_failed",
+        `Check '${intent.check}' could not produce authoritative evidence: ${formatUnknownError(operationError ?? cleanupError)}`,
+        { cause: operationError ?? cleanupError },
+      );
+    }
+
+    const after = await verifyFrozenCandidateWorkspace({
+      store: options.store,
+      lifecycle,
+      workspace: runWorkspace,
+      writerClient,
+      task,
+      candidate: frozen.candidate,
+      manifest: frozen.manifest,
+      restrictedPatterns,
+    });
+    if (
+      after.source.source_digest !== before.source.source_digest ||
+      after.mountSet.digest !== before.mountSet.digest
+    ) {
+      throw new OrchestratorError(
+        "check_candidate_stale",
+        `Candidate '${frozen.candidate.id}' changed while Check '${intent.check}' ran`,
+      );
+    }
+    const latestProject = await options.store.read();
+    const latestRun = await options.store.readRun(initialRun.id);
+    requireRunBinding({
+      run: latestRun,
+      project: options.project,
+      plan: options.plan,
+      projectRecord: latestProject,
+    });
+    await requireCurrentCheckInputs({
+      project: options.project,
+      plan: options.plan,
+      task,
+      checkId: intent.check,
+      definition,
+    });
+
+    const stdout = commandResult!.stdout;
+    const stderr = commandResult!.stderr;
+    const record = createRecord({
+      version: 2,
+      id: intent.id,
+      run: intent.run,
+      task: intent.task,
+      check: intent.check,
+      verdict: commandResult!.exitCode === 0 ? "pass" : "fail",
+      argv: intent.argv,
+      cwd: intent.cwd,
+      timeout_ms: intent.timeout_ms,
+      started_at: startedAt!,
+      ended_at: endedAt!,
+      exit_code: commandResult!.exitCode,
+      ...(commandResult!.signal ? { signal: commandResult!.signal } : {}),
+      stdout: logMetadata("stdout.log", stdout),
+      stderr: logMetadata("stderr.log", stderr),
+      source_digest: intent.source_digest,
+      task_source_digest: intent.task_source_digest,
+      input_commit: intent.input_commit,
+      diff_digest: intent.diff_digest,
+      plan_digest: intent.plan_digest,
+      image: intent.image,
+      policy_digest: intent.policy_digest,
+      candidate: intent.candidate,
+      workspace: intent.workspace,
+      scratch: intent.scratch,
+      mount_table_digest: mountEvidence!.selectedDigest,
+      cleanup: { sandbox_deleted: true },
+      sandbox: {
+        id: sandbox!.id,
+        name: sandbox!.name,
+        workspace: sandbox!.workspace,
+      },
+      openshell: {
+        cli_version: preflight.installedVersion,
+        gateway: preflight.status.gateway,
+        gateway_version: preflight.status.version,
+      },
+      intent_digest: intent.binding_digest,
+    });
+    const stored = await checks.putResult({ intent, record, stdout, stderr });
+    const finalized = await finalizeCandidateGate({
+      store: options.store,
+      runId: initialRun.id,
+      task,
+      candidate: frozen.candidate,
+      record: stored,
+      timestamp: now().toISOString(),
+    });
+    return { intent, record: stored, reused: false, task: finalized };
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }
 

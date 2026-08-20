@@ -279,7 +279,7 @@ describe("OpenShell Sandbox lifecycle", () => {
             stdout: readySandbox,
             stderr: "",
           },
-          "sandbox exec --name pio-cny-read-001 --no-tty --timeout 2 --workspace default -- false":
+          "sandbox exec --name pio-cny-read-001 --no-tty --timeout 2 --env HOME=/sandbox/home --env TMPDIR=/sandbox/tmp --workspace default -- false":
             {
               stdout: "",
               stderr: "denied",
@@ -320,6 +320,10 @@ describe("OpenShell Sandbox lifecycle", () => {
     await expect(
       client.execSandbox("pio-cny-read-001", ["false"], {
         timeoutMs: 1_001,
+        env: {
+          TMPDIR: "/sandbox/tmp",
+          HOME: "/sandbox/home",
+        },
       }),
     ).resolves.toMatchObject({ exitCode: 23 });
     await client.upload(

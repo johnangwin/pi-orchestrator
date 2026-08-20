@@ -234,6 +234,7 @@ export interface CreateSandboxOptions {
 export interface SandboxExecOptions {
   readonly timeoutMs?: number;
   readonly workdir?: string;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface WaitForSandboxOptions {
@@ -717,6 +718,15 @@ export class OpenShellClient {
       );
     }
     const timeoutMs = options.timeoutMs ?? 30_000;
+    const environment = z
+      .record(
+        z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+        z
+          .string()
+          .max(16_384)
+          .refine((value) => !value.includes("\0"), "must not contain NUL"),
+      )
+      .parse(options.env ?? {});
     return this.execute(
       [
         "sandbox",
@@ -727,6 +737,9 @@ export class OpenShellClient {
         "--timeout",
         String(Math.max(1, Math.ceil(timeoutMs / 1_000))),
         ...(options.workdir ? ["--workdir", options.workdir] : []),
+        ...Object.entries(environment)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .flatMap(([key, value]) => ["--env", `${key}=${value}`]),
         ...this.globalArgs(),
         "--",
         ...command,

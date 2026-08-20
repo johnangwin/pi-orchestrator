@@ -913,22 +913,36 @@ export class RunSourceWorkspace {
         "Read projection uses another Run input commit",
       );
     }
-    const complete = createWorkspaceManifestFromEntries(source.entries);
-    const restricted = restrictedMounts(complete, options.restrictedPatterns);
     return new ReadOnlySourceWorkspace(
       source,
       this.volume,
-      OpenShellMountSet.forVolume({
-        volume: this.volume,
-        restrictedFiles: restricted.files,
-        restrictedDirectories: restricted.directories,
-      }),
+      this.readMountSet(options),
       this.image,
       this.driverVersion,
       this.labels,
       this.docker,
       false,
     );
+  }
+
+  readMountSet(options: {
+    readonly source: WorkspaceSourceManifest;
+    readonly restrictedPatterns: readonly string[];
+  }): OpenShellMountSet {
+    const source = validateWorkspaceSourceManifest(options.source);
+    if (source.commit !== this.inputCommit) {
+      throw new OrchestratorError(
+        "workspace_base_mismatch",
+        "Read projection uses another Run input commit",
+      );
+    }
+    const complete = createWorkspaceManifestFromEntries(source.entries);
+    const restricted = restrictedMounts(complete, options.restrictedPatterns);
+    return OpenShellMountSet.forVolume({
+      volume: this.volume,
+      restrictedFiles: restricted.files,
+      restrictedDirectories: restricted.directories,
+    });
   }
 
   writeMountSet(options: {

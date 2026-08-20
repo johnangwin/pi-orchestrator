@@ -31,6 +31,6 @@ Run-volume recovery validates only the durable volume capability before writer r
 
 Allowed writes become immediately visible to read-only Agents through the shared volume, while source-bound conclusions remain stale until the next stable generation. Filesystem ownership is not used for attribution; the exclusive lease and complete before-and-after manifests are authoritative.
 
-The implementation command now returns a frozen Candidate and Change Set instead of a host-applied Patch. Checks, Reviews, and commits still use their retained v0.2 paths until their named migration phases replace them. The old implementation Patch code remains temporarily unreachable migration material and is removed with the rest of the v0.2 source-transfer pipeline in Phase 16.
+The implementation command now returns a frozen Candidate and Change Set instead of a host-applied Patch. ADR 0033 has since moved Checks to that Candidate; Reviews and commits retain their v0.2 paths until their named migration phases replace them. The old implementation Patch code remains temporarily unreachable migration material and is removed with the rest of the v0.2 source-transfer pipeline in Phase 16.
 
 This decision supersedes ADR 0012 and ADR 0013 for new implementation execution. Their records remain historical inputs for unfinished v0.2 cleanup.

@@ -59,11 +59,10 @@ fi
 
 denied base-read-only touch /workspace/base/.orchestrator-canary
 denied input-read-only touch /workspace/input/.orchestrator-canary
-if [ "$profile" = read ]; then
-  denied project-access touch /workspace/project/.orchestrator-canary
-else
-  allowed project-access touch /workspace/project/.orchestrator-canary
-fi
+case "$profile" in
+  read|check) denied project-access touch /workspace/project/.orchestrator-canary ;;
+  *) allowed project-access touch /workspace/project/.orchestrator-canary ;;
+esac
 allowed output-writable touch /sandbox/output/.orchestrator-canary
 
 denied openshell-token-inaccessible cat /etc/openshell/auth/sandbox.jwt

@@ -35,7 +35,7 @@ PI_ORCHESTRATOR_LIVE_ARTIFACT=1 npm test -- test/artifact.live.test.ts
 # Leased writable Session over the persistent Run volume
 PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.ts
 
-# Fresh no-inference Check Sandbox
+# Frozen Candidate in a fresh no-inference Check Sandbox
 PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
 
 # Fresh Review Session over checked source

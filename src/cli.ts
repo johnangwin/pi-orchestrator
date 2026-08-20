@@ -1119,7 +1119,7 @@ program
           console.log(`  ${changedPath}`);
         }
         console.log(
-          `Candidate ${result.candidate.id} is frozen for Phase 9 Checks`,
+          `Candidate ${result.candidate.id} is frozen and ready for Checks`,
         );
       }
     } finally {
@@ -1156,12 +1156,34 @@ program
         resolvePlanDirectory(project.root, run.plan_id),
         catalogFromConfig(project.config),
       );
-      const client = new OpenShellClient({
+      const checkGateway = local.openshell.gateways.check;
+      if (!checkGateway) {
+        throw new OrchestratorError(
+          "check_gateway_missing",
+          "Candidate Checks require openshell.gateways.check in machine-local configuration",
+        );
+      }
+      const workspaceGateway = local.openshell.shared_workspace?.gateway;
+      if (!local.openshell.shared_workspace?.enabled || !workspaceGateway) {
+        throw new OrchestratorError(
+          "check_workspace_config_missing",
+          "Candidate Checks require an enabled shared Workspace gateway",
+        );
+      }
+      const clientOptions = {
         command: local.openshell.command,
-        workspace: local.openshell.workspace,
         ...(local.openshell.required_version
           ? { requiredVersion: local.openshell.required_version }
           : {}),
+        workspace: local.openshell.workspace,
+      };
+      const client = new OpenShellClient({
+        ...clientOptions,
+        gateway: checkGateway,
+      });
+      const workspaceClient = new OpenShellClient({
+        ...clientOptions,
+        gateway: workspaceGateway,
       });
       const result = await runRequiredChecks({
         store,
@@ -1170,6 +1192,8 @@ program
         runId: run.id,
         taskId,
         client,
+        workspaceClient,
+        local,
       });
       const output = {
         run: run.id,
@@ -1195,7 +1219,7 @@ program
           );
         }
         if (result.verdict === "pass") {
-          console.log(`Next: orchestrator review ${taskId}`);
+          console.log("Next: Phase 10 Candidate Reviews");
         }
       }
       if (result.verdict === "fail") process.exitCode = 1;

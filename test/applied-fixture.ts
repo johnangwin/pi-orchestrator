@@ -21,7 +21,7 @@ import {
 } from "../src/artifact.js";
 import {
   CheckSourceManifestSchema,
-  runCheck,
+  runLegacyCheckForMigration,
   type CheckImage,
   type CheckOpenShell,
   type CheckRecord,
@@ -238,7 +238,7 @@ export async function passFixtureChecks(
   const client = new PassingCheckOpenShell();
   const records: CheckRecord[] = [];
   for (const check of fixture.task.checks) {
-    const result = await runCheck({
+    const result = await runLegacyCheckForMigration({
       store: fixture.store,
       project: fixture.project,
       plan: fixture.plan,

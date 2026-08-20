@@ -353,10 +353,11 @@ openshell:
   command: openshell
   required_version: "0.0.106"
   workspace: default
-  # Required before enabling the shared Workspace. Use an immutable image
-  # reference built from sandbox/pi/Dockerfile.
+  # Required before enabling the shared Workspace and Candidate Checks. Use
+  # immutable references built from sandbox/pi and sandbox/check.
   # images:
   #   pi: pi-orchestrator-pi@sha256:<64-hex-digest>
+  #   check: pi-orchestrator-check@sha256:<64-hex-digest>
   gateways:
     frontier: openshell-frontier
     reasoning: openshell-reasoning
@@ -364,10 +365,13 @@ openshell:
     quant: openshell-quant
     review: openshell-review
     fast: openshell-fast
+    check: openshell-check
   # Enable after selecting a local Docker gateway, pinning its exact
   # driver version, and passing orchestrator canary --workspace-volume.
   shared_workspace:
     enabled: false
+    # gateway: openshell-code
+    # driver_version: "29.5.2"
     docker_command: docker
 
 models:

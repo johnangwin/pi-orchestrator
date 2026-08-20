@@ -464,6 +464,33 @@ function launcher(options: {
 }
 
 describe("implementation orchestration", () => {
+  it("requires every writer to use the configured shared Workspace gateway", async () => {
+    const value = await fixture();
+    const mismatched = LocalConfigSchema.parse({
+      ...local,
+      openshell: {
+        ...local.openshell,
+        shared_workspace: {
+          ...local.openshell.shared_workspace!,
+          gateway: "another-local-gateway",
+        },
+      },
+    });
+
+    await expect(
+      runImplementation({
+        ...value,
+        taskId: "bounded-change",
+        local: mismatched,
+        launchSession: vi.fn(() =>
+          Promise.reject(new Error("a mismatched gateway must not launch")),
+        ),
+        now: () => new Date("2026-08-19T18:00:00.000Z"),
+      }),
+    ).rejects.toMatchObject({ code: "workspace_gateway_mismatch" });
+    expect(value.rawClient.sandboxes.size).toBe(0);
+  });
+
   it("revokes the exact writer before freezing a digest-bound Candidate", async () => {
     const value = await fixture();
     const initialSource = await value.workspace.inspect(0);

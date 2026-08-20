@@ -45,7 +45,7 @@ cd ~/pi-orchestrator-first-run
 node --test
 ```
 
-Edit `.pi/orchestrator.local.yaml` so its gateway names and model routes match your OpenShell installation. You can instead copy an existing valid configuration while creating the Project:
+Edit `.pi/orchestrator.local.yaml` with your shared local gateway, exact Docker version, pinned Pi and Check images, dedicated no-inference Check gateway, and model routes. You can instead copy an existing valid configuration while creating the Project:
 
 ```sh
 orchestrator example ~/pi-orchestrator-first-run \
@@ -67,14 +67,15 @@ orchestrator approve percentage-discount
 orchestrator start percentage-discount
 ```
 
-The current v0.3 checkpoint can then run its Implementer and freeze a Candidate:
+The current v0.3 checkpoint can run its Implementer, freeze a Candidate, and execute its deterministic Checks:
 
 ```sh
 orchestrator implement add-discount
+orchestrator check add-discount
 orchestrator status
 ```
 
-Phase 8 is complete: implementation now mutates the persistent shared Workspace under a Task Write Lease and returns a frozen Candidate. Candidate-based Checks, Reviews, and commits are the next migration phases, so the old end-to-end `check`, `review`, and `commit` sequence is not yet compatible with this new implementation path. See the [Roadmap](docs/roadmap.md) for the exact boundary.
+Phases 8 and 9 are complete: implementation mutates the persistent shared Workspace under a Task Write Lease, freezes a Candidate, and runs registered Checks over that Candidate read-only with private build scratch. Candidate-based Reviews and commits are the next migration phases, so `review` and `commit` are not yet compatible with this path. See the [Roadmap](docs/roadmap.md) for the exact boundary.
 
 `approve` requires explicit human confirmation. Runtime state and metrics remain inspectable with `orchestrator status`, `orchestrator metrics <run>`, and `orchestrator report <run>`.
 
@@ -97,7 +98,7 @@ Then:
 2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
 3. Configure Role routing policy in `.agents/orchestrator.yaml` and matching machine-local Model Profiles in `.pi/orchestrator.local.yaml`.
 4. Add or generate a version-two Plan under `docs/plans/<plan-id>/`; every Task declares literal `write_paths` separately from semantic `scope` globs.
-5. Run validate, approve, start, and implement; continue through Candidate-based Checks, Reviews, and commit after their roadmap phases land.
+5. Run validate, approve, start, implement, and check; continue through Candidate-based Reviews and commit after their roadmap phases land.
 
 For repository-aware Plan generation:
 

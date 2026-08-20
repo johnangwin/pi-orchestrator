@@ -81,6 +81,23 @@ describe("Sandbox policies", () => {
     );
   });
 
+  it("requires read-only source for authoritative Checks", async () => {
+    const filePath = path.resolve("sandbox", "policies", "check.yaml");
+    const source = await readFile(filePath, "utf8");
+    expect(() =>
+      parseSandboxPolicy(
+        "check",
+        source
+          .replace("    - /workspace/project\n  read_write:", "  read_write:")
+          .replace(
+            "    - /sandbox\n",
+            "    - /workspace/project\n    - /sandbox\n",
+          ),
+        filePath,
+      ),
+    ).toThrow("read_only is missing required paths: /workspace/project");
+  });
+
   it("rejects process overrides for the pinned baseline", async () => {
     const filePath = path.resolve("sandbox", "policies", "read.yaml");
     const source = await readFile(filePath, "utf8");

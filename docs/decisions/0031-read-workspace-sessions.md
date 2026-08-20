@@ -22,4 +22,4 @@ Session records retain the volume name and digest, Workspace generation and mani
 
 Lead planning, Architecture and Quant consultations, independent criticism, and Lead synthesis no longer construct source archives or derived images. Existing authenticated Links, Messages, Reports, model routing, permission ceilings, and bounded retry semantics remain unchanged.
 
-The v0.2 source-transfer path remains temporarily available only to implementation, Check, and Review phases that have not yet migrated. It is not a fallback for a failed shared-Workspace launch. A real static-image Session proof remains opt-in and version-bound to the configured OpenShell gateway, Docker driver, image, and policy.
+The v0.2 source-transfer path remains temporarily available only to phases that have not yet migrated; ADRs 0032 and 0033 have since moved implementation and Checks, leaving Reviews on the retained path. It is not a fallback for a failed shared-Workspace launch. A real static-image Session proof remains opt-in and version-bound to the configured OpenShell gateway, Docker driver, image, and policy.

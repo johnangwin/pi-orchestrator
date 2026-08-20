@@ -40,6 +40,11 @@ import {
   createAppliedFixture,
   type AppliedFixture,
 } from "./applied-fixture.js";
+import {
+  candidateLocal,
+  createCandidateFixture,
+  type CandidateFixture,
+} from "./candidate-fixture.js";
 
 const execFileAsync = promisify(execFile);
 const fixtures: AppliedFixture[] = [];
@@ -87,9 +92,11 @@ class FakeCheckOpenShell implements CheckOpenShell {
   }> = [];
   readonly uploads = new Map<string, Buffer>();
   preflightCalls = 0;
+  gateway = "checks";
   inferenceConfigured = false;
   markerValid = true;
   failCreateAfterProvision = false;
+  retainAfterDelete = false;
   result: ProcessResult = {
     stdout: "deterministic Check passed\n",
     stderr: "",
@@ -112,7 +119,7 @@ class FakeCheckOpenShell implements CheckOpenShell {
       versionMatches: true,
       status: {
         authentication: { provider: "fixture", status: "authenticated" },
-        gateway: "checks",
+        gateway: this.gateway,
         server: "https://openshell.example.test",
         status: "connected",
         version: "0.0.106",
@@ -162,7 +169,9 @@ class FakeCheckOpenShell implements CheckOpenShell {
     _options?: DeleteSandboxOptions,
   ): Promise<void> {
     this.deleteCalls.push(name);
-    if (this.active?.name === name) this.active = undefined;
+    if (!this.retainAfterDelete && this.active?.name === name) {
+      this.active = undefined;
+    }
   }
 
   async upload(
@@ -209,6 +218,25 @@ class FakeCheckOpenShell implements CheckOpenShell {
         };
       }
     }
+    if (
+      command[0] === "/usr/bin/cat" &&
+      command[1] === "/proc/self/mountinfo"
+    ) {
+      const mountSet = this.createCalls.at(-1)?.mountSet;
+      if (!mountSet) {
+        return { stdout: "", stderr: "mount set missing\n", exitCode: 1 };
+      }
+      return {
+        stdout: `${mountSet.mounts
+          .map((mount, index) => {
+            const mode = mount.readOnly ? "ro" : "rw";
+            return `${index + 10} 1 0:1 /${mount.subpath} ${mount.target} ${mode},relatime - ext4 ${mount.source} ${mode}`;
+          })
+          .join("\n")}\n`,
+        stderr: "",
+        exitCode: 0,
+      };
+    }
     await this.onCheck?.();
     return this.result;
   }
@@ -222,8 +250,16 @@ async function applied(
   return fixture;
 }
 
+async function candidate(
+  options: Parameters<typeof createCandidateFixture>[0] = {},
+): Promise<CandidateFixture> {
+  const fixture = await createCandidateFixture(options);
+  fixtures.push(fixture);
+  return fixture;
+}
+
 function execute(
-  fixture: AppliedFixture,
+  fixture: CandidateFixture,
   client: CheckOpenShell,
   options: {
     readonly checkId?: string;
@@ -238,9 +274,12 @@ function execute(
     taskId: fixture.task.id,
     checkId: options.checkId ?? "project-test",
     client,
+    workspaceClient: client,
+    local: fixture.local,
+    workspaceFactory: fixture.workspaceFactory,
     image: checkImage,
     token: () => options.token ?? fixedToken,
-    now: () => new Date("2026-08-18T16:00:00.000Z"),
+    now: () => new Date("2026-08-20T16:00:00.000Z"),
   });
 }
 
@@ -261,19 +300,25 @@ function resultDirectory(
 
 describe("authoritative Checks", { timeout: 15_000 }, () => {
   it("runs a registered argv in a fresh no-inference Sandbox and reuses exact evidence", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     const first = await execute(fixture, client);
 
     expect(first).toMatchObject({
       reused: false,
       record: {
+        version: 2,
         verdict: "pass",
         argv: ["node", "--test"],
         cwd: ".",
         exit_code: 0,
         plan_digest: fixture.plan.digest,
         image: checkImage,
+        cleanup: { sandbox_deleted: true },
+        candidate: {
+          id: fixture.candidate.id,
+          digest: fixture.candidate.digest,
+        },
         openshell: {
           cli_version: "0.0.106",
           gateway: "checks",
@@ -285,7 +330,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     expect(first.task.gates["check-project-test"]).toEqual({
       status: "pass",
       digest: first.record.record_digest,
-      updated_at: "2026-08-18T16:00:00.000Z",
+      updated_at: "2026-08-20T16:00:00.000Z",
     });
     expect(client.createCalls).toHaveLength(1);
     expect(client.createCalls[0]).toMatchObject({
@@ -294,6 +339,10 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
       labels: {
         "pio-check-job": first.intent.id,
         "pio-check-token": sha256(fixedToken).slice(7, 39),
+        "pio.run": fixture.runId,
+        "pio.access": "read",
+        "pio.candidate": fixture.candidate.digest.slice(7, 63),
+        "pio.volume": fixture.workspace.volume.digest.slice(7, 63),
       },
     });
     expect(client.createCalls[0]!.command).toEqual([
@@ -309,22 +358,40 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
         options: {
           timeoutMs: 30 * 60_000,
           workdir: "/workspace/project",
+          env: first.intent.scratch!.environment,
         },
       },
     );
-
-    const source = CheckSourceManifestSchema.parse(
-      JSON.parse(
-        client.uploads.get("/sandbox/input/source.json")!.toString("utf8"),
-      ) as unknown,
-    );
-    expect(source.entries.map((entry) => entry.path)).toContain("AGENTS.md");
-    expect(source.entries.map((entry) => entry.path)).toContain(
-      "src/fixture.ts",
-    );
-    expect(source.entries.some((entry) => entry.path.includes(".git"))).toBe(
-      false,
-    );
+    expect(first.intent).toMatchObject({
+      version: 2,
+      candidate: {
+        id: fixture.candidate.id,
+        digest: fixture.candidate.digest,
+      },
+      workspace: {
+        generation: fixture.candidate.workspace_generation,
+        manifest_digest: fixture.candidate.manifest_digest,
+        git_diff_digest: fixture.candidate.git_diff_digest,
+        volume_name: fixture.workspace.volume.name,
+        volume_digest: fixture.workspace.volume.digest,
+      },
+      scratch: {
+        root: "/sandbox/check-scratch",
+        environment: {
+          CARGO_TARGET_DIR: "/sandbox/check-scratch/build/cargo",
+          HOME: "/sandbox/check-scratch/home",
+          TMPDIR: "/sandbox/check-scratch/tmp",
+        },
+      },
+    });
+    expect(client.createCalls[0]!.mountSet?.mounts[0]).toMatchObject({
+      source: fixture.workspace.volume.name,
+      target: "/workspace/project",
+      subpath: "project",
+      readOnly: true,
+      purpose: "workspace",
+    });
+    expect(client.uploads.size).toBe(0);
 
     const directory = resultDirectory(
       fixture,
@@ -338,6 +405,24 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
       0o400,
     );
 
+    await fixture.store.updateRun(fixture.runId, (run) => ({
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [fixture.task.id]: {
+          ...run.tasks[fixture.task.id]!,
+          status: "checking",
+          gates: {
+            ...run.tasks[fixture.task.id]!.gates,
+            "check-project-test": {
+              status: "pending",
+              digest: first.intent.binding_digest,
+              updated_at: "2026-08-20T16:00:00.000Z",
+            },
+          },
+        },
+      },
+    }));
     const reused = await execute(fixture, client, {
       token: replacementToken,
     });
@@ -352,7 +437,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     const task = fixtureTask({
       checks: ["project-build", "project-test"],
     });
-    const fixture = await applied({
+    const fixture = await candidate({
       task,
       checks: {
         "project-build": { argv: ["node", "--version"] },
@@ -379,7 +464,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
   });
 
   it("records failed commands as immutable evidence and sends the Task to rework", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     client.result = {
       stdout: "",
@@ -405,8 +490,46 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     ).toBe("assertion failed\n");
   });
 
+  it("fails a source-mutating Check while keeping the Candidate unchanged", async () => {
+    const task = fixtureTask({ checks: ["source-mutation"] });
+    const fixture = await candidate({
+      task,
+      checks: {
+        "source-mutation": {
+          argv: ["touch", "src/forbidden.ts"],
+        },
+      },
+    });
+    const client = new FakeCheckOpenShell();
+    client.result = {
+      stdout: "",
+      stderr: "touch: Read-only file system\n",
+      exitCode: 1,
+    };
+
+    const result = await execute(fixture, client, {
+      checkId: "source-mutation",
+    });
+
+    expect(result.record).toMatchObject({ verdict: "fail", exit_code: 1 });
+    expect(client.createCalls[0]!.mountSet?.mounts).toEqual([
+      expect.objectContaining({
+        target: "/workspace/project",
+        readOnly: true,
+      }),
+    ]);
+    await expect(
+      stat(path.join(fixture.volumeRoot, "project", "src", "forbidden.ts")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.workspace?.candidate).toMatchObject({
+      digest: fixture.candidate.digest,
+      status: "frozen",
+    });
+  });
+
   it("rejects a Check gateway with inference before creating a Sandbox", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     client.inferenceConfigured = true;
 
@@ -420,8 +543,38 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     ).toBeUndefined();
   });
 
+  it("rejects a Check Sandbox launched through another gateway", async () => {
+    const fixture = await candidate();
+    const client = new FakeCheckOpenShell();
+    client.gateway = "code";
+
+    await expect(execute(fixture, client)).rejects.toMatchObject({
+      code: "check_gateway_mismatch",
+    });
+    expect(client.createCalls).toHaveLength(0);
+  });
+
+  it("blocks before reading a Candidate while an unleased writer exists", async () => {
+    const fixture = await candidate();
+    const client = new FakeCheckOpenShell();
+    client.seedSandbox(
+      sandbox("pio-write-live", {
+        "pio.run": fixture.runId,
+        "pio.access": "write",
+      }),
+    );
+
+    await expect(execute(fixture, client)).rejects.toMatchObject({
+      code: "writable_sandbox_without_lease",
+    });
+    expect(client.createCalls).toHaveLength(0);
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.status).toBe("blocked");
+    expect(run.workspace?.candidate?.status).toBe("stale");
+  });
+
   it("deletes a newly created Sandbox when startup verification fails", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     client.markerValid = false;
 
@@ -437,7 +590,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
   });
 
   it("deletes an owned Sandbox record when provisioning fails", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     client.failCreateAfterProvision = true;
 
@@ -449,8 +602,29 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     expect(await client.listSandboxes()).toEqual([]);
   });
 
+  it("publishes no evidence unless Sandbox deletion is observable", async () => {
+    const fixture = await candidate();
+    const client = new FakeCheckOpenShell();
+    client.retainAfterDelete = true;
+
+    await expect(execute(fixture, client)).rejects.toMatchObject({
+      code: "check_execution_failed",
+    });
+    expect(await client.listSandboxes()).toHaveLength(1);
+    const checkRoot = path.join(
+      fixture.store.runDirectory(fixture.runId),
+      "checks",
+      fixture.task.id,
+      "project-test",
+    );
+    const [job] = await readdir(checkRoot);
+    await expect(
+      readFile(path.join(checkRoot, job!, "result", "record.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("refuses to delete a same-named Sandbox with foreign ownership", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const preparation = new FakeCheckOpenShell();
     preparation.inferenceConfigured = true;
     await expect(execute(fixture, preparation)).rejects.toMatchObject({
@@ -484,14 +658,17 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     expect(await client.listSandboxes()).toHaveLength(1);
   });
 
-  it("rejects host worktree drift after execution without publishing evidence", async () => {
-    const fixture = await applied();
+  it("invalidates Candidate evidence when the Workspace changes during execution", async () => {
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     client.onCheck = () =>
-      writeFile(path.join(fixture.worktree, "src", "unexpected.ts"), "drift\n");
+      writeFile(
+        path.join(fixture.volumeRoot, "project", "src", "unexpected.ts"),
+        "drift\n",
+      );
 
     await expect(execute(fixture, client)).rejects.toMatchObject({
-      code: "worktree_diff_mismatch",
+      code: "workspace_changed_without_lease",
     });
     expect(client.deleteCalls).toHaveLength(1);
     const checkRoot = path.join(
@@ -507,14 +684,45 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
     expect(
       await readFile(
-        path.join(fixture.worktree, "src", "unexpected.ts"),
+        path.join(fixture.volumeRoot, "project", "src", "unexpected.ts"),
         "utf8",
       ),
     ).toBe("drift\n");
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.status).toBe("blocked");
+    expect(run.workspace?.candidate?.status).toBe("stale");
+    expect(
+      run.tasks[fixture.task.id]!.gates["check-project-test"]?.status,
+    ).toBe("stale");
+  });
+
+  it("stales prior Check evidence when the frozen Candidate later changes", async () => {
+    const fixture = await candidate();
+    const client = new FakeCheckOpenShell();
+    const first = await execute(fixture, client);
+    expect(first.record.verdict).toBe("pass");
+
+    await writeFile(
+      path.join(fixture.volumeRoot, "project", "src", "fixture.ts"),
+      "export const fixture = 'changed-after-check';\n",
+    );
+    await expect(execute(fixture, client)).rejects.toMatchObject({
+      code: "workspace_changed_without_lease",
+    });
+
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.workspace?.candidate?.status).toBe("stale");
+    expect(
+      run.tasks[fixture.task.id]!.gates["check-project-test"],
+    ).toMatchObject({
+      status: "stale",
+      digest: first.record.record_digest,
+    });
+    expect(client.createCalls).toHaveLength(1);
   });
 
   it("rejects a Plan change made while the Check is running", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     const planPath = path.join(fixture.plan.directory, "plan.md");
     client.onCheck = async () => {
@@ -533,7 +741,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
   });
 
   it("rejects a self-consistent stored result rebound to another intent", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     const result = await execute(fixture, client);
     const recordPath = path.join(
@@ -546,7 +754,7 @@ describe("authoritative Checks", { timeout: 15_000 }, () => {
     >;
     record.plan_digest = sha256("another Plan");
     const { record_digest: _recordDigest, ...digestInput } = record;
-    record.record_digest = digestParts("pi-orchestrator/check-record/v1", [
+    record.record_digest = digestParts("pi-orchestrator/check-record/v2", [
       ["record", canonicalJson(digestInput)],
     ]);
     await chmod(recordPath, 0o600);
@@ -605,7 +813,7 @@ describe("Check source packages", () => {
   });
 
   it("fails closed when stored Check logs no longer match their record", async () => {
-    const fixture = await applied();
+    const fixture = await candidate();
     const client = new FakeCheckOpenShell();
     const result = await execute(fixture, client);
     const directory = resultDirectory(
@@ -643,6 +851,7 @@ describe("required Check orchestration", () => {
       runId: fixture.runId,
       taskId: task.id,
       client: new FakeCheckOpenShell(),
+      local: candidateLocal,
       executeCheck: async (options) => {
         executed.push(options.checkId);
         return {

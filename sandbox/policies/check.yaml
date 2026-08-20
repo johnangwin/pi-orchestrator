@@ -20,13 +20,13 @@ filesystem_policy:
     - /etc/ssl
     - /workspace/base
     - /workspace/input
+    - /workspace/project
   read_write:
     - /sandbox
     - /home/sandbox
     - /tmp
     - /dev/null
     - /dev/pts
-    - /workspace/project
 
 landlock:
   compatibility: hard_requirement

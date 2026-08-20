@@ -1732,6 +1732,13 @@ export async function runImplementation(
   );
   const preflight = await options.client.preflight();
   requirePinnedPreflight(preflight, model);
+  const sharedGateway = options.local.openshell.shared_workspace?.gateway;
+  if (!sharedGateway || options.client.gateway !== sharedGateway) {
+    throw new OrchestratorError(
+      "workspace_gateway_mismatch",
+      `Implementers must run on the configured shared Workspace gateway '${sharedGateway ?? "<missing>"}'`,
+    );
+  }
   if (
     !options.client.gateway ||
     !options.client.listGateways ||

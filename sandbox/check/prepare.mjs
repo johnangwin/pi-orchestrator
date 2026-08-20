@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import {
   lstat,
+  mkdir,
   open,
   readFile,
   readdir,
@@ -14,6 +15,7 @@ import {
 import path from "node:path";
 
 const markerPath = "/sandbox/check-job.json";
+const scratchRoot = "/sandbox/check-scratch";
 const projectRoot = "/workspace/project";
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const commitPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -242,6 +244,14 @@ async function run(command, args) {
 
 async function initialize(job, token) {
   const identity = validIdentity(job, token);
+  await Promise.all(
+    ["home", "tmp", "cache", "build"].map((directory) =>
+      mkdir(path.join(scratchRoot, directory), {
+        recursive: true,
+        mode: 0o700,
+      }),
+    ),
+  );
   await writeFile(markerPath, `${JSON.stringify(identity)}\n`, {
     encoding: "utf8",
     flag: "wx",

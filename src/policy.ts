@@ -155,12 +155,12 @@ export function parseSandboxPolicy(
   const readWrite = policy.filesystem_policy.read_write;
   requirePaths(readOnly, commonReadOnly, `${filePath} read_only`);
   requirePaths(readWrite, commonReadWrite, `${filePath} read_write`);
-  if (profile === "read") {
+  if (profile === "read" || profile === "check") {
     requirePaths(readOnly, ["/workspace/project"], `${filePath} read_only`);
     if (readWrite.includes("/workspace/project")) {
       throw new OrchestratorError(
         "invalid_sandbox_policy",
-        `${filePath} cannot make /workspace/project writable for the read profile`,
+        `${filePath} cannot make /workspace/project writable for the ${profile} profile`,
       );
     }
   } else {

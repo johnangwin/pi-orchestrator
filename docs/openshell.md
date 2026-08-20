@@ -11,8 +11,11 @@ openshell:
   command: /opt/homebrew/bin/openshell
   required_version: "0.0.106"
   workspace: default
+  gateways:
+    check: openshell-check
   images:
     pi: registry.example.test/pi-orchestrator-pi@sha256:<digest>
+    check: registry.example.test/pi-orchestrator-check@sha256:<digest>
   shared_workspace:
     enabled: true
     gateway: openshell
@@ -116,7 +119,7 @@ The base policies under `sandbox/policies/` share these rules:
 - the network policy map is empty.
 - model-driven profiles may read OpenShell's public CA material under `/etc/openshell-tls`.
 
-The `read` profile makes `/workspace/project` read-only. The `write` and `check` profiles make it writable. `inference.local` is handled by OpenShell before ordinary network-policy evaluation, so model traffic does not require an outbound endpoint entry. A network policy therefore cannot make an inference-routed gateway safe for authoritative Checks. The Check runner must use a dedicated gateway and workspace with no inference route, verify that absence before launch, and never launch Pi.
+The `read` and `check` profiles make `/workspace/project` read-only. The `write` profile keeps that root read-only and receives only its approved nested write mounts. `inference.local` is handled by OpenShell before ordinary network-policy evaluation, so model traffic does not require an outbound endpoint entry. A network policy therefore cannot make an inference-routed gateway safe for authoritative Checks. The Check runner uses the configured dedicated gateway with no inference route, verifies that absence before launch, and never launches Pi.
 
 ## Model routing
 
@@ -152,20 +155,22 @@ PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.
 
 ## Authoritative Checks
 
-The Check runner rebuilds the complete patched Project from the approved base commit and verified Patch Artifact, uploads a digest-bound archive, and requires the trusted image helper to reproduce the complete source tree before execution. OCI images require digest references; local image contexts and validated policy bytes are copied into private staging and reverified before OpenShell consumes them. It launches the registered argv directly under the final `check` policy. The Sandbox contains no Pi runtime and must be deleted before the host publishes immutable logs and Gate evidence.
+The Check runner reopens the persistent Run volume from its durable binding, verifies the frozen Candidate's complete manifest and raw Git diff, and mounts its `project` subtree read-only in a fresh Sandbox. Restricted paths remain masked. It launches the registered argv directly under the final `check` policy and redirects common language homes, caches, temporary files, bytecode, and build outputs to `/sandbox/check-scratch`. A Check that requires source mutation fails rather than receiving broader access.
+
+The configured Check image must be a static OCI reference pinned by digest. The configured Check gateway must match OpenShell preflight and expose no inference route. The Sandbox contains no Pi runtime, credentials, host Git metadata, or general network. The host validates its actual Linux mount table and deletes it before rechecking the Candidate and publishing immutable version-two logs and Gate evidence.
 
 The selected OpenShell gateway and workspace must have no inference route. Confirm this explicitly before the live test:
 
 ```sh
-openshell inference get --workspace default
+openshell inference get --gateway openshell-check --workspace default
 PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
 ```
 
-The test builds the pinned baseline Check image, transfers a real source package, runs a discovered Node test, records the exact evidence, and verifies Sandbox cleanup. A consumer Project with another toolchain should supply its own pinned Check image without adding Pi, inference, credentials, or network access.
+The test prepares a real Docker-backed frozen Candidate, mounts it through OpenShell, runs its registered Node Check, records the exact evidence, and verifies Sandbox and volume cleanup. A consumer Project with another toolchain should supply its own pinned Check image without adding Pi, inference, credentials, or network access.
 
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
-Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions and Implementers start directly under their final policies from the pinned static Pi image, mount verified named-volume projections, and upload only immutable input files. The old derived-image path remains only for Checks and Reviews awaiting migration.
+Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions, Implementers, and Checks start directly under their final policies from pinned static images and mount verified named-volume projections. The old source-transfer path remains only for Reviews awaiting migration.
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 

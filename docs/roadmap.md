@@ -10,7 +10,7 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 8 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Read-only Agents and leased Implementers now use digest-pinned static images against the persistent Run Workspace without source archives, derived source images, Patch export, or replay. Complete manifests, requested and observed mount evidence, Write Leases, Change Sets, and frozen Candidates bind every implementation attempt. Check and Review execution remains on the retained v0.2 source-transfer path until Phases 9 and 10 replace it.
+Phases 0 through 9 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Read-only Agents, leased Implementers, and authoritative Checks now use digest-pinned static images against the persistent Run Workspace without source archives, derived source images, Patch export, or replay. Complete manifests, requested and observed mount evidence, Write Leases, Change Sets, frozen Candidates, and Candidate-bound Check records bind the execution path. Review execution remains on the retained v0.2 source-transfer path until Phase 10 replaces it.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
@@ -23,8 +23,8 @@ Phases 0 through 8 are complete. The original host-bind design failed under hard
 |     6 | Add Write Leases, Change Sets, and Candidates     | Complete |
 |     7 | Run read-only Agents from the shared Workspace    | Complete |
 |     8 | Run Implementers under Write Leases               | Complete |
-|     9 | Run authoritative Checks against Candidates       | Next     |
-|    10 | Run fresh Reviews against Candidates              | Pending  |
+|     9 | Run authoritative Checks against Candidates       | Complete |
+|    10 | Run fresh Reviews against Candidates              | Next     |
 |    11 | Commit exact Candidates                           | Pending  |
 |    12 | Add the trusted background Supervisor             | Pending  |
 |    13 | Publish Plans into Run Workspaces                 | Pending  |
@@ -123,6 +123,15 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - retained failed and interrupted deltas for bounded fresh rework without a predecessor transcript;
 - added non-owning read projections so active read Agents observe allowed shared-volume writes while their source-bound Briefs become stale.
 
+## Phase 9 outcome
+
+- replaced active Check source reconstruction and archive upload with the frozen Run volume mounted read-only;
+- required all writers on the configured shared Workspace gateway, then added a dedicated pinned, no-inference Check gateway and static image boundary with no Pi, credentials, host Git, or general network;
+- redirected common language homes, caches, temporary files, bytecode, and build output into digest-bound private Sandbox scratch;
+- bound version-two Check intent and result evidence to the exact Candidate, Workspace generation and volume, complete source and Git digests, Plan, argv, policy, image, scratch, OpenShell identity, and observed mount table;
+- deleted each Check Sandbox before revalidating the Candidate and publishing immutable evidence;
+- retained deterministic intent/result adoption after interruption while making Workspace drift stale the Candidate and prior Gate evidence.
+
 ## Later proof gates
 
 ### Writer gate
@@ -155,4 +164,4 @@ The following behavior is implemented and tested today and is retained until its
 - repository-aware planning, consultations, criticism, synthesis, metrics, and reporting;
 - the standalone price-calculator example.
 
-Source snapshots, derived images, implementation Patch Artifacts, reconstructed Check packages, and phase-oriented onboarding are migration inputs, not v0.3 target behavior.
+Source snapshots, derived images, implementation Patch Artifacts, retained reconstructed Check and Review fixtures, and phase-oriented onboarding are migration inputs, not v0.3 target behavior.

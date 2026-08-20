@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  compareWorkspaceManifests,
   createWorkspaceManifest,
   effectiveRestrictedPaths,
   resolveWorkspaceMountRoots,
@@ -179,6 +180,38 @@ describe("complete Run Workspace manifests", () => {
     expect(() => validateWorkspaceManifest(forged)).toThrowError(
       expect.objectContaining({ code: "invalid_workspace_manifest" }),
     );
+  });
+
+  it("classifies additions, content, deletion, mode, and symlink changes", async () => {
+    const root = await workspace();
+    await writeFile(path.join(root, "content"), "before\n");
+    await writeFile(path.join(root, "mode"), "same\n");
+    await writeFile(path.join(root, "removed"), "gone\n");
+    await writeFile(path.join(root, "target-one"), "one\n");
+    await writeFile(path.join(root, "target-two"), "two\n");
+    await symlink("target-one", path.join(root, "linked"));
+    const baseline = await createWorkspaceManifest(root);
+
+    await writeFile(path.join(root, "added"), "new\n");
+    await writeFile(path.join(root, "content"), "after\n");
+    await chmod(path.join(root, "mode"), 0o755);
+    await rm(path.join(root, "removed"));
+    await rm(path.join(root, "linked"));
+    await symlink("target-two", path.join(root, "linked"));
+    const result = await createWorkspaceManifest(root);
+
+    expect(
+      compareWorkspaceManifests(baseline, result).map((change) => [
+        change.path,
+        change.kind,
+      ]),
+    ).toEqual([
+      ["added", "addition"],
+      ["content", "modification"],
+      ["linked", "symlink"],
+      ["mode", "mode"],
+      ["removed", "deletion"],
+    ]);
   });
 });
 

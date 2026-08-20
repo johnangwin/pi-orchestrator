@@ -10,6 +10,7 @@ import { IdentifierSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
 import { AgentRecordSchema, SessionRecordSchema } from "./session.js";
 import { GateStatusSchema, RunStatusSchema, TaskStatusSchema } from "./task.js";
+import { RunWorkspaceStateSchema } from "./candidate.js";
 
 export interface AtomicWriteOptions {
   readonly beforeRename?: (temporaryPath: string) => void | Promise<void>;
@@ -245,12 +246,20 @@ export const RunStateSchema = z
     tasks: z.record(IdentifierSchema, TaskRecordSchema),
     agents: z.record(IdentifierSchema, AgentRecordSchema).default({}),
     sessions: z.record(IdentifierSchema, SessionRecordSchema).default({}),
+    workspace: RunWorkspaceStateSchema.nullable().default(null),
     cmux: CmuxRunStateSchema.default({ workspace: null, panes: {} }),
     created_at: z.string().datetime({ offset: true }),
     updated_at: z.string().datetime({ offset: true }),
   })
   .strict()
   .superRefine((run, context) => {
+    if (run.workspace !== null && run.workspace.branch !== run.branch) {
+      context.addIssue({
+        code: "custom",
+        path: ["workspace", "branch"],
+        message: "must equal the Run branch",
+      });
+    }
     const sessionsByAgent = new Map<
       string,
       Map<number, { id: string; status: string }>

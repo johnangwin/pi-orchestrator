@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Minimatch, type MinimatchOptions } from "minimatch";
 import { z } from "zod";
+import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import type { PlanTask } from "./plan.js";
 import {
@@ -77,6 +78,9 @@ export interface ChangePathValidation {
 
 export type PatchPathValidation = ChangePathValidation;
 
+export type PathPolicyKind =
+  "scope" | "protected" | "restricted" | "write-roots";
+
 export interface TaskWritePathValidation {
   readonly task: string;
   readonly writePaths: readonly WritePath[];
@@ -150,6 +154,23 @@ function contains(parent: string, candidate: string): boolean {
 
 function overlaps(left: string, right: string): boolean {
   return contains(left, right) || contains(right, left);
+}
+
+export function pathPolicyDigest(
+  kind: PathPolicyKind,
+  values: readonly string[],
+): Digest {
+  const parsed =
+    kind === "write-roots"
+      ? values.map((value) => WritePathSchema.parse(value))
+      : PathPolicySchema.parse(values);
+  const normalized = [...parsed].sort((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+  );
+  return digestParts("pi-orchestrator/path-policy/v2", [
+    ["kind", kind],
+    ["patterns", canonicalJson(normalized)],
+  ]);
 }
 
 function patternOverlapsRoot(

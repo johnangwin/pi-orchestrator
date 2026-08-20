@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IdentifierSchema } from "./config.js";
-import type { Digest } from "./digest.js";
+import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import type { LoadedPlan } from "./plan.js";
 import { OrchestratorError } from "./error.js";
 
@@ -18,6 +18,12 @@ export const ApprovalSchema = z
   })
   .strict();
 export type Approval = z.infer<typeof ApprovalSchema>;
+
+export function approvalDigest(approval: Approval): Digest {
+  return digestParts("pi-orchestrator/approval/v2", [
+    ["record", canonicalJson(ApprovalSchema.parse(approval))],
+  ]);
+}
 
 export interface ApprovalFreshness {
   readonly fresh: boolean;

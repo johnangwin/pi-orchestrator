@@ -168,6 +168,97 @@ export const WorkspaceManifestSchema = WorkspaceManifestRecordSchema.extend({
 }).strict();
 export type WorkspaceManifest = z.infer<typeof WorkspaceManifestSchema>;
 
+export const WorkspaceEntryModeSchema = z.enum([
+  "040000",
+  "100644",
+  "100755",
+  "120000",
+]);
+export type WorkspaceEntryMode = z.infer<typeof WorkspaceEntryModeSchema>;
+
+export const WorkspaceEntryStateSchema = z
+  .object({
+    mode: WorkspaceEntryModeSchema,
+    byte_count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    content_digest: DigestSchema.nullable(),
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    if ((entry.mode === "040000") !== (entry.content_digest === null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["content_digest"],
+        message: "must be null exactly for a directory",
+      });
+    }
+  });
+export type WorkspaceEntryState = z.infer<typeof WorkspaceEntryStateSchema>;
+
+export const WorkspaceManifestChangeSchema = z
+  .object({
+    path: RunWorkspacePathSchema,
+    kind: z.enum(["addition", "modification", "deletion", "mode", "symlink"]),
+    before: WorkspaceEntryStateSchema.nullable(),
+    after: WorkspaceEntryStateSchema.nullable(),
+  })
+  .strict()
+  .superRefine((change, context) => {
+    if (change.kind === "addition" && (change.before || !change.after)) {
+      context.addIssue({
+        code: "custom",
+        message: "an addition requires only an after state",
+      });
+    }
+    if (change.kind === "deletion" && (!change.before || change.after)) {
+      context.addIssue({
+        code: "custom",
+        message: "a deletion requires only a before state",
+      });
+    }
+    if (
+      change.kind !== "addition" &&
+      change.kind !== "deletion" &&
+      (!change.before || !change.after)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: `${change.kind} requires before and after states`,
+      });
+    }
+    if (
+      change.kind === "mode" &&
+      change.before &&
+      change.after &&
+      !(
+        [change.before.mode, change.after.mode].every((mode) =>
+          ["100644", "100755"].includes(mode),
+        ) &&
+        change.before.mode !== change.after.mode &&
+        change.before.content_digest === change.after.content_digest
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "a mode change must preserve regular-file content",
+      });
+    }
+    if (
+      change.kind === "symlink" &&
+      change.before &&
+      change.after &&
+      change.before.mode !== "120000" &&
+      change.after.mode !== "120000"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "a symlink change must involve a symlink",
+      });
+    }
+  });
+export type WorkspaceManifestChange = z.infer<
+  typeof WorkspaceManifestChangeSchema
+>;
+
 export interface WorkspaceManifestOptions {
   readonly maxEntries?: number;
   readonly maxBytes?: number;
@@ -208,6 +299,84 @@ export function validateWorkspaceManifest(value: unknown): WorkspaceManifest {
       manifest.data.entries.map((entry) => Object.freeze({ ...entry })),
     ),
   }) as WorkspaceManifest;
+}
+
+function entryState(entry: WorkspaceManifestEntry): WorkspaceEntryState {
+  if (entry.type === "directory") {
+    return { mode: "040000", byte_count: 0, content_digest: null };
+  }
+  if (entry.type === "symlink") {
+    return {
+      mode: "120000",
+      byte_count: entry.byte_count,
+      content_digest: entry.link_target_digest,
+    };
+  }
+  return {
+    mode: entry.type === "executable" ? "100755" : "100644",
+    byte_count: entry.byte_count,
+    content_digest: entry.content_digest,
+  };
+}
+
+export function workspaceManifestEntries(
+  manifest: WorkspaceManifest,
+): ReadonlyMap<RunWorkspacePath, WorkspaceEntryState> {
+  const parsed = validateWorkspaceManifest(manifest);
+  return new Map(
+    parsed.entries.map((entry) => [entry.path, entryState(entry)] as const),
+  );
+}
+
+export function compareWorkspaceManifests(
+  baseline: WorkspaceManifest,
+  result: WorkspaceManifest,
+): readonly WorkspaceManifestChange[] {
+  const before = workspaceManifestEntries(baseline);
+  const after = workspaceManifestEntries(result);
+  const paths = [...new Set([...before.keys(), ...after.keys()])].sort(
+    compareUtf8,
+  );
+  const changes: WorkspaceManifestChange[] = [];
+
+  for (const entryPath of paths) {
+    const left = before.get(entryPath) ?? null;
+    const right = after.get(entryPath) ?? null;
+    if (canonicalJson(left) === canonicalJson(right)) continue;
+    let kind: WorkspaceManifestChange["kind"];
+    if (!left) kind = "addition";
+    else if (!right) kind = "deletion";
+    else if (
+      [left.mode, right.mode].every((mode) =>
+        ["100644", "100755"].includes(mode),
+      ) &&
+      left.content_digest === right.content_digest &&
+      left.byte_count === right.byte_count
+    ) {
+      kind = "mode";
+    } else if (left.mode === "120000" || right.mode === "120000") {
+      kind = "symlink";
+    } else {
+      kind = "modification";
+    }
+    changes.push(
+      WorkspaceManifestChangeSchema.parse({
+        path: entryPath,
+        kind,
+        before: left,
+        after: right,
+      }),
+    );
+  }
+  return Object.freeze(
+    changes.map((change) =>
+      Object.freeze({
+        ...change,
+        before: change.before ? Object.freeze(change.before) : null,
+        after: change.after ? Object.freeze(change.after) : null,
+      }),
+    ),
+  );
 }
 
 function limits(options: WorkspaceManifestOptions): {

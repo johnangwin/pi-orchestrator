@@ -466,7 +466,7 @@ export type PlanningRequest = z.infer<typeof PlanningRequestSchema>;
 
 const PlanningTurnSchema = ModelTurnResultSchema.pick({
   message_ids: true,
-  model_alias: true,
+  model_profile: true,
   requested_model: true,
   response_model: true,
   stop_reason: true,
@@ -667,6 +667,7 @@ export function compilePlanningBrief(input: {
   readonly project: Project;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly goal: string;
   readonly source: SourceSnapshotManifest;
   readonly contextLimitTokens: number;
@@ -690,6 +691,10 @@ export function compilePlanningBrief(input: {
     planningSection(
       "Permission Ceiling",
       `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson({ source: input.permissionCeiling.source, write_lease: input.permissionCeiling.write_lease, pi_tools: input.permissionCeiling.pi_tools, actions: input.permissionCeiling.actions, assignment: input.permissionCeiling.assignment })}`,
+    ),
+    planningSection(
+      "Model Profile",
+      `Profile: ${input.model.profile}\nRoute digest: ${input.model.route_digest}\nConcrete model: ${input.model.pi_model}\nLocality: ${input.model.locality}`,
     ),
     planningSection("Goal", input.goal),
     planningSection(
@@ -1772,7 +1777,7 @@ function requirePlanningPreflight(
   if (preflight.status.gateway !== model.gateway) {
     throw new OrchestratorError(
       "model_gateway_mismatch",
-      `Planning model '${model.alias}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
+      `Planning model '${model.profile}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
     );
   }
 }
@@ -1879,7 +1884,7 @@ function createQuestionnaireRecord(input: {
     response_digest: sha256(input.turn.text),
     turn: {
       message_ids: input.turn.message_ids,
-      model_alias: input.turn.model_alias,
+      model_profile: input.turn.model_profile,
       requested_model: input.turn.requested_model,
       ...(input.turn.response_model
         ? { response_model: input.turn.response_model }
@@ -1944,7 +1949,7 @@ function requireQuestionnaireRecord(
     record.policy_digest !== request.policy_digest ||
     record.brief_digest !== request.brief_digest ||
     !record.turn.message_ids.includes(request.message_id) ||
-    record.turn.model_alias !== request.model.alias ||
+    record.turn.model_profile !== request.model.profile ||
     record.turn.requested_model !== request.model.pi_model ||
     record.turn.truncated
   ) {
@@ -2044,7 +2049,6 @@ export async function runPlanningQuestionnaire(
       options.project.config,
       options.local,
       role.definition.name,
-      role.definition.inference,
     );
     const policyDirectory = path.resolve(
       options.policyDirectory ?? bundledPiPolicyDirectory(),
@@ -2079,6 +2083,7 @@ export async function runPlanningQuestionnaire(
         project: options.project,
         role,
         permissionCeiling,
+        model,
         goal,
         source: snapshot.manifest,
         contextLimitTokens: model.context_window,
@@ -2120,6 +2125,7 @@ export async function runPlanningQuestionnaire(
         project: options.project,
         role,
         permissionCeiling,
+        model,
         goal,
         source: snapshot.manifest,
         contextLimitTokens: model.context_window,
@@ -2206,12 +2212,12 @@ export async function runPlanningQuestionnaire(
       const turn = ModelTurnResultSchema.parse(await launched.run(message));
       if (
         !turn.message_ids.includes(message.id) ||
-        turn.model_alias !== model.alias ||
+        turn.model_profile !== model.profile ||
         turn.requested_model !== model.pi_model
       ) {
         throw new OrchestratorError(
           "planning_turn_mismatch",
-          `Planning result does not match Message '${message.id}' and route '${model.alias}/${model.pi_model}'`,
+          `Planning result does not match Message '${message.id}' and route '${model.profile}/${model.pi_model}'`,
         );
       }
       if (turn.truncated) {

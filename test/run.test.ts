@@ -14,6 +14,7 @@ import {
   createFixtureProject,
   createPlan,
   fixturePermissionPolicyDigest,
+  fixtureRoutingPolicyDigest,
   fixtureTask,
 } from "./fixture.js";
 
@@ -70,6 +71,7 @@ describe("approved Run initialization", () => {
           plan,
           baseCommit: commit,
           permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+          routingPolicyDigest: fixtureRoutingPolicyDigest(project),
           approvedBy: "fixture",
           approvedAt: new Date("2026-08-18T12:00:00.000Z"),
         }),
@@ -152,6 +154,7 @@ describe("approved Run initialization", () => {
           plan,
           baseCommit: commit,
           permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+          routingPolicyDigest: fixtureRoutingPolicyDigest(project),
           approvedBy: "fixture",
         }),
       );
@@ -219,6 +222,7 @@ describe("approved Run initialization", () => {
           plan,
           baseCommit: commit,
           permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+          routingPolicyDigest: fixtureRoutingPolicyDigest(project),
           approvedBy: "fixture",
         }),
       );

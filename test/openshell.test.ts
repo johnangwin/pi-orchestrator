@@ -544,7 +544,7 @@ describe("OpenShell Sandbox lifecycle", () => {
 describe("machine-local configuration", () => {
   it("loads an exact OpenShell version pin and defaults", () => {
     expect(
-      parseLocalConfig(`version: 1
+      parseLocalConfig(`version: 2
 openshell:
   required_version: "0.0.106"
 `),
@@ -565,7 +565,7 @@ openshell:
 
   it("validates explicit model execution metadata", () => {
     expect(
-      parseLocalConfig(`version: 1
+      parseLocalConfig(`version: 2
 openshell:
   gateways:
     code: openshell-code
@@ -593,7 +593,7 @@ models:
 
   it("requires a complete shared Workspace volume configuration", () => {
     expect(
-      parseLocalConfig(`version: 1
+      parseLocalConfig(`version: 2
 openshell:
   required_version: "0.0.106"
   shared_workspace:
@@ -616,7 +616,7 @@ openshell:
     });
 
     expect(() =>
-      parseLocalConfig(`version: 1
+      parseLocalConfig(`version: 2
 openshell:
   shared_workspace:
     enabled: true
@@ -626,7 +626,7 @@ openshell:
 
   it("rejects a floating version label", () => {
     expect(() =>
-      parseLocalConfig(`version: 1
+      parseLocalConfig(`version: 2
 openshell:
   required_version: latest
 `),

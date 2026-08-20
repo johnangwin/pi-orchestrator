@@ -33,8 +33,10 @@ import type { PermissionCeiling } from "../src/permission.js";
 import {
   createFixtureProject,
   createPlan,
+  fixtureModelRoute,
   fixturePermissionCeiling,
   fixturePermissionPolicyDigest,
+  fixtureRoutingPolicyDigest,
 } from "./fixture.js";
 
 const roots: string[] = [];
@@ -45,17 +47,16 @@ afterEach(async () => {
   );
 });
 
-const model: ResolvedModelRoute = {
-  alias: "code",
-  gateway_alias: "code",
-  gateway: "openshell-code",
-  pi_model: "local-code",
-  api: "openai-completions",
-  locality: "local",
-  context_window: 131_072,
-  max_tokens: 8_192,
-  reasoning: false,
-};
+const model: ResolvedModelRoute = fixtureModelRoute(
+  "local-code",
+  {
+    gateway: "code",
+    pi_model: "local-code",
+    context_window: 131_072,
+    max_tokens: 8_192,
+  },
+  "openshell-code",
+);
 const handoffPermissionCeiling = fixturePermissionCeiling(
   { kind: "task", task: "bounded-change" },
   "implementer",
@@ -125,6 +126,7 @@ async function fixture(
     plan_revision: plan.revision,
     plan_digest: plan.digest,
     permission_policy_digest: fixturePermissionPolicyDigest(project),
+    routing_policy_digest: fixtureRoutingPolicyDigest(project),
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: path.join(root, "worktree"),
@@ -137,11 +139,12 @@ async function fixture(
   await registry.register({
     agent: "implementer",
     role: "implementer",
-    model: "code",
+    profile: model.profile,
   });
   const initial = await registry.start({
     agent: "implementer",
     session: "session-one",
+    route: model,
     permissionCeilingDigest: permissionCeiling.permission_ceiling_digest,
   });
   await registry.transition(
@@ -181,6 +184,7 @@ async function fixture(
     brief: {
       agents: project.agents,
       role,
+      model,
       permissionCeiling,
       task: plan.tasks[0]!,
       plan,
@@ -365,6 +369,7 @@ describe("Handoff lifecycle", () => {
       expect((await context.registry.get("implementer")).session).toMatchObject(
         {
           identity: result.intent.to,
+          route: model,
           status: "active",
           replaces: {
             session: "session-one",
@@ -419,6 +424,7 @@ describe("Handoff lifecycle", () => {
         expected: result.intent.to,
         session: "session-three",
         reason: "A later replacement completed.",
+        route: model,
         permissionCeilingDigest:
           context.permissionCeiling.permission_ceiling_digest,
       });

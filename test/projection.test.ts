@@ -16,11 +16,16 @@ import { ProjectionRegistry, type ProjectionCmux } from "../src/projection.js";
 import { AgentRegistry } from "../src/registry.js";
 import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore, RunStateSchema } from "../src/state.js";
-import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
+import {
+  fixtureDigest,
+  fixtureModelRoute,
+  fixturePermissionCeiling,
+} from "./fixture.js";
 
 const roots: string[] = [];
 const permissionCeilingDigest =
   fixturePermissionCeiling().permission_ceiling_digest;
+const model = fixtureModelRoute("frontier-lead");
 const workspaceOperation = "10000000-0000-4000-8000-000000000001";
 const workspaceId = "10000000-0000-4000-8000-000000000002";
 const firstPaneOperation = "20000000-0000-4000-8000-000000000001";
@@ -56,6 +61,7 @@ async function setup(): Promise<{
     plan_revision: 1,
     plan_digest: "sha256:plan",
     permission_policy_digest: fixtureDigest,
+    routing_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -65,10 +71,15 @@ async function setup(): Promise<{
     updated_at: "2026-08-18T12:00:00.000Z",
   });
   const agents = new AgentRegistry(store, "run-one");
-  await agents.register({ agent: "lead", role: "lead", model: "plan" });
+  await agents.register({
+    agent: "lead",
+    role: "lead",
+    profile: model.profile,
+  });
   const session = await agents.start({
     agent: "lead",
     session: "session-one",
+    route: model,
     permissionCeilingDigest,
   });
   return { store, agents, identity: session.identity };
@@ -320,6 +331,7 @@ describe("durable cmux projection registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
+          route: model,
           permissionCeilingDigest,
         }),
       ).rejects.toThrow();
@@ -329,6 +341,7 @@ describe("durable cmux projection registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace the Session",
+          route: model,
           permissionCeilingDigest,
         }),
       ).resolves.toMatchObject({ identity: { generation: 2 } });

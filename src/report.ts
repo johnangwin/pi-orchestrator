@@ -8,13 +8,16 @@ import { writeJsonAtomic } from "./state.js";
 
 export const ReportSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     id: IdentifierSchema,
     kind: z.enum(["implementation", "consultation", "review", "handoff"]),
     run: IdentifierSchema,
     agent: IdentifierSchema,
     session: IdentifierSchema,
     generation: z.number().int().nonnegative(),
+    permission_ceiling_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    model_profile: IdentifierSchema,
+    route_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     task: IdentifierSchema.optional(),
     source_digest: z.string().optional(),
     patch_digest: z.string().optional(),
@@ -64,7 +67,7 @@ export function createReport(
   if (input.kind === "handoff")
     validateSections(input.content, handoffSections);
   return ReportSchema.parse({
-    version: 1,
+    version: 2,
     ...input,
     content_digest: sha256(input.content),
   });

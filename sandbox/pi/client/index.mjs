@@ -90,7 +90,7 @@ export default async function orchestratorClient(pi) {
       },
     });
     activeServer.emit("session-started", {
-      model_alias: config.model?.alias ?? null,
+      model_profile: config.model?.profile ?? null,
       pi_model: config.model?.pi_model ?? null,
     });
     context.ui.setStatus(

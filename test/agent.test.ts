@@ -32,6 +32,7 @@ import { startLinkServer } from "../sandbox/pi/client/link.mjs";
 import {
   commitFixture,
   createFixtureProject,
+  fixtureModelRoute,
   fixturePermissionCeiling,
 } from "./fixture.js";
 import { createAppliedFixture } from "./applied-fixture.js";
@@ -761,17 +762,11 @@ describe("read Session bootstrap", () => {
           name: sandbox(1).name,
           workspace: sandbox(1).workspace,
         },
-        model: {
-          alias: "fast",
-          gateway_alias: "code",
-          gateway: "openshell",
-          pi_model: "fixture-model",
-          api: "openai-completions",
-          locality: "local",
-          context_window: 32768,
-          max_tokens: 4096,
-          reasoning: false,
-        },
+        model: fixtureModelRoute(
+          "fast",
+          { gateway: "code", pi_model: "fixture-model" },
+          "openshell",
+        ),
       }),
     ).rejects.toMatchObject({ code: "invalid_session_input" });
     expect(touchedOpenShell).toBe(false);
@@ -794,17 +789,11 @@ describe("read Session bootstrap", () => {
         ["brief.md", briefContent],
       ]),
     };
-    const model = {
-      alias: "fast" as const,
-      gateway_alias: "code",
-      gateway: "openshell",
-      pi_model: "fixture-model",
-      api: "openai-completions" as const,
-      locality: "local" as const,
-      context_window: 32768,
-      max_tokens: 4096,
-      reasoning: false,
-    };
+    const model = fixtureModelRoute(
+      "fast",
+      { gateway: "code", pi_model: "fixture-model" },
+      "openshell",
+    );
     let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
     let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
 
@@ -834,7 +823,7 @@ describe("read Session bootstrap", () => {
             queueMicrotask(() =>
               server!.emit("turn-completed", {
                 message_ids: [message.id],
-                model_alias: "fast",
+                model_profile: "fast",
                 requested_model: "fixture-model",
                 response_model: "fixture-model",
                 stop_reason: "stop",
@@ -898,7 +887,7 @@ describe("read Session bootstrap", () => {
       });
       await expect(session.run(message, 1_000)).resolves.toMatchObject({
         message_ids: ["model-turn"],
-        model_alias: "fast",
+        model_profile: "fast",
         text: "bounded result",
       });
       expect((await metrics.list()).map((item) => item.metric.kind)).toEqual([
@@ -928,17 +917,11 @@ describe("read Session bootstrap", () => {
         ["brief.md", briefContent],
       ]),
     };
-    const model = {
-      alias: "fast" as const,
-      gateway_alias: "code",
-      gateway: "openshell",
-      pi_model: "fixture-model",
-      api: "openai-completions" as const,
-      locality: "local" as const,
-      context_window: 32768,
-      max_tokens: 4096,
-      reasoning: false,
-    };
+    const model = fixtureModelRoute(
+      "fast",
+      { gateway: "code", pi_model: "fixture-model" },
+      "openshell",
+    );
     let config: ReturnType<typeof PiClientConfigSchema.parse> | undefined;
     let server: Awaited<ReturnType<typeof startLinkServer>> | undefined;
     const client: ReadSessionOpenShell = {
@@ -964,7 +947,7 @@ describe("read Session bootstrap", () => {
             queueMicrotask(() =>
               server!.emit("turn-completed", {
                 message_ids: [message.id],
-                model_alias: "code",
+                model_profile: "code",
                 requested_model: "other-model",
                 stop_reason: "stop",
                 text: "untrusted result",

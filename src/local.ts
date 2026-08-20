@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import { ModelAliasSchema } from "./config.js";
+import { ModelProfileSchema } from "./config.js";
 import { OrchestratorError } from "./error.js";
 import {
   DEFAULT_LOCAL_PERMISSION_POLICY,
@@ -79,7 +79,7 @@ export const PiModelApiSchema = z.enum([
 ]);
 export type PiModelApi = z.infer<typeof PiModelApiSchema>;
 
-export const ModelLocalitySchema = z.enum(["local", "prefer-local", "remote"]);
+export const ModelLocalitySchema = z.enum(["local", "remote"]);
 export type ModelLocality = z.infer<typeof ModelLocalitySchema>;
 
 export const ModelPricingSchema = z
@@ -116,11 +116,11 @@ const LocalModelRoutesSchema = z
   .default({})
   .superRefine((routes, context) => {
     for (const alias of Object.keys(routes)) {
-      if (!ModelAliasSchema.safeParse(alias).success) {
+      if (!ModelProfileSchema.safeParse(alias).success) {
         context.addIssue({
           code: "custom",
           path: [alias],
-          message: "must be a supported logical model alias",
+          message: "must be a descriptive Model Profile identifier",
         });
       }
     }
@@ -128,7 +128,7 @@ const LocalModelRoutesSchema = z
 
 export const LocalConfigSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     openshell: OpenShellSettingsSchema,
     models: LocalModelRoutesSchema,
     permissions: PermissionSetSchema.default(DEFAULT_LOCAL_PERMISSION_POLICY),

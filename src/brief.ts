@@ -7,6 +7,7 @@ import {
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import type { LoadedPlan, PlanTask, SourceAnchor } from "./plan.js";
 import type { PermissionCeiling } from "./permission.js";
+import type { ResolvedModelRoute } from "./model.js";
 import type { LoadedSkill } from "./project.js";
 import type { Report } from "./report.js";
 import type { LoadedRole } from "./role.js";
@@ -34,6 +35,7 @@ export interface BriefInput {
   readonly agents: string;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly task: PlanTask;
   readonly plan: Pick<LoadedPlan, "id" | "revision" | "digest" | "markdown">;
   readonly decisions: readonly Decision[];
@@ -70,6 +72,8 @@ export interface BriefBinding {
   readonly planDigest: Digest;
   readonly roleDigest: Digest;
   readonly permissionCeilingDigest: Digest;
+  readonly modelProfile: string;
+  readonly routeDigest: Digest;
   readonly taskDigest: Digest;
   readonly decisionsDigest: Digest;
   readonly sourceDigests: Readonly<Record<string, Digest>>;
@@ -124,6 +128,10 @@ export function compileBrief(input: BriefInput): CompiledBrief {
           assignment: input.permissionCeiling.assignment,
         },
       )}`,
+    ),
+    section(
+      "Model Profile",
+      `Profile: ${input.model.profile}\nRoute digest: ${input.model.route_digest}\nConcrete model: ${input.model.pi_model}\nLocality: ${input.model.locality}`,
     ),
     section("Task", canonicalJson(input.task)),
     section(
@@ -196,6 +204,8 @@ export function compileBrief(input: BriefInput): CompiledBrief {
     planDigest: input.plan.digest,
     roleDigest: input.role.digest,
     permissionCeilingDigest: input.permissionCeiling.permission_ceiling_digest,
+    modelProfile: input.model.profile,
+    routeDigest: input.model.route_digest,
     taskDigest: digestParts("pi-orchestrator/task/v1", [
       [input.task.id, canonicalJson(input.task)],
     ]),
@@ -243,6 +253,12 @@ export function briefStaleReasons(
   if (previous.roleDigest !== current.roleDigest) reasons.push("Role changed");
   if (previous.permissionCeilingDigest !== current.permissionCeilingDigest) {
     reasons.push("Permission ceiling changed");
+  }
+  if (previous.modelProfile !== current.modelProfile) {
+    reasons.push("Model Profile changed");
+  }
+  if (previous.routeDigest !== current.routeDigest) {
+    reasons.push("resolved model route changed");
   }
   if (previous.taskDigest !== current.taskDigest) reasons.push("Task changed");
   if (previous.decisionsDigest !== current.decisionsDigest)

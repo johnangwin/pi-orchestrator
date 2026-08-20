@@ -27,9 +27,10 @@ describe("consumer Project initialization", () => {
     expect(project.roles.get("architect")?.definition.permissions.source).toBe(
       "read",
     );
-    expect(project.roles.get("quant")?.definition.inference).toBe(
-      "prefer-local",
-    );
+    expect(project.config.routing.roles.quant).toMatchObject({
+      default: "local-quant",
+      remote: "denied",
+    });
     expect(
       project.roles.get("implementer")?.definition.permissions.write_lease,
     ).toBe("task");

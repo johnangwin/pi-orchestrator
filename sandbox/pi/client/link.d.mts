@@ -48,13 +48,26 @@ export interface ClientConfig {
   readonly policy_digest?: string | undefined;
   readonly model?:
     | {
-        readonly alias: "plan" | "code" | "quant" | "review" | "fast";
+        readonly profile: string;
+        readonly gateway_alias: string;
+        readonly gateway: string;
         readonly pi_model: string;
         readonly api:
           "anthropic-messages" | "openai-completions" | "openai-responses";
         readonly context_window: number;
         readonly max_tokens: number;
         readonly reasoning: boolean;
+        readonly locality: "local" | "remote";
+        readonly route_digest: string;
+        readonly pricing?:
+          | {
+              readonly currency: "USD";
+              readonly input_per_million: number;
+              readonly output_per_million: number;
+              readonly cache_read_per_million: number;
+              readonly cache_write_per_million: number;
+            }
+          | undefined;
       }
     | undefined;
   readonly brief?:

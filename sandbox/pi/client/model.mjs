@@ -10,14 +10,14 @@ export function registerModelRoute(pi, config) {
   if (!config.model || !config.brief) return;
   const model = config.model;
   pi.registerProvider(providerName, {
-    name: `OpenShell ${model.alias}`,
+    name: `OpenShell ${model.profile}`,
     baseUrl: baseUrl(model.api),
     apiKey: "unused",
     api: model.api,
     models: [
       {
         id: model.pi_model,
-        name: `${model.alias} (${model.pi_model})`,
+        name: `${model.profile} (${model.pi_model})`,
         reasoning: model.reasoning,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

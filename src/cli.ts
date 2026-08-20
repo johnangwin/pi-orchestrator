@@ -43,7 +43,12 @@ import {
 import { SandboxProfileSchema, type SandboxProfile } from "./policy.js";
 import { runWorkspaceVolumeCanary } from "./proof.js";
 import { gitHead, loadProject, resolvePlanDirectory } from "./project.js";
-import { resolveReviewModelRoute, resolveRoleModelRoute } from "./model.js";
+import {
+  formatRoutingPolicy,
+  resolveReviewModelRoute,
+  resolveRoleModelRoute,
+  routingPolicyDigest,
+} from "./model.js";
 import { runRequiredReviews } from "./review.js";
 import { startRun } from "./run.js";
 import { defaultOrchestratorHome, ProjectStore } from "./state.js";
@@ -593,7 +598,6 @@ program
       project.config,
       local,
       role.definition.name,
-      role.definition.inference,
     );
     const client = new OpenShellClient({
       command: local.openshell.command,
@@ -739,7 +743,6 @@ program
           project.config,
           local,
           role.definition.name,
-          role.definition.inference,
         );
         return [
           consultationRole,
@@ -834,7 +837,6 @@ program
           project.config,
           local,
           role.definition.name,
-          role.definition.inference,
         );
         return [
           stage,
@@ -944,8 +946,10 @@ program
     const baseCommit = await gitHead(project.root);
     const permissionPolicyDigest = projectPermissionPolicyDigest(project.roles);
     const permissionPolicy = formatProjectPermissionPolicy(project.roles);
+    const modelRoutingPolicyDigest = routingPolicyDigest(project.config);
+    const modelRoutingPolicy = formatRoutingPolicy(project.config);
     await confirmation(
-      `Approve Plan ${plan.id} revision ${plan.revision} at ${baseCommit}\nPlan digest ${plan.digest}\nPermission policy ${permissionPolicyDigest}\n\nRole permissions:\n${permissionPolicy}?`,
+      `Approve Plan ${plan.id} revision ${plan.revision} at ${baseCommit}\nPlan digest ${plan.digest}\nPermission policy ${permissionPolicyDigest}\nRouting policy ${modelRoutingPolicyDigest}\n\nRole permissions:\n${permissionPolicy}\n\nModel routing:\n${modelRoutingPolicy}?`,
       options.yes,
     );
 
@@ -953,6 +957,7 @@ program
       plan,
       baseCommit,
       permissionPolicyDigest,
+      routingPolicyDigest: modelRoutingPolicyDigest,
       approvedBy: os.userInfo().username,
     });
     const store = await ProjectStore.open({
@@ -1071,12 +1076,7 @@ program
           `Task '${taskId}' Role '${task.role}' is unavailable`,
         );
       }
-      const model = resolveRoleModelRoute(
-        project.config,
-        local,
-        task.role,
-        role.definition.inference,
-      );
+      const model = resolveRoleModelRoute(project.config, local, task.role);
       const client = new OpenShellClient({
         command: local.openshell.command,
         gateway: model.gateway,
@@ -1243,12 +1243,7 @@ program
       }
       const clients = Object.fromEntries(
         task.reviews.map((lens) => {
-          const model = resolveReviewModelRoute(
-            project.config,
-            local,
-            lens,
-            role.definition.inference,
-          );
+          const model = resolveReviewModelRoute(project.config, local, lens);
           return [
             lens,
             new OpenShellClient({
@@ -1502,6 +1497,7 @@ program
     const project = await loadProject(options.project ?? process.cwd());
     const baseCommit = await gitHead(project.root);
     const permissionPolicyDigest = projectPermissionPolicyDigest(project.roles);
+    const modelRoutingPolicyDigest = routingPolicyDigest(project.config);
     const store = await ProjectStore.open({
       home: options.home ? options.home : defaultOrchestratorHome(),
       projectId: project.config.project.id,
@@ -1524,6 +1520,7 @@ program
                 planRevision: plan.revision,
                 planDigest: plan.digest,
                 permissionPolicyDigest,
+                routingPolicyDigest: modelRoutingPolicyDigest,
                 baseCommit,
               }),
             };

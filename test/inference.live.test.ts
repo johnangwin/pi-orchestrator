@@ -10,7 +10,7 @@ import { OpenShellClient } from "../src/openshell.js";
 import { gitHead } from "../src/project.js";
 import { startReadSession, type ReadSession } from "../src/agent.js";
 import { createSourceSnapshot } from "../src/snapshot.js";
-import { fixturePermissionCeiling } from "./fixture.js";
+import { fixtureModelRoute, fixturePermissionCeiling } from "./fixture.js";
 
 const execFileAsync = promisify(execFile);
 const live = process.env.PI_ORCHESTRATOR_LIVE_INFERENCE === "1";
@@ -152,17 +152,11 @@ async function close(server: Server): Promise<void> {
             generation: 1,
           },
           snapshot,
-          model: {
-            alias: "fast",
-            gateway_alias: "code",
+          model: fixtureModelRoute(
+            "local-fast",
+            { gateway: "code", pi_model: "fixture-model" },
             gateway,
-            pi_model: "fixture-model",
-            api: "openai-completions",
-            locality: "local",
-            context_window: 32_768,
-            max_tokens: 4_096,
-            reasoning: false,
-          },
+          ),
           brief,
           startupTimeoutMs: 60_000,
           turnTimeoutMs: 60_000,
@@ -192,7 +186,7 @@ async function close(server: Server): Promise<void> {
         });
         await expect(session.run(message)).resolves.toMatchObject({
           message_ids: ["live-model-turn"],
-          model_alias: "fast",
+          model_profile: "local-fast",
           requested_model: "fixture-model",
           text: "ROUTED_OK",
         });

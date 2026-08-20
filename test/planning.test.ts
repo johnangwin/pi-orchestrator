@@ -39,7 +39,7 @@ const requiredVersion = "0.0.106";
 
 function localConfig(): LocalConfig {
   return LocalConfigSchema.parse({
-    version: 1,
+    version: 2,
     openshell: {
       command: "openshell",
       required_version: requiredVersion,
@@ -47,7 +47,7 @@ function localConfig(): LocalConfig {
       gateways: { plan: "plan-gateway" },
     },
     models: {
-      plan: {
+      "frontier-lead": {
         gateway: "plan",
         pi_model: "fixture-planner",
         api: "openai-responses",
@@ -182,7 +182,7 @@ function launcher(
         await beforeResponse?.();
         return {
           message_ids: [message.id],
-          model_alias: model.alias,
+          model_profile: model.profile,
           requested_model: model.pi_model,
           response_model: model.pi_model,
           stop_reason: "stop",

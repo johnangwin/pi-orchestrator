@@ -49,7 +49,7 @@ describe("first-run example", () => {
     ]);
     await expect(
       loadLocalConfig(path.join(destination, ".pi", "orchestrator.local.yaml")),
-    ).resolves.toMatchObject({ version: 1 });
+    ).resolves.toMatchObject({ version: 2 });
     const tests = await execFileAsync("node", ["--test"], {
       cwd: destination,
       encoding: "utf8",

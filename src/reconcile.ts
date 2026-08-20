@@ -3,7 +3,7 @@ import { IdentifierSchema, type ContextThresholds } from "./config.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
 import { MailboxRouter, type MailboxLink } from "./mailbox.js";
 import { MetricStore, type SessionMetricRecorder } from "./metric.js";
-import type { ResolvedModelRoute } from "./model.js";
+import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import type {
   PermissionCeiling,
   PermissionRuntimeState,
@@ -73,6 +73,7 @@ export interface SessionRuntime extends MailboxLink {
   readonly info: {
     readonly sandbox: OpenShellSandbox;
     readonly permissionCeiling: PermissionCeiling;
+    readonly model?: ResolvedModelRoute;
   };
   ping(): Promise<string>;
   release(): Promise<void>;
@@ -101,6 +102,7 @@ export interface ReplaceSessionOptions {
   readonly expected: SessionIdentity;
   readonly session: string;
   readonly reason: string;
+  readonly route: ResolvedModelRoute;
   readonly runtime?: SessionRuntime;
 }
 
@@ -135,6 +137,7 @@ function replacementRetry(
   expected: SessionIdentity,
   replacement: string,
   reason: string,
+  routeDigest: string,
 ): boolean {
   return (
     session?.identity.run === expected.run &&
@@ -142,7 +145,8 @@ function replacementRetry(
     session.identity.session === replacement &&
     session.identity.generation === expected.generation + 1 &&
     session.replaces?.session === expected.session &&
-    session.replaces.reason === reason
+    session.replaces.reason === reason &&
+    session.route.route_digest === routeDigest
   );
 }
 
@@ -354,6 +358,15 @@ export class SessionReconciler {
         "Live Session permission ceiling does not match durable state",
       );
     }
+    if (
+      !session.info.model ||
+      session.info.model.route_digest !== current.route.route_digest
+    ) {
+      throw new OrchestratorError(
+        "session_route_stale",
+        "Live Session resolved route does not match durable state",
+      );
+    }
     await this.registry.bindSandbox(identity, {
       id: session.info.sandbox.id,
       name: session.info.sandbox.name,
@@ -376,6 +389,15 @@ export class SessionReconciler {
       throw new OrchestratorError(
         "sandbox_unbound",
         `Session '${identity.session}' has no durable Sandbox binding`,
+      );
+    }
+    if (
+      !options.model ||
+      options.model.route_digest !== current.route.route_digest
+    ) {
+      throw new OrchestratorError(
+        "session_route_stale",
+        "Session recovery requires the exact durable resolved route",
       );
     }
     if (options.runtime) {
@@ -440,7 +462,16 @@ export class SessionReconciler {
     const sessionId = IdentifierSchema.parse(options.session);
     const reason = ReplacementReasonSchema.parse(options.reason);
     const snapshot = await this.registry.get(expected.agent);
-    if (replacementRetry(snapshot.session, expected, sessionId, reason)) {
+    const route = ResolvedModelRouteSchema.parse(options.route);
+    if (
+      replacementRetry(
+        snapshot.session,
+        expected,
+        sessionId,
+        reason,
+        route.route_digest,
+      )
+    ) {
       return snapshot.session!;
     }
     const current = await this.registry.requireCurrent(expected);
@@ -498,6 +529,7 @@ export class SessionReconciler {
       expected,
       session: sessionId,
       reason,
+      route,
       permissionCeilingDigest: current.permission_ceiling_digest,
     });
   }

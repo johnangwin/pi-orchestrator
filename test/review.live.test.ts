@@ -134,7 +134,7 @@ async function close(server: Server): Promise<void> {
             : {}),
         });
         const local = LocalConfigSchema.parse({
-          version: 1,
+          version: 2,
           openshell: {
             command,
             required_version: configured.openshell.required_version,
@@ -142,7 +142,7 @@ async function close(server: Server): Promise<void> {
             gateways: { review: gateway },
           },
           models: {
-            review: {
+            "independent-review": {
               gateway: "review",
               pi_model: "fixture-reviewer",
               api: "openai-completions",

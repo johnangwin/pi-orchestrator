@@ -29,7 +29,7 @@ import {
   type GitCommandRunner,
 } from "./git.js";
 import type { LocalConfig } from "./local.js";
-import { resolveReviewModelRoute } from "./model.js";
+import { resolveReviewModelRoute, routingPolicyDigest } from "./model.js";
 import {
   validateVerifiedPatch,
   verifyAppliedPatchResult,
@@ -1540,6 +1540,7 @@ function requireRunBinding(options: {
   const permissionPolicyDigest = projectPermissionPolicyDigest(
     options.project.roles,
   );
+  const modelRoutingPolicyDigest = routingPolicyDigest(options.project.config);
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -1553,6 +1554,12 @@ function requireRunBinding(options: {
     throw new OrchestratorError(
       "run_permission_policy_stale",
       `Run '${options.run.id}' was approved under another Role permission policy`,
+    );
+  }
+  if (options.run.routing_policy_digest !== modelRoutingPolicyDigest) {
+    throw new OrchestratorError(
+      "run_routing_policy_stale",
+      `Run '${options.run.id}' was approved under another Model routing policy`,
     );
   }
   if (
@@ -1576,6 +1583,7 @@ function requireRunBinding(options: {
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest as Digest,
     permissionPolicyDigest,
+    routingPolicyDigest: modelRoutingPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1863,7 +1871,6 @@ async function collectReviews(options: {
       options.project.config,
       options.local,
       lens,
-      role.definition.inference,
     );
     if (
       !record ||

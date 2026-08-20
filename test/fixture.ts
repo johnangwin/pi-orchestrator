@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 import { parse, stringify } from "yaml";
 import { sha256, type Digest } from "../src/digest.js";
 import { initializeProject } from "../src/init.js";
+import { LocalConfigSchema, type LocalModelRoute } from "../src/local.js";
+import {
+  resolveModelRoute,
+  routingPolicyDigest,
+  type ResolvedModelRoute,
+} from "../src/model.js";
 import {
   createPermissionCeiling,
   projectPermissionPolicyDigest,
@@ -58,6 +64,37 @@ export function fixturePermissionCeiling(
 
 export function fixturePermissionPolicyDigest(project: Project): Digest {
   return projectPermissionPolicyDigest(project.roles);
+}
+
+export function fixtureRoutingPolicyDigest(project: Project): Digest {
+  return routingPolicyDigest(project.config);
+}
+
+export function fixtureModelRoute(
+  profile = "local-code",
+  overrides: Partial<LocalModelRoute> = {},
+  gatewayName = `openshell-${overrides.gateway ?? "fixture"}`,
+): ResolvedModelRoute {
+  const gatewayAlias = overrides.gateway ?? "fixture";
+  const config = LocalConfigSchema.parse({
+    version: 2,
+    openshell: {
+      gateways: { [gatewayAlias]: gatewayName },
+    },
+    models: {
+      [profile]: {
+        gateway: gatewayAlias,
+        pi_model: `${profile}-model`,
+        api: "openai-completions",
+        locality: "local",
+        context_window: 32_768,
+        max_tokens: 4_096,
+        reasoning: false,
+        ...overrides,
+      },
+    },
+  });
+  return resolveModelRoute(config, profile);
 }
 
 export const planMarkdown = `# Fixture Plan

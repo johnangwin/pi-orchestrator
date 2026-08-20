@@ -232,6 +232,7 @@ export const RunStateSchema = z
     plan_revision: z.number().int().positive(),
     plan_digest: z.string(),
     permission_policy_digest: DigestSchema,
+    routing_policy_digest: DigestSchema,
     base_commit: z.string().min(1),
     branch: z
       .string()
@@ -281,14 +282,6 @@ export const RunStateSchema = z
         });
         continue;
       }
-      if (session.model !== agent.model) {
-        context.addIssue({
-          code: "custom",
-          path: ["sessions", sessionId, "model"],
-          message: `must equal Agent model '${agent.model}'`,
-        });
-      }
-
       let generations = sessionsByAgent.get(identity.agent);
       if (!generations) {
         generations = new Map();
@@ -328,15 +321,25 @@ export const RunStateSchema = z
           path: ["agents", agentId, "session"],
           message: `references unknown Session '${agent.session}'`,
         });
-      } else if (
-        current.identity.agent !== agentId ||
-        current.identity.generation !== agent.generation
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["agents", agentId, "session"],
-          message: "must reference the current Session at the Agent generation",
-        });
+      } else {
+        if (
+          current.identity.agent !== agentId ||
+          current.identity.generation !== agent.generation
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["agents", agentId, "session"],
+            message:
+              "must reference the current Session at the Agent generation",
+          });
+        }
+        if (current.route.profile !== agent.profile) {
+          context.addIssue({
+            code: "custom",
+            path: ["sessions", agent.session, "route", "profile"],
+            message: `must equal Agent Model Profile '${agent.profile}'`,
+          });
+        }
       }
 
       const orderedGenerations = [...generations.entries()].sort(

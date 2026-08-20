@@ -187,7 +187,7 @@ describe("Pi client Link", () => {
       },
       deliver() {},
     });
-    server.emit("session-started", { model_alias: "fast" });
+    server.emit("session-started", { model_profile: "fast" });
 
     let link: HostLink | undefined;
     try {
@@ -208,7 +208,7 @@ describe("Pi client Link", () => {
         type: "event",
         payload: {
           event: "session-started",
-          data: { model_alias: "fast" },
+          data: { model_profile: "fast" },
         },
       });
     } finally {

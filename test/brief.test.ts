@@ -12,6 +12,7 @@ import { createReport } from "../src/report.js";
 import {
   createFixtureProject,
   createPlan,
+  fixtureModelRoute,
   fixturePermissionCeiling,
 } from "./fixture.js";
 
@@ -29,6 +30,7 @@ async function briefInput(): Promise<BriefInput> {
   const project = await loadProject(root);
   const plan = await loadPlan(directory, catalogFromConfig(project.config));
   const role = project.roles.get("implementer")!;
+  const model = fixtureModelRoute();
   const dependency = createReport({
     id: "report-dependency",
     kind: "consultation",
@@ -36,6 +38,10 @@ async function briefInput(): Promise<BriefInput> {
     agent: "architect",
     session: "session-001",
     generation: 1,
+    permission_ceiling_digest:
+      fixturePermissionCeiling().permission_ceiling_digest,
+    model_profile: model.profile,
+    route_digest: model.route_digest,
     task: "bounded-change",
     content: "# Conclusion\nKeep the current boundary.",
     created_at: new Date().toISOString(),
@@ -50,6 +56,7 @@ async function briefInput(): Promise<BriefInput> {
     },
     agents: project.agents,
     role,
+    model,
     permissionCeiling: fixturePermissionCeiling(
       { kind: "task", task: plan.tasks[0]!.id },
       role.definition.name,
@@ -111,6 +118,19 @@ describe("Brief compilation", () => {
     expect(briefStaleReasons(previous, current)).toEqual([
       "source digest changed",
       "Session identity or generation changed",
+    ]);
+  });
+
+  it("marks a Brief stale when its resolved Model Profile route changes", async () => {
+    const input = await briefInput();
+    const previous = compileBrief(input).binding;
+    const model = fixtureModelRoute("local-code", {
+      pi_model: "replacement-local-code",
+    });
+    const current = compileBrief({ ...input, model }).binding;
+
+    expect(briefStaleReasons(previous, current)).toEqual([
+      "resolved model route changed",
     ]);
   });
 

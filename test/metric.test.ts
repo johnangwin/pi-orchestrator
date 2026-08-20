@@ -7,6 +7,7 @@ import {
   MetricStore,
   normalizeModelUsage,
 } from "../src/metric.js";
+import { fixtureDigest } from "./fixture.js";
 
 const roots: string[] = [];
 
@@ -74,7 +75,8 @@ describe("Metric observations", () => {
       identity,
       task: "bounded-change",
       model: {
-        alias: "code",
+        profile: "code",
+        route_digest: fixtureDigest,
         pi_model: "local-code",
         locality: "local",
         pricing: {
@@ -95,7 +97,8 @@ describe("Metric observations", () => {
       identity,
       profile: "write",
       model: {
-        alias: "code",
+        profile: "code",
+        route_digest: fixtureDigest,
         pi_model: "local-code",
         locality: "local",
       },
@@ -133,7 +136,8 @@ describe("Metric observations", () => {
       identity,
       task: "bounded-change",
       model: {
-        alias: "code",
+        profile: "code",
+        route_digest: fixtureDigest,
         pi_model: "local-code",
         locality: "local",
         pricing: {

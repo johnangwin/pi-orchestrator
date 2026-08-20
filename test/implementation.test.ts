@@ -29,6 +29,7 @@ import {
   createFixtureProject,
   createPlan,
   fixturePermissionPolicyDigest,
+  fixtureRoutingPolicyDigest,
 } from "./fixture.js";
 
 const roots: string[] = [];
@@ -48,7 +49,7 @@ async function temporary(prefix: string): Promise<string> {
 }
 
 const local = LocalConfigSchema.parse({
-  version: 1,
+  version: 2,
   openshell: {
     command: "openshell",
     required_version: "0.0.106",
@@ -56,7 +57,7 @@ const local = LocalConfigSchema.parse({
     gateways: { code: "code-gateway" },
   },
   models: {
-    code: {
+    "local-code": {
       gateway: "code",
       pi_model: "fixture-code",
       api: "openai-completions",
@@ -125,6 +126,7 @@ async function fixture() {
       plan,
       baseCommit: commit,
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       approvedBy: "fixture",
     }),
   );
@@ -181,7 +183,7 @@ function launcher(text: string) {
       run: (message) =>
         Promise.resolve({
           message_ids: [message.id],
-          model_alias: options.model!.alias,
+          model_profile: options.model!.profile,
           requested_model: options.model!.pi_model,
           response_model: options.model!.pi_model,
           stop_reason: "stop",

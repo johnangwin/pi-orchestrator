@@ -86,7 +86,6 @@ permissions:
     - propose_plan
     - propose_decision
     - coordinate
-inference: remote
 ---
 
 # Lead
@@ -118,7 +117,6 @@ permissions:
     - report
     - handoff
     - block
-inference: remote
 ---
 
 # Architect
@@ -151,7 +149,6 @@ permissions:
     - report
     - handoff
     - block
-inference: prefer-local
 ---
 
 # Quant
@@ -191,7 +188,6 @@ permissions:
     - handoff
     - block
     - finish
-inference: prefer-local
 ---
 
 # Implementer
@@ -225,7 +221,6 @@ permissions:
     - report
     - handoff
     - block
-inference: prefer-local
 ---
 
 # Reviewer
@@ -255,7 +250,6 @@ permissions:
     - report
     - handoff
     - block
-inference: local
 ---
 
 # Scout
@@ -265,7 +259,7 @@ Return concise source anchors and evidence. Do not propose or make source change
 } as const;
 
 function projectConfig(projectId: string): string {
-  return `version: 1
+  return `version: 2
 
 project:
   id: ${projectId}
@@ -278,15 +272,43 @@ roles:
   - reviewer
   - scout
 
-models:
-  lead: plan
-  architect: plan
-  quant: quant
-  implementer: code
-  reviewer:
-    default: review
-    quant: quant
-  scout: fast
+routing:
+  roles:
+    lead:
+      default: frontier-lead
+      allowed:
+        - frontier-lead
+        - local-reasoning
+      remote: allowed
+    architect:
+      default: frontier-lead
+      allowed:
+        - frontier-lead
+        - local-reasoning
+      remote: allowed
+    quant:
+      default: local-quant
+      allowed:
+        - local-quant
+      remote: denied
+    implementer:
+      default: local-code
+      allowed:
+        - local-code
+      remote: denied
+    reviewer:
+      default: independent-review
+      allowed:
+        - independent-review
+        - local-quant
+      focuses:
+        quant: local-quant
+      remote: allowed
+    scout:
+      default: local-fast
+      allowed:
+        - local-fast
+      remote: denied
 
 context:
   initial_fraction: 0.25
@@ -322,14 +344,15 @@ checks: {}
 `;
 }
 
-const localConfigExample = `version: 1
+const localConfigExample = `version: 2
 
 openshell:
   command: openshell
   required_version: "0.0.106"
   workspace: default
   gateways:
-    plan: openshell-plan
+    frontier: openshell-frontier
+    reasoning: openshell-reasoning
     code: openshell-code
     quant: openshell-quant
     review: openshell-review
@@ -341,8 +364,8 @@ openshell:
     docker_command: docker
 
 models:
-  plan:
-    gateway: plan
+  frontier-lead:
+    gateway: frontier
     pi_model: planning
     api: openai-responses
     locality: remote
@@ -357,7 +380,16 @@ models:
     #   cache_read_per_million: 0
     #   cache_write_per_million: 0
 
-  code:
+  local-reasoning:
+    gateway: reasoning
+    pi_model: local-reasoner
+    api: openai-completions
+    locality: local
+    context_window: 131072
+    max_tokens: 16384
+    reasoning: true
+
+  local-code:
     gateway: code
     pi_model: qwen-local-code
     api: openai-completions
@@ -366,25 +398,25 @@ models:
     max_tokens: 16384
     reasoning: false
 
-  quant:
+  local-quant:
     gateway: quant
     pi_model: quant-reasoner
     api: openai-responses
-    locality: prefer-local
+    locality: local
     context_window: 131072
     max_tokens: 16384
     reasoning: true
 
-  review:
+  independent-review:
     gateway: review
     pi_model: reviewer
     api: openai-responses
-    locality: prefer-local
+    locality: remote
     context_window: 131072
     max_tokens: 16384
     reasoning: true
 
-  fast:
+  local-fast:
     gateway: fast
     pi_model: local-small
     api: openai-completions

@@ -5,7 +5,7 @@
 The machine-local file `.pi/orchestrator.local.yaml` pins the OpenShell release used by a Project:
 
 ```yaml
-version: 1
+version: 2
 
 openshell:
   command: /opt/homebrew/bin/openshell
@@ -116,7 +116,7 @@ The `read` profile makes `/workspace/project` read-only. The `write` and `check`
 
 ## Model routing
 
-Machine-local configuration maps each stable logical alias to a gateway alias, exact model, Pi API shape, locality, and context limits. A configured OpenShell gateway exposes one active user-facing inference route, so aliases that must use different models concurrently must resolve to different gateways. The host verifies the route's model before creating a Sandbox and fails closed on an absent or mismatched route.
+Machine-local configuration maps each descriptive Model Profile to a gateway alias, exact model, Pi API shape, locality, and context limits. Committed Project routing policy selects the default and allowed Profiles for each Role, including Review Focus overrides and remote-egress rules. A configured OpenShell gateway exposes one active user-facing inference route, so Profiles that must use different models concurrently resolve to different gateways. The host freezes and verifies the complete route digest before creating a Sandbox and fails closed on an absent, disallowed, stale, or mismatched route. There is no automatic model or locality fallback.
 
 Pi registers a Session-local provider that targets only `inference.local`. OpenShell rewrites the requested model and injects its provider credential at the gateway. The compiled Brief is copied into `/workspace/input/brief.md`, made read-only before launch, and appended to Pi's system prompt.
 

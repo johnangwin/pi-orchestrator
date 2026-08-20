@@ -11,7 +11,11 @@ import path from "node:path";
 import { z } from "zod";
 import { CheckStore, type CheckRecord } from "./check.js";
 import { CommitStore } from "./commit.js";
-import { IdentifierSchema, ModelAliasSchema } from "./config.js";
+import {
+  IdentifierSchema,
+  ModelProfileSchema,
+  type ModelProfile,
+} from "./config.js";
 import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import { HandoffStore, type StoredHandoff } from "./handoff.js";
@@ -184,7 +188,7 @@ const RunMetricsContentSchema = z
         cache_write_tokens: CountSchema,
         total_tokens: CountSchema,
         estimated_cost_usd: CostSchema,
-        by_alias: z.partialRecord(ModelAliasSchema, ModelMetricSchema),
+        by_profile: z.partialRecord(ModelProfileSchema, ModelMetricSchema),
         by_locality: LocalityMetricsSchema,
       })
       .strict(),
@@ -286,7 +290,7 @@ export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
 interface ModelSample {
   readonly key: string;
-  readonly alias: (typeof ModelAliasSchema.options)[number];
+  readonly profile: ModelProfile;
   readonly locality: (typeof ModelLocalitySchema.options)[number];
   readonly outcome: "success" | "failure";
   readonly usage: NormalizedUsage;
@@ -366,7 +370,7 @@ function modelObservationSample(
   if (metric.kind !== "model-turn") return undefined;
   return {
     key: `${metric.identity.session}:${metric.message_ids.join(",")}`,
-    alias: metric.model.alias,
+    profile: metric.model.profile,
     locality: metric.model.locality,
     outcome: metric.outcome,
     usage: metric.usage,
@@ -378,7 +382,7 @@ function reviewSample(review: ReviewRecord): ModelSample {
   const usage = normalizeModelUsage(review.turn.usage);
   return {
     key: `${review.identity.session}:${review.turn.message_id}`,
-    alias: review.model.alias,
+    profile: review.model.profile,
     locality: review.model.locality,
     outcome: "success",
     usage,
@@ -514,7 +518,9 @@ export async function collectRunMetrics(input: {
       if (
         !session ||
         !sameSessionIdentity(session.identity, metric.identity) ||
-        (observedModel !== undefined && observedModel.alias !== session.model)
+        (observedModel !== undefined &&
+          (observedModel.profile !== session.route.profile ||
+            observedModel.route_digest !== session.route.route_digest))
       ) {
         throw new OrchestratorError(
           "metric_identity_stale",
@@ -558,7 +564,9 @@ export async function collectRunMetrics(input: {
       review.run !== run.id ||
       !run.tasks[review.task] ||
       !session ||
-      !sameSessionIdentity(session.identity, review.identity)
+      !sameSessionIdentity(session.identity, review.identity) ||
+      review.model.profile !== session.route.profile ||
+      review.model.route_digest !== session.route.route_digest
     ) {
       throw new OrchestratorError(
         "metric_evidence_mismatch",
@@ -573,9 +581,14 @@ export async function collectRunMetrics(input: {
       handoff.intent.run !== run.id ||
       !predecessor ||
       !sameSessionIdentity(predecessor.identity, handoff.intent.from) ||
+      handoff.intent.launch.model.profile !== predecessor.route.profile ||
+      handoff.intent.launch.model.route_digest !==
+        predecessor.route.route_digest ||
       (handoff.result !== undefined &&
         (!successor ||
-          !sameSessionIdentity(successor.identity, handoff.intent.to)))
+          !sameSessionIdentity(successor.identity, handoff.intent.to) ||
+          successor.route.route_digest !==
+            handoff.intent.launch.model.route_digest))
     ) {
       throw new OrchestratorError(
         "metric_evidence_mismatch",
@@ -590,7 +603,10 @@ export async function collectRunMetrics(input: {
       (report.task !== undefined && !run.tasks[report.task]) ||
       !session ||
       session.identity.agent !== report.agent ||
-      session.identity.generation !== report.generation
+      session.identity.generation !== report.generation ||
+      session.permission_ceiling_digest !== report.permission_ceiling_digest ||
+      session.route.profile !== report.model_profile ||
+      session.route.route_digest !== report.route_digest
     ) {
       throw new OrchestratorError(
         "metric_evidence_mismatch",
@@ -647,7 +663,7 @@ export async function collectRunMetrics(input: {
     const sample = reviewSample(review);
     if (!samples.has(sample.key)) samples.set(sample.key, sample);
   }
-  const byAlias: Record<string, z.infer<typeof ModelMetricSchema>> = {};
+  const byProfile: Record<string, z.infer<typeof ModelMetricSchema>> = {};
   const byLocality = Object.fromEntries(
     ModelLocalitySchema.options.map((locality) => [
       locality,
@@ -664,8 +680,8 @@ export async function collectRunMetrics(input: {
     else failedTurns += 1;
     if (sample.usage.measured.length > 0) measuredTurns += 1;
     if (sample.estimatedCostUsd !== null) pricedTurns += 1;
-    const aliasMetric = (byAlias[sample.alias] ??= emptyModelMetric());
-    addModelSample(aliasMetric, sample);
+    const profileMetric = (byProfile[sample.profile] ??= emptyModelMetric());
+    addModelSample(profileMetric, sample);
     addModelSample(byLocality[sample.locality], sample);
     addModelSample(modelTotals, sample);
   }
@@ -863,8 +879,8 @@ export async function collectRunMetrics(input: {
       cache_write_tokens: modelTotals.cache_write_tokens,
       total_tokens: modelTotals.total_tokens,
       estimated_cost_usd: modelTotals.estimated_cost_usd,
-      by_alias: Object.fromEntries(
-        Object.entries(byAlias).sort(([left], [right]) =>
+      by_profile: Object.fromEntries(
+        Object.entries(byProfile).sort(([left], [right]) =>
           left.localeCompare(right),
         ),
       ),

@@ -25,7 +25,7 @@ export async function fixtureLocalConfig(
   _fixture: AppliedFixture,
 ): Promise<LocalConfig> {
   return LocalConfigSchema.parse({
-    version: 1,
+    version: 2,
     openshell: {
       command: "openshell",
       required_version: "0.0.106",
@@ -36,20 +36,20 @@ export async function fixtureLocalConfig(
       },
     },
     models: {
-      review: {
+      "independent-review": {
         gateway: "review",
         pi_model: "fixture-reviewer",
         api: "openai-responses",
-        locality: "prefer-local",
+        locality: "remote",
         context_window: 131_072,
         max_tokens: 16_384,
         reasoning: true,
       },
-      quant: {
+      "local-quant": {
         gateway: "quant",
         pi_model: "fixture-quant",
         api: "openai-responses",
-        locality: "prefer-local",
+        locality: "local",
         context_window: 131_072,
         max_tokens: 16_384,
         reasoning: true,
@@ -147,7 +147,7 @@ function launcher(
       run: (message) =>
         Promise.resolve({
           message_ids: [message.id],
-          model_alias: model.alias,
+          model_profile: model.profile,
           requested_model: model.pi_model,
           response_model: model.pi_model,
           stop_reason: "stop",
@@ -173,17 +173,11 @@ export async function passFixtureReviews(
   configuredLocal?: LocalConfig,
 ): Promise<ReviewRecord[]> {
   const local = configuredLocal ?? (await fixtureLocalConfig(fixture));
-  const role = fixture.project.roles.get("reviewer")!;
   const requiredVersion = local.openshell.required_version!;
   const records: ReviewRecord[] = [];
   for (let index = 0; index < fixture.task.reviews.length; index += 1) {
     const lens = fixture.task.reviews[index]!;
-    const model = resolveReviewModelRoute(
-      fixture.project.config,
-      local,
-      lens,
-      role.definition.inference,
-    );
+    const model = resolveReviewModelRoute(fixture.project.config, local, lens);
     const sequence = index + 1;
     const result = await runReview({
       store: fixture.store,

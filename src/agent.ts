@@ -58,24 +58,7 @@ export const PI_CLIENT_VERSION = "0.3.0";
 export const PI_LINK_PORT = 41_727;
 export const PI_CLIENT_CONFIG_VERSION = 2 as const;
 
-export const PiSessionModelSchema = z
-  .object({
-    alias: z.enum(["plan", "code", "quant", "review", "fast"]),
-    pi_model: z.string().min(1).max(256),
-    api: z.enum([
-      "anthropic-messages",
-      "openai-completions",
-      "openai-responses",
-    ]),
-    context_window: z.number().int().positive(),
-    max_tokens: z.number().int().positive(),
-    reasoning: z.boolean(),
-  })
-  .strict()
-  .refine((model) => model.max_tokens <= model.context_window, {
-    message: "max_tokens must not exceed context_window",
-    path: ["max_tokens"],
-  });
+export const PiSessionModelSchema = ResolvedModelRouteSchema;
 export type PiSessionModel = z.infer<typeof PiSessionModelSchema>;
 
 const PiSessionBriefSchema = z
@@ -779,18 +762,18 @@ export class ReadSession {
     messageId: string,
     turn: Pick<
       ModelTurnResult,
-      "message_ids" | "model_alias" | "requested_model"
+      "message_ids" | "model_profile" | "requested_model"
     >,
   ): void {
     const model = this.info.model!;
     if (
       !turn.message_ids.includes(messageId) ||
-      turn.model_alias !== model.alias ||
+      turn.model_profile !== model.profile ||
       turn.requested_model !== model.pi_model
     ) {
       throw new OrchestratorError(
         "model_turn_binding_mismatch",
-        `Pi model turn does not match Message '${messageId}' and route '${model.alias}/${model.pi_model}'`,
+        `Pi model turn does not match Message '${messageId}' and route '${model.profile}/${model.pi_model}'`,
       );
     }
   }
@@ -921,14 +904,7 @@ async function readSandboxJson(
 }
 
 function expectedPiModel(model: ResolvedModelRoute): PiSessionModel {
-  return PiSessionModelSchema.parse({
-    alias: model.alias,
-    pi_model: model.pi_model,
-    api: model.api,
-    context_window: model.context_window,
-    max_tokens: model.max_tokens,
-    reasoning: model.reasoning,
-  });
+  return PiSessionModelSchema.parse(model);
 }
 
 async function resumeSession(
@@ -1070,7 +1046,7 @@ async function resumeSession(
   ) {
     throw new OrchestratorError(
       "model_route_mismatch",
-      `Recovered Session route does not match '${model.alias}/${model.pi_model}'`,
+      `Recovered Session route does not match '${model.profile}/${model.pi_model}'`,
     );
   }
   if (briefDigest !== undefined && config.brief?.digest !== briefDigest) {
@@ -1104,7 +1080,7 @@ async function resumeSession(
     if (preflight.status.gateway !== model.gateway) {
       throw new OrchestratorError(
         "model_gateway_mismatch",
-        `Model alias '${model.alias}' resolved to gateway '${model.gateway}', but the recovery client reached '${preflight.status.gateway}'`,
+        `Model Profile '${model.profile}' resolved to gateway '${model.gateway}', but the recovery client reached '${preflight.status.gateway}'`,
       );
     }
     if (inference?.model !== model.pi_model) {
@@ -1287,7 +1263,7 @@ async function startSession(
     if (preflight.status.gateway !== model.gateway) {
       throw new OrchestratorError(
         "model_gateway_mismatch",
-        `Model alias '${model.alias}' resolved to gateway '${model.gateway}', but the Session client reached '${preflight.status.gateway}'`,
+        `Model Profile '${model.profile}' resolved to gateway '${model.gateway}', but the Session client reached '${preflight.status.gateway}'`,
       );
     }
     if (inference?.model !== model.pi_model) {
@@ -1314,14 +1290,7 @@ async function startSession(
     inputs: inputs.map((input) => input.config),
     ...(model
       ? {
-          model: {
-            alias: model.alias,
-            pi_model: model.pi_model,
-            api: model.api,
-            context_window: model.context_window,
-            max_tokens: model.max_tokens,
-            reasoning: model.reasoning,
-          },
+          model,
           brief: {
             path: "/workspace/input/brief.md" as const,
             digest: options.brief!.digest,

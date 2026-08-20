@@ -4,11 +4,21 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRegistry } from "../src/registry.js";
 import { RunStateSchema, ProjectStore, writeJsonAtomic } from "../src/state.js";
-import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
+import {
+  fixtureDigest,
+  fixtureModelRoute,
+  fixturePermissionCeiling,
+} from "./fixture.js";
 
 const roots: string[] = [];
 const permissionCeilingDigest =
   fixturePermissionCeiling().permission_ceiling_digest;
+const leadModel = fixtureModelRoute("frontier-lead");
+const reasoningModel = fixtureModelRoute("local-reasoning", {
+  reasoning: true,
+});
+const implementerModel = fixtureModelRoute("local-code");
+const scoutModel = fixtureModelRoute("local-fast");
 
 afterEach(async () => {
   await Promise.all(
@@ -39,6 +49,7 @@ async function writeEmptyRun(store: ProjectStore): Promise<void> {
     plan_revision: 1,
     plan_digest: "sha256:plan",
     permission_policy_digest: fixtureDigest,
+    routing_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -64,10 +75,15 @@ async function activeRegistry(store: ProjectStore): Promise<{
   };
 }> {
   const registry = new AgentRegistry(store, "run-one", clock());
-  await registry.register({ agent: "lead", role: "lead", model: "plan" });
+  await registry.register({
+    agent: "lead",
+    role: "lead",
+    profile: leadModel.profile,
+  });
   const session = await registry.start({
     agent: "lead",
     session: "session-one",
+    route: leadModel,
     permissionCeilingDigest,
   });
   await registry.transition(session.identity, { status: "active" });
@@ -88,11 +104,12 @@ describe("durable Agent and Session registry", () => {
     await registry.register({
       agent: "implementer",
       role: "implementer",
-      model: "code",
+      profile: implementerModel.profile,
     });
     const started = await registry.start({
       agent: "implementer",
       session: "session-one",
+      route: implementerModel,
       permissionCeilingDigest,
     });
     expect(started.identity).toEqual({
@@ -105,9 +122,10 @@ describe("durable Agent and Session registry", () => {
       registry.start({
         agent: "implementer",
         session: "session-one",
+        route: implementerModel,
         permissionCeilingDigest: `sha256:${"f".repeat(64)}`,
       }),
-    ).rejects.toMatchObject({ code: "session_permission_conflict" });
+    ).rejects.toMatchObject({ code: "session_binding_conflict" });
     await store.close();
 
     store = await openStore(home);
@@ -117,7 +135,7 @@ describe("durable Agent and Session registry", () => {
       );
       expect(recovered.record).toMatchObject({
         role: "implementer",
-        model: "code",
+        profile: implementerModel.profile,
         session: "session-one",
         generation: 1,
       });
@@ -148,16 +166,62 @@ describe("durable Agent and Session registry", () => {
     }
   });
 
+  it("changes an Agent Profile only through a new Session generation", async () => {
+    const home = await temporaryHome();
+    const store = await openStore(home);
+    try {
+      await writeEmptyRun(store);
+      const { registry, identity } = await activeRegistry(store);
+      const replacement = await registry.reconfigureProfile({
+        expected: identity,
+        session: "session-two",
+        reason: "Use the approved local reasoning Profile",
+        profile: reasoningModel.profile,
+        route: reasoningModel,
+      });
+
+      expect(replacement).toMatchObject({
+        identity: { session: "session-two", generation: 2 },
+        route: reasoningModel,
+        permission_ceiling_digest: permissionCeilingDigest,
+      });
+      expect((await registry.get("lead")).record).toMatchObject({
+        profile: reasoningModel.profile,
+        session: "session-two",
+        generation: 2,
+      });
+      expect(
+        (await store.readRun("run-one")).sessions["session-one"],
+      ).toMatchObject({ status: "stopped" });
+      await expect(
+        registry.reconfigureProfile({
+          expected: identity,
+          session: "session-two",
+          reason: "Use the approved local reasoning Profile",
+          profile: reasoningModel.profile,
+          route: reasoningModel,
+        }),
+      ).resolves.toEqual(replacement);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("enforces lifecycle transitions and immutable Sandbox binding", async () => {
     const home = await temporaryHome();
     const store = await openStore(home);
     try {
       await writeEmptyRun(store);
       const registry = new AgentRegistry(store, "run-one", clock());
-      await registry.register({ agent: "scout", role: "scout", model: "fast" });
+      await registry.register({
+        agent: "scout",
+        role: "scout",
+        profile: scoutModel.profile,
+      });
       const started = await registry.start({
         agent: "scout",
         session: "session-one",
+        route: scoutModel,
         permissionCeilingDigest,
       });
       const sandbox = {
@@ -228,12 +292,14 @@ describe("durable Agent and Session registry", () => {
           expected: identity,
           session: "session-two",
           reason: "Context handoff",
+          route: leadModel,
           permissionCeilingDigest,
         }),
         registry.replace({
           expected: identity,
           session: "session-three",
           reason: "Competing replacement",
+          route: leadModel,
           permissionCeilingDigest,
         }),
       ]);
@@ -256,6 +322,7 @@ describe("durable Agent and Session registry", () => {
           expected: identity,
           session: current.identity.session,
           reason,
+          route: leadModel,
           permissionCeilingDigest,
         }),
       ).resolves.toEqual(current);
@@ -280,6 +347,7 @@ describe("durable Agent and Session registry", () => {
           expected: { ...identity, run: "other-run" },
           session: current.identity.session,
           reason,
+          route: leadModel,
           permissionCeilingDigest,
         }),
       ).rejects.toMatchObject({ code: "stale_session" });
@@ -298,6 +366,7 @@ describe("durable Agent and Session registry", () => {
         expected: identity,
         session: "session-two",
         reason: "Context handoff",
+        route: leadModel,
         permissionCeilingDigest,
       });
       const valid = await store.readRun("run-one");

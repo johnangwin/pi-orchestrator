@@ -42,7 +42,7 @@ afterEach(async () => {
 
 function localConfig(): LocalConfig {
   return LocalConfigSchema.parse({
-    version: 1,
+    version: 2,
     openshell: {
       command: "openshell",
       required_version: "0.0.106",
@@ -53,20 +53,20 @@ function localConfig(): LocalConfig {
       },
     },
     models: {
-      review: {
+      "independent-review": {
         gateway: "review",
         pi_model: "fixture-reviewer",
         api: "openai-responses",
-        locality: "prefer-local",
+        locality: "remote",
         context_window: 131_072,
         max_tokens: 16_384,
         reasoning: true,
       },
-      quant: {
+      "local-quant": {
         gateway: "quant",
         pi_model: "fixture-quant",
         api: "openai-responses",
-        locality: "prefer-local",
+        locality: "local",
         context_window: 131_072,
         max_tokens: 16_384,
         reasoning: true,
@@ -218,7 +218,7 @@ class FakeReviewRuntime {
         if (text === undefined) throw new Error("No fake Review response");
         return {
           message_ids: [message.id],
-          model_alias: model.alias,
+          model_profile: model.profile,
           requested_model: model.pi_model,
           response_model: model.pi_model,
           stop_reason: "stop",
@@ -314,7 +314,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
         verdict: "pass",
         plan_digest: fixture.plan.digest,
         model: {
-          alias: "review",
+          profile: "independent-review",
           gateway: "review-gateway",
           pi_model: "fixture-reviewer",
         },
@@ -648,7 +648,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       gateway: "quant-gateway",
     });
     expect(result.record.model).toMatchObject({
-      alias: "quant",
+      profile: "local-quant",
       gateway: "quant-gateway",
       pi_model: "fixture-quant",
     });
@@ -732,11 +732,11 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(first.reviews.map((review) => review.record.lens)).toEqual(
       first.required,
     );
-    expect(first.reviews.map((review) => review.record.model.alias)).toEqual([
-      "review",
-      "review",
-      "review",
-      "quant",
+    expect(first.reviews.map((review) => review.record.model.profile)).toEqual([
+      "independent-review",
+      "independent-review",
+      "independent-review",
+      "local-quant",
     ]);
     expect(
       new Set(first.reviews.map((review) => review.record.identity.session))

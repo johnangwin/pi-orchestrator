@@ -424,7 +424,7 @@ describe("human-authorized Task commit", { timeout: 15_000 }, () => {
   it("rejects Review route drift and unexpected worktree changes", async () => {
     const routeFixture = await reviewed();
     const drifted = structuredClone(routeFixture.local);
-    drifted.models.review!.pi_model = "another-reviewer";
+    drifted.models["independent-review"]!.pi_model = "another-reviewer";
     await expect(inspect(routeFixture.fixture, drifted)).rejects.toMatchObject({
       code: "commit_review_stale",
     });

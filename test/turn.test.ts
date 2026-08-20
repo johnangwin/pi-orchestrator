@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MAX_TURN_TEXT_BYTES, turnEvent } from "../sandbox/pi/client/turn.mjs";
+import { fixtureModelRoute } from "./fixture.js";
 
-const model = {
-  alias: "fast" as const,
-  pi_model: "local-small",
-  api: "openai-completions" as const,
-  context_window: 32768,
-  max_tokens: 4096,
-  reasoning: false,
-};
+const model = fixtureModelRoute("fast", { pi_model: "local-small" });
 
 describe("Pi turn events", () => {
   it("returns bounded assistant text and usage bound to Message IDs", () => {
@@ -24,7 +18,7 @@ describe("Pi turn events", () => {
       event: "turn-completed",
       data: {
         message_ids: ["msg-one"],
-        model_alias: "fast",
+        model_profile: "fast",
         requested_model: "local-small",
         response_model: "local-small",
         stop_reason: "stop",

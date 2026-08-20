@@ -32,11 +32,16 @@ import type { SessionIdentity } from "../src/session.js";
 import { ProjectStore } from "../src/state.js";
 import { loadSandboxPolicy } from "../src/policy.js";
 import { startLinkServer } from "../sandbox/pi/client/link.mjs";
-import { fixtureDigest, fixturePermissionCeiling } from "./fixture.js";
+import {
+  fixtureDigest,
+  fixtureModelRoute,
+  fixturePermissionCeiling,
+} from "./fixture.js";
 
 const roots: string[] = [];
 const permissionCeiling = fixturePermissionCeiling();
 const permissionCeilingDigest = permissionCeiling.permission_ceiling_digest;
+const model = fixtureModelRoute("frontier-lead", {}, "openshell");
 const workspaceOperation = "10000000-0000-4000-8000-000000000001";
 const workspaceId = "10000000-0000-4000-8000-000000000002";
 const paneOperation = "20000000-0000-4000-8000-000000000001";
@@ -222,6 +227,7 @@ async function setup(): Promise<{
     plan_revision: 1,
     plan_digest: "sha256:plan",
     permission_policy_digest: fixtureDigest,
+    routing_policy_digest: fixtureDigest,
     base_commit: "0123456789abcdef",
     branch: "orchestrator/run-one",
     worktree: "/worktrees/run-one",
@@ -231,10 +237,15 @@ async function setup(): Promise<{
     updated_at: "2026-08-18T12:00:00.000Z",
   });
   const registry = new AgentRegistry(store, "run-one");
-  await registry.register({ agent: "lead", role: "lead", model: "plan" });
+  await registry.register({
+    agent: "lead",
+    role: "lead",
+    profile: model.profile,
+  });
   const session = await registry.start({
     agent: "lead",
     session: "session-one",
+    route: model,
     permissionCeilingDigest,
   });
   const cmux = new FakeProjectionCmux();
@@ -407,6 +418,7 @@ describe("Session lifecycle reconciliation", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace a lost Session",
+          route: model,
         }),
       ).rejects.toThrow("injected deletion failure");
       expect((await registry.get("lead")).session).toMatchObject({
@@ -425,6 +437,7 @@ describe("Session lifecycle reconciliation", () => {
         expected: identity,
         session: "session-two",
         reason: "Replace a lost Session",
+        route: model,
       });
       expect(replacement).toMatchObject({
         identity: { session: "session-two", generation: 2 },
@@ -446,6 +459,7 @@ describe("Session lifecycle reconciliation", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace a lost Session",
+          route: model,
         }),
       ).resolves.toEqual(replacement);
       expect(openshell.deletes).toEqual(["pio-read-test", "pio-read-test"]);
@@ -477,6 +491,7 @@ describe("Session lifecycle reconciliation", () => {
           expected: identity,
           session: "session-two",
           reason: "   ",
+          route: model,
         }),
       ).rejects.toThrow();
       expect((await registry.get("lead")).session?.status).toBe("active");
@@ -491,6 +506,7 @@ describe("Session lifecycle reconciliation", () => {
           expected: identity,
           session: "session-two",
           reason: "Replace a lost Session",
+          route: model,
         }),
       ).rejects.toMatchObject({ code: "sandbox_identity_mismatch" });
       expect((await registry.get("lead")).session).toMatchObject({
@@ -521,6 +537,11 @@ describe("Session lifecycle reconciliation", () => {
       client_version: PI_CLIENT_VERSION,
       pi_version: "0.84.2",
       permission_ceiling: permissionCeiling,
+      model,
+      brief: {
+        path: "/workspace/input/brief.md",
+        digest: fixtureDigest,
+      },
       source_digest: `sha256:${"1".repeat(64)}`,
       policy_digest: policy.digest,
     });
@@ -537,6 +558,8 @@ describe("Session lifecycle reconciliation", () => {
       listSandboxes: () => Promise.resolve([actual]),
       getSandbox: () => Promise.resolve(actual),
       preflight: () => Promise.resolve(preflight),
+      getInferenceRoute: () =>
+        Promise.resolve({ provider: "fixture", model: model.pi_model }),
       execSandbox: () =>
         Promise.resolve({
           stdout: JSON.stringify(config),
@@ -574,7 +597,11 @@ describe("Session lifecycle reconciliation", () => {
       await registry.transition(identity, { status: "disconnected" });
       await reconciler.mailbox.send(instruction("recover-message"));
 
-      recovered = await reconciler.recover({ identity });
+      recovered = await reconciler.recover({
+        identity,
+        model,
+        briefDigest: fixtureDigest,
+      });
       expect(delivered).toEqual(["recover-message"]);
       expect(
         (await reconciler.mailbox.mailbox.find("recover-message"))?.lifecycle,

@@ -16,7 +16,11 @@ import { formatUnknownError, OrchestratorError } from "./error.js";
 import type { LocalConfig } from "./local.js";
 import { Mailbox, MessageSchema, type MessageLifecycle } from "./message.js";
 import { MetricStore } from "./metric.js";
-import { resolveRoleModelRoute, type ResolvedModelRoute } from "./model.js";
+import {
+  resolveRoleModelRoute,
+  routingPolicyDigest,
+  type ResolvedModelRoute,
+} from "./model.js";
 import type { OpenShellPreflight } from "./openshell.js";
 import {
   permissionRuntimeState,
@@ -167,6 +171,7 @@ function requireRunBinding(options: {
   const permissionPolicyDigest = projectPermissionPolicyDigest(
     options.project.roles,
   );
+  const modelRoutingPolicyDigest = routingPolicyDigest(options.project.config);
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -192,11 +197,18 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' was approved under another Role permission policy`,
     );
   }
+  if (options.run.routing_policy_digest !== modelRoutingPolicyDigest) {
+    throw new OrchestratorError(
+      "run_routing_policy_stale",
+      `Run '${options.run.id}' was approved under another Model routing policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest,
     permissionPolicyDigest,
+    routingPolicyDigest: modelRoutingPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -317,6 +329,7 @@ function compileImplementationBrief(options: {
     agents: options.project.agents,
     role: options.role,
     permissionCeiling: options.permissionCeiling,
+    model: options.model,
     task: options.task,
     plan: options.plan,
     decisions: [],
@@ -354,7 +367,7 @@ function requirePinnedPreflight(
   if (preflight.status.gateway !== model.gateway) {
     throw new OrchestratorError(
       "model_gateway_mismatch",
-      `Implementer model '${model.alias}' resolved to '${model.gateway}', but OpenShell reached '${preflight.status.gateway}'`,
+      `Implementer model '${model.profile}' resolved to '${model.gateway}', but OpenShell reached '${preflight.status.gateway}'`,
     );
   }
 }
@@ -370,7 +383,7 @@ async function allocateSession(options: {
   await options.registry.register({
     agent: agentId,
     role: options.task.role,
-    model: options.model.alias,
+    profile: options.model.profile,
   });
   const agent = await options.registry.get(agentId);
   const sessionId = IdentifierSchema.parse(`implementation-${options.nonce}`);
@@ -378,6 +391,7 @@ async function allocateSession(options: {
     return options.registry.start({
       agent: agentId,
       session: sessionId,
+      route: options.model,
       permissionCeilingDigest:
         options.permissionCeiling.permission_ceiling_digest,
     });
@@ -392,6 +406,7 @@ async function allocateSession(options: {
     expected: agent.session.identity,
     session: sessionId,
     reason: `Implementation attempt for Task '${options.task.id}'`,
+    route: options.model,
     permissionCeilingDigest:
       options.permissionCeiling.permission_ceiling_digest,
   });
@@ -720,7 +735,6 @@ export async function runImplementation(
     current.project.config,
     options.local,
     task.role,
-    role.definition.inference,
   );
   const preflight = await options.client.preflight();
   requirePinnedPreflight(preflight, model);
@@ -885,6 +899,9 @@ export async function runImplementation(
       agent: identity.agent,
       session: identity.session,
       generation: identity.generation,
+      permission_ceiling_digest: permissionCeiling.permission_ceiling_digest,
+      model_profile: model.profile,
+      route_digest: model.route_digest,
       task: task.id,
       source_digest: snapshot.manifest.source_digest,
       patch_digest: imported.value.bundle.diff_digest,

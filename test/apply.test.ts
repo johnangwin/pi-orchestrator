@@ -36,8 +36,10 @@ import {
   commitFixture,
   createFixtureProject,
   createPlan,
+  fixtureModelRoute,
   fixturePermissionCeiling,
   fixturePermissionPolicyDigest,
+  fixtureRoutingPolicyDigest,
   fixtureTask,
 } from "./fixture.js";
 
@@ -125,6 +127,7 @@ async function fixture(options: {
       plan,
       baseCommit: commit,
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       approvedBy: "fixture",
     }),
   );
@@ -133,11 +136,12 @@ async function fixture(options: {
   await registry.register({
     agent: "implementer",
     role: task.role,
-    model: "code",
+    profile: "local-code",
   });
   const session = await registry.start({
     agent: "implementer",
     session: "implementation-one",
+    route: fixtureModelRoute(),
     permissionCeilingDigest: fixturePermissionCeiling(
       { kind: "task", task: task.id },
       task.role,

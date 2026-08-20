@@ -16,7 +16,6 @@ export const RoleSchema = z
     lifetime: z.enum(["run", "design", "task", "review", "query"]),
     needs: z.array(IdentifierSchema),
     permissions: PermissionSetSchema,
-    inference: z.enum(["local", "prefer-local", "remote"]).optional(),
   })
   .strict()
   .superRefine((role, context) => {

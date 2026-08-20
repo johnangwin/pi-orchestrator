@@ -2,7 +2,7 @@
 
 Pi Orchestrator is a host control plane for approved, isolated Pi software-development runs. The host owns workflow state, Git, Sandboxes, Checks, Reviews, and human gates; model-driven Sessions are disposable workers without host credentials or Git metadata.
 
-Version 0.2 is under active development. Push, merge, deployment, release, and production access are intentionally unavailable.
+Version 0.3 is under active migration. Push, merge, deployment, release, and production access are intentionally unavailable.
 
 ## Install
 
@@ -80,6 +80,8 @@ orchestrator status
 
 Runtime state defaults to `~/.local/share/pi-orchestrator`. Set `ORCHESTRATOR_HOME` or use `--home` to choose another location.
 
+Project and machine-local configuration now use schema version 2. Version-one configuration and unfinished runtime state are intentionally rejected rather than migrated implicitly.
+
 ## Existing Project
 
 Initialize committed Project configuration in an existing clean Git repository:
@@ -93,7 +95,7 @@ Then:
 
 1. Document repository constraints in `AGENTS.md`.
 2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
-3. Configure machine-local gateways and models in `.pi/orchestrator.local.yaml`.
+3. Configure Role routing policy in `.agents/orchestrator.yaml` and matching machine-local Model Profiles in `.pi/orchestrator.local.yaml`.
 4. Add or generate a Plan under `docs/plans/<plan-id>/`.
 5. Run the same validate, approve, start, implement, check, review, and commit sequence used by the example.
 
@@ -113,6 +115,7 @@ The generated draft remains outside the Project until a human reviews and places
 - No Session transcript is a required dependency of another Session.
 - Only the host Orchestrator performs authoritative state transitions.
 - Every Agent Session receives a digest-bound Role permission ceiling; omitted and unknown authority is denied.
+- Every Agent selects a policy-approved Model Profile, and every Session freezes the exact resolved route and locality under a digest.
 - No model-driven Pi process runs with host-user authority.
 - Sandboxes receive allowlisted source and environment data, never host state or ambient credentials.
 - Checks and Reviews are bound to exact Plan, source, and diff digests.

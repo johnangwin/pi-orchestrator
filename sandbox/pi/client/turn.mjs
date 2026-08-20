@@ -31,7 +31,7 @@ export function turnEvent(messageIds, model, message) {
   }
   const common = {
     message_ids: [...messageIds],
-    model_alias: model.alias,
+    model_profile: model.profile,
     requested_model: model.pi_model,
     ...(typeof message?.responseModel === "string"
       ? { response_model: message.responseModel }

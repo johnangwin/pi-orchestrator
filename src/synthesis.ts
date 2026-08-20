@@ -232,7 +232,7 @@ export type PlanningStageRequest = z.infer<typeof PlanningStageRequestSchema>;
 
 const PlanningTurnSchema = ModelTurnResultSchema.pick({
   message_ids: true,
-  model_alias: true,
+  model_profile: true,
   requested_model: true,
   response_model: true,
   stop_reason: true,
@@ -549,6 +549,7 @@ export function compileCritiqueBrief(input: {
   readonly project: Project;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -562,6 +563,7 @@ export function compileCritiqueBrief(input: {
     project: input.project,
     role: input.role,
     permissionCeiling: input.permissionCeiling,
+    model: input.model,
     state: input.state,
     questionnaire: input.questionnaire,
     decisions: input.decisions,
@@ -577,6 +579,7 @@ export function compileSynthesisBrief(input: {
   readonly project: Project;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -591,6 +594,7 @@ export function compileSynthesisBrief(input: {
     project: input.project,
     role: input.role,
     permissionCeiling: input.permissionCeiling,
+    model: input.model,
     state: input.state,
     questionnaire: input.questionnaire,
     decisions: input.decisions,
@@ -608,6 +612,7 @@ function compileStageBrief(input: {
   readonly project: Project;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
   readonly decisions: readonly Decision[];
@@ -636,6 +641,10 @@ function compileStageBrief(input: {
     section(
       "Permission Ceiling",
       `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson({ source: input.permissionCeiling.source, write_lease: input.permissionCeiling.write_lease, pi_tools: input.permissionCeiling.pi_tools, actions: input.permissionCeiling.actions, assignment: input.permissionCeiling.assignment })}`,
+    ),
+    section(
+      "Model Profile",
+      `Profile: ${input.model.profile}\nRoute digest: ${input.model.route_digest}\nConcrete model: ${input.model.pi_model}\nLocality: ${input.model.locality}`,
     ),
     section("Goal", input.state.goal),
     section("Repository Questionnaire", canonicalJson(input.questionnaire)),
@@ -1139,7 +1148,7 @@ function requirePreflight(
   if (preflight.status.gateway !== model.gateway) {
     throw new OrchestratorError(
       "model_gateway_mismatch",
-      `${stage} model '${model.alias}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
+      `${stage} model '${model.profile}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
     );
   }
 }
@@ -1279,7 +1288,12 @@ function renderSynthesis(
 function createCritiqueReport(
   record: Pick<
     PlanningCritiqueRecord,
-    "planning" | "identity" | "source_digest" | "created_at"
+    | "planning"
+    | "identity"
+    | "source_digest"
+    | "created_at"
+    | "permission_ceiling_digest"
+    | "model"
   >,
   output: PlanningCritique,
 ): Report {
@@ -1290,6 +1304,9 @@ function createCritiqueReport(
     agent: record.identity.agent,
     session: record.identity.session,
     generation: record.identity.generation,
+    permission_ceiling_digest: record.permission_ceiling_digest,
+    model_profile: record.model.profile,
+    route_digest: record.model.route_digest,
     source_digest: record.source_digest,
     content: renderCritique(output),
     created_at: record.created_at,
@@ -1299,7 +1316,13 @@ function createCritiqueReport(
 function createSynthesisReport(
   record: Pick<
     PlanSynthesisRecord,
-    "planning" | "identity" | "source_digest" | "created_at" | "draft"
+    | "planning"
+    | "identity"
+    | "source_digest"
+    | "created_at"
+    | "draft"
+    | "permission_ceiling_digest"
+    | "model"
   >,
   output: PlanSynthesisOutput,
 ): Report {
@@ -1310,6 +1333,9 @@ function createSynthesisReport(
     agent: record.identity.agent,
     session: record.identity.session,
     generation: record.identity.generation,
+    permission_ceiling_digest: record.permission_ceiling_digest,
+    model_profile: record.model.profile,
+    route_digest: record.model.route_digest,
     source_digest: record.source_digest,
     content: renderSynthesis(output, record.draft.plan.digest as Digest),
     created_at: record.created_at,
@@ -1326,6 +1352,8 @@ function createCritiqueRecord(input: {
   const reportInput = {
     planning: input.request.planning,
     identity: input.request.identity,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
+    model: input.request.model,
     source_digest: input.request.source_digest,
     created_at: input.now.toISOString(),
   };
@@ -1357,7 +1385,7 @@ function createCritiqueRecord(input: {
     response_digest: sha256(input.turn.text),
     turn: {
       message_ids: input.turn.message_ids,
-      model_alias: input.turn.model_alias,
+      model_profile: input.turn.model_profile,
       requested_model: input.turn.requested_model,
       ...(input.turn.response_model
         ? { response_model: input.turn.response_model }
@@ -1418,6 +1446,8 @@ function createSynthesisRecord(input: {
   const reportInput = {
     planning: input.request.planning,
     identity: input.request.identity,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
+    model: input.request.model,
     source_digest: input.request.source_digest,
     created_at: input.now.toISOString(),
     draft: input.manifest,
@@ -1451,7 +1481,7 @@ function createSynthesisRecord(input: {
     response_digest: sha256(input.turn.text),
     turn: {
       message_ids: input.turn.message_ids,
-      model_alias: input.turn.model_alias,
+      model_profile: input.turn.model_profile,
       requested_model: input.turn.requested_model,
       ...(input.turn.response_model
         ? { response_model: input.turn.response_model }
@@ -1496,7 +1526,7 @@ function requireCritiqueRecord(
     record.brief_digest !== request.brief_digest ||
     canonicalJson(record.output) !== canonicalJson(output) ||
     !record.turn.message_ids.includes(request.message_id) ||
-    record.turn.model_alias !== request.model.alias ||
+    record.turn.model_profile !== request.model.profile ||
     record.turn.requested_model !== request.model.pi_model ||
     record.turn.truncated ||
     state.critique.attempts !== request.attempt ||
@@ -1625,7 +1655,7 @@ function requireSynthesisRecord(
     record.brief_digest !== request.brief_digest ||
     canonicalJson(record.output) !== canonicalJson(output) ||
     !record.turn.message_ids.includes(request.message_id) ||
-    record.turn.model_alias !== request.model.alias ||
+    record.turn.model_profile !== request.model.profile ||
     record.turn.requested_model !== request.model.pi_model ||
     record.turn.truncated ||
     state.synthesis.attempts !== request.attempt ||
@@ -1730,12 +1760,12 @@ async function runTurn(input: {
     const turn = ModelTurnResultSchema.parse(await session.run(message));
     if (
       !turn.message_ids.includes(message.id) ||
-      turn.model_alias !== input.model.alias ||
+      turn.model_profile !== input.model.profile ||
       turn.requested_model !== input.model.pi_model
     ) {
       throw new OrchestratorError(
         "planning_stage_turn_mismatch",
-        `${input.stage} result does not match Message '${message.id}' and route '${input.model.alias}/${input.model.pi_model}'`,
+        `${input.stage} result does not match Message '${message.id}' and route '${input.model.profile}/${input.model.pi_model}'`,
       );
     }
     if (turn.truncated) {
@@ -1790,14 +1820,17 @@ async function executeCritique(input: {
   const role = requireRole(input.options.project, "critique");
   const permissionCeiling = resolveRolePermissionCeiling({
     role,
-    assignment: { kind: "review" },
+    assignment: {
+      kind: "review",
+      task: state.id,
+      lens: "architecture",
+    },
     localPolicy: input.options.local.permissions,
   });
   const model = resolveRoleModelRoute(
     input.options.project.config,
     input.options.local,
     role.definition.name,
-    role.definition.inference,
   );
   const sourcePaths = new Set(
     input.snapshot.manifest.entries.map((entry) => entry.path),
@@ -1811,6 +1844,7 @@ async function executeCritique(input: {
       project: input.options.project,
       role,
       permissionCeiling,
+      model,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -1930,6 +1964,7 @@ async function executeCritique(input: {
       project: input.options.project,
       role,
       permissionCeiling,
+      model,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -2025,7 +2060,6 @@ async function executeSynthesis(input: {
     input.options.project.config,
     input.options.local,
     role.definition.name,
-    role.definition.inference,
   );
   const sourcePaths = new Set(
     input.snapshot.manifest.entries.map((entry) => entry.path),
@@ -2039,6 +2073,7 @@ async function executeSynthesis(input: {
       project: input.options.project,
       role,
       permissionCeiling,
+      model,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),
@@ -2185,6 +2220,7 @@ async function executeSynthesis(input: {
       project: input.options.project,
       role,
       permissionCeiling,
+      model,
       state,
       questionnaire: input.questionnaire.questionnaire,
       decisions: input.decisions.map((record) => record.decision),

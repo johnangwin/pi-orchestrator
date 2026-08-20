@@ -9,6 +9,7 @@ import {
   type RunWorktreeResult,
 } from "./git.js";
 import type { LoadedPlan } from "./plan.js";
+import { routingPolicyDigest } from "./model.js";
 import { projectPermissionPolicyDigest } from "./permission.js";
 import type { Project } from "./project.js";
 import { gitHead } from "./project.js";
@@ -79,6 +80,7 @@ function initialRunState(options: {
     permission_policy_digest: projectPermissionPolicyDigest(
       options.project.roles,
     ),
+    routing_policy_digest: routingPolicyDigest(options.project.config),
     base_commit: options.intent.base_commit,
     branch: options.intent.branch,
     worktree: options.intent.worktree,
@@ -100,11 +102,13 @@ export async function startRun(
   const permissionPolicyDigest = projectPermissionPolicyDigest(
     options.project.roles,
   );
+  const modelRoutingPolicyDigest = routingPolicyDigest(options.project.config);
   requireFreshApproval(projectRecord.approvals[options.plan.id], {
     planId: options.plan.id,
     planRevision: options.plan.revision,
     planDigest: options.plan.digest,
     permissionPolicyDigest,
+    routingPolicyDigest: modelRoutingPolicyDigest,
     baseCommit,
   });
 

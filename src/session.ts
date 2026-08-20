@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { IdentifierSchema, ModelAliasSchema } from "./config.js";
+import { IdentifierSchema, ModelProfileSchema } from "./config.js";
 import type { Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
+import { ResolvedModelRouteSchema } from "./model.js";
 import { OpenShellSandboxNameSchema } from "./openshell.js";
 
 const TimestampSchema = z.string().datetime({ offset: true });
@@ -39,7 +40,7 @@ export type SessionIdentity = z.infer<typeof SessionIdentitySchema>;
 export const AgentRecordSchema = z
   .object({
     role: IdentifierSchema,
-    model: ModelAliasSchema,
+    profile: ModelProfileSchema,
     session: IdentifierSchema.nullable(),
     generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     created_at: TimestampSchema,
@@ -83,7 +84,7 @@ const SessionReplacementSchema = z
 export const SessionRecordSchema = z
   .object({
     identity: SessionIdentitySchema,
-    model: ModelAliasSchema,
+    route: ResolvedModelRouteSchema,
     permission_ceiling_digest: DigestSchema,
     status: SessionStatusSchema,
     sandbox: SessionSandboxSchema.nullable(),
@@ -168,7 +169,7 @@ export function transitionSessionStatus(
 export const ModelTurnResultSchema = z
   .object({
     message_ids: z.array(IdentifierSchema).min(1),
-    model_alias: ModelAliasSchema,
+    model_profile: ModelProfileSchema,
     requested_model: z.string().min(1),
     response_model: z.string().min(1).optional(),
     stop_reason: z.string().min(1),
@@ -182,7 +183,7 @@ export type ModelTurnResult = z.infer<typeof ModelTurnResultSchema>;
 export const ModelTurnFailureSchema = z
   .object({
     message_ids: z.array(IdentifierSchema).min(1),
-    model_alias: ModelAliasSchema,
+    model_profile: ModelProfileSchema,
     requested_model: z.string().min(1),
     response_model: z.string().min(1).optional(),
     stop_reason: z.string().min(1),

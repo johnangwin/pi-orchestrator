@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Mailbox, type Message } from "../src/message.js";
 import { createReport, ReportStore } from "../src/report.js";
 import { ProjectStore, writeJsonAtomic } from "../src/state.js";
+import { fixtureDigest } from "./fixture.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -137,6 +138,9 @@ describe("filesystem state", () => {
       agent: "implementer",
       session: "session-001",
       generation: 1,
+      permission_ceiling_digest: fixtureDigest,
+      model_profile: "local-code",
+      route_digest: fixtureDigest,
       task: "bounded-change",
       content,
       created_at: new Date().toISOString(),

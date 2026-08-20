@@ -26,6 +26,7 @@ import { sha256 } from "../src/digest.js";
 import type { OpenShellSandbox } from "../src/openshell.js";
 import { createReport } from "../src/report.js";
 import type { SessionIdentity } from "../src/session.js";
+import { fixtureDigest, fixtureModelRoute } from "./fixture.js";
 
 const roots: string[] = [];
 
@@ -431,6 +432,7 @@ describe("Artifact import", () => {
 
   it("validates Report content and identity inside a Report Artifact", async () => {
     const root = await temporaryRoot();
+    const model = fixtureModelRoute();
     const report = createReport({
       id: "report-one",
       kind: "consultation",
@@ -438,6 +440,9 @@ describe("Artifact import", () => {
       agent: identity.agent,
       session: identity.session,
       generation: identity.generation,
+      permission_ceiling_digest: fixtureDigest,
+      model_profile: model.profile,
+      route_digest: model.route_digest,
       task: "task-one",
       content: "# Conclusion\n\nThe boundary holds.",
       created_at: "2026-08-17T18:42:00Z",

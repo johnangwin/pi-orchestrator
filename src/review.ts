@@ -41,6 +41,7 @@ import { MetricStore } from "./metric.js";
 import {
   ResolvedModelRouteSchema,
   resolveReviewModelRoute,
+  routingPolicyDigest,
   type ResolvedModelRoute,
 } from "./model.js";
 import type { OpenShellPreflight } from "./openshell.js";
@@ -215,7 +216,7 @@ const ReviewReportSchema = z
 const ReviewTurnSchema = z
   .object({
     message_id: IdentifierSchema,
-    model_alias: ResolvedModelRouteSchema.shape.alias,
+    model_profile: ResolvedModelRouteSchema.shape.profile,
     requested_model: z.string().min(1),
     response_model: z.string().min(1).optional(),
     stop_reason: z.string().min(1),
@@ -279,7 +280,7 @@ const ReviewRecordWithoutDigestSchema = z
       });
     }
     if (
-      record.turn.model_alias !== record.model.alias ||
+      record.turn.model_profile !== record.model.profile ||
       record.turn.requested_model !== record.model.pi_model
     ) {
       context.addIssue({
@@ -939,6 +940,7 @@ function requireRunBinding(options: {
   const permissionPolicyDigest = projectPermissionPolicyDigest(
     options.project.roles,
   );
+  const modelRoutingPolicyDigest = routingPolicyDigest(options.project.config);
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -964,11 +966,18 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' was approved under another Role permission policy`,
     );
   }
+  if (options.run.routing_policy_digest !== modelRoutingPolicyDigest) {
+    throw new OrchestratorError(
+      "run_routing_policy_stale",
+      `Run '${options.run.id}' was approved under another Model routing policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest as Digest,
     permissionPolicyDigest,
+    routingPolicyDigest: modelRoutingPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1166,6 +1175,7 @@ function compileReviewBrief(options: {
     agents: options.project.agents,
     role: options.role,
     permissionCeiling: options.permissionCeiling,
+    model: options.model,
     task: options.task,
     plan: options.plan,
     decisions: options.decisions,
@@ -1254,7 +1264,7 @@ function requirePinnedPreflight(
   if (preflight.status.gateway !== model.gateway) {
     throw new OrchestratorError(
       "model_gateway_mismatch",
-      `Review model '${model.alias}' requires gateway '${model.gateway}', not '${preflight.status.gateway}'`,
+      `Review model '${model.profile}' requires gateway '${model.gateway}', not '${preflight.status.gateway}'`,
     );
   }
 }
@@ -1570,7 +1580,7 @@ async function allocateReviewSession(options: {
   await options.registry.register({
     agent: agentId,
     role: "reviewer",
-    model: options.model.alias,
+    profile: options.model.profile,
   });
   const agent = await options.registry.get(agentId);
   const sessionId = IdentifierSchema.parse(
@@ -1580,6 +1590,7 @@ async function allocateReviewSession(options: {
     return options.registry.start({
       agent: agentId,
       session: sessionId,
+      route: options.model,
       permissionCeilingDigest:
         options.permissionCeiling.permission_ceiling_digest,
     });
@@ -1594,6 +1605,7 @@ async function allocateReviewSession(options: {
     expected: agent.session.identity,
     session: sessionId,
     reason: "Fresh independent Review attempt",
+    route: options.model,
     permissionCeilingDigest:
       options.permissionCeiling.permission_ceiling_digest,
   });
@@ -1684,7 +1696,6 @@ export async function runReview(
     current.project.config,
     options.local,
     lens,
-    role.definition.inference,
   );
   const policyDirectory = path.resolve(
     options.policyDirectory ?? bundledPiPolicyDirectory(),
@@ -2041,12 +2052,12 @@ export async function runReview(
       await moveMessageIfPresent(mailbox, message.id, "queued");
       if (
         !turn.message_ids.includes(message.id) ||
-        turn.model_alias !== model.alias ||
+        turn.model_profile !== model.profile ||
         turn.requested_model !== model.pi_model
       ) {
         throw new OrchestratorError(
           "review_turn_mismatch",
-          `Reviewer result does not match Message '${message.id}' and route '${model.alias}/${model.pi_model}'`,
+          `Reviewer result does not match Message '${message.id}' and route '${model.profile}/${model.pi_model}'`,
         );
       }
       if (turn.truncated) {
@@ -2097,7 +2108,6 @@ export async function runReview(
         latest.project.config,
         options.local,
         lens,
-        latestRole.definition.inference,
       );
       const latestPermissionCeiling = resolveRolePermissionCeiling({
         role: latestRole,
@@ -2179,7 +2189,7 @@ export async function runReview(
         },
         turn: {
           message_id: message.id,
-          model_alias: turn.model_alias,
+          model_profile: turn.model_profile,
           requested_model: turn.requested_model,
           ...(turn.response_model
             ? { response_model: turn.response_model }

@@ -14,7 +14,6 @@ const frameIdPattern = /^[a-z][a-z0-9-]{0,127}$/;
 const identifierPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const tokenPattern = /^[a-f0-9]{64}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
-const modelAliases = new Set(["plan", "code", "quant", "review", "fast"]);
 const modelApis = new Set([
   "anthropic-messages",
   "openai-completions",
@@ -142,17 +141,48 @@ function validFrame(frame) {
   );
 }
 
-function validModel(value) {
+function validPricing(value) {
   return (
     exactKeys(value, [
-      "alias",
-      "pi_model",
-      "api",
-      "context_window",
-      "max_tokens",
-      "reasoning",
+      "currency",
+      "input_per_million",
+      "output_per_million",
+      "cache_read_per_million",
+      "cache_write_per_million",
     ]) &&
-    modelAliases.has(value.alias) &&
+    value.currency === "USD" &&
+    [
+      value.input_per_million,
+      value.output_per_million,
+      value.cache_read_per_million,
+      value.cache_write_per_million,
+    ].every((price) => Number.isFinite(price) && price >= 0)
+  );
+}
+
+function validModel(value) {
+  return (
+    exactKeys(
+      value,
+      [
+        "profile",
+        "gateway_alias",
+        "gateway",
+        "pi_model",
+        "api",
+        "locality",
+        "context_window",
+        "max_tokens",
+        "reasoning",
+        "route_digest",
+      ],
+      ["pricing"],
+    ) &&
+    identifierPattern.test(value.profile) &&
+    typeof value.gateway_alias === "string" &&
+    value.gateway_alias.length > 0 &&
+    typeof value.gateway === "string" &&
+    value.gateway.length > 0 &&
     typeof value.pi_model === "string" &&
     value.pi_model.length > 0 &&
     value.pi_model.length <= 256 &&
@@ -162,7 +192,10 @@ function validModel(value) {
     Number.isSafeInteger(value.max_tokens) &&
     value.max_tokens > 0 &&
     value.max_tokens <= value.context_window &&
-    typeof value.reasoning === "boolean"
+    typeof value.reasoning === "boolean" &&
+    ["local", "remote"].includes(value.locality) &&
+    digestPattern.test(value.route_digest) &&
+    (value.pricing === undefined || validPricing(value.pricing))
   );
 }
 

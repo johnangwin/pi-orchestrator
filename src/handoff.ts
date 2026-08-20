@@ -18,7 +18,7 @@ import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import type { LinkEventFrame } from "./link.js";
 import { MetricStore, type SessionMetricRecorder } from "./metric.js";
-import { ResolvedModelRouteSchema } from "./model.js";
+import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import { SourceAnchorSchema } from "./plan.js";
 import type { ProjectionRegistry } from "./projection.js";
 import { SessionReconciler, type SessionRuntime } from "./reconcile.js";
@@ -284,6 +284,8 @@ export function createHandoffReport(input: {
   readonly id: string;
   readonly identity: SessionIdentity;
   readonly checkpoint: HandoffCheckpoint;
+  readonly permissionCeilingDigest: Digest;
+  readonly model: ResolvedModelRoute;
   readonly createdAt: Date;
 }): Report {
   const id = HandoffIdSchema.parse(input.id);
@@ -296,6 +298,9 @@ export function createHandoffReport(input: {
     agent: identity.agent,
     session: identity.session,
     generation: identity.generation,
+    permission_ceiling_digest: input.permissionCeilingDigest,
+    model_profile: input.model.profile,
+    route_digest: input.model.route_digest,
     ...(checkpoint.task ? { task: checkpoint.task } : {}),
     source_digest: checkpoint.source_digest,
     ...(checkpoint.patch_digest
@@ -356,6 +361,8 @@ const BriefBindingSchema = z
     planDigest: DigestSchema,
     roleDigest: DigestSchema,
     permissionCeilingDigest: DigestSchema,
+    modelProfile: IdentifierSchema,
+    routeDigest: DigestSchema,
     taskDigest: DigestSchema,
     decisionsDigest: DigestSchema,
     sourceDigests: z.record(z.string(), DigestSchema),
@@ -547,6 +554,8 @@ function fromBriefArtifact(artifact: HandoffBriefArtifact): CompiledBrief {
       roleDigest: artifact.binding.roleDigest as Digest,
       permissionCeilingDigest: artifact.binding
         .permissionCeilingDigest as Digest,
+      modelProfile: artifact.binding.modelProfile,
+      routeDigest: artifact.binding.routeDigest as Digest,
       taskDigest: artifact.binding.taskDigest as Digest,
       decisionsDigest: artifact.binding.decisionsDigest as Digest,
       sourceDigests: Object.fromEntries(
@@ -1186,7 +1195,9 @@ export async function runHandoff(
   if (
     !fromSession ||
     !sameSessionIdentity(fromSession.identity, expected) ||
-    fromSession.permission_ceiling_digest !== launch.permission_ceiling_digest
+    fromSession.permission_ceiling_digest !==
+      launch.permission_ceiling_digest ||
+    fromSession.route.profile !== launch.model.profile
   ) {
     throw new OrchestratorError(
       "handoff_permission_stale",
@@ -1205,6 +1216,8 @@ export async function runHandoff(
       id: identifiers.id,
       identity: expected,
       checkpoint,
+      permissionCeilingDigest: fromSession.permission_ceiling_digest as Digest,
+      model: fromSession.route,
       createdAt: new Date(report.created_at),
     });
     requireReportRequest(report, expectedReport);
@@ -1241,12 +1254,17 @@ export async function runHandoff(
         id: identifiers.id,
         identity: expected,
         checkpoint,
+        permissionCeilingDigest:
+          fromSession.permission_ceiling_digest as Digest,
+        model: fromSession.route,
         createdAt: (options.now ?? (() => new Date()))(),
       });
     const expectedReport = createHandoffReport({
       id: identifiers.id,
       identity: expected,
       checkpoint,
+      permissionCeilingDigest: fromSession.permission_ceiling_digest as Digest,
+      model: fromSession.route,
       createdAt: new Date(report.created_at),
     });
     requireReportRequest(report, expectedReport);
@@ -1312,6 +1330,7 @@ export async function runHandoff(
       expected,
       session: stored.intent.to.session,
       reason,
+      route: stored.intent.launch.model,
       ...(options.fromRuntime ? { runtime: options.fromRuntime } : {}),
     });
   } else {

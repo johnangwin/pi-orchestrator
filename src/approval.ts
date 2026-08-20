@@ -11,6 +11,7 @@ export const ApprovalSchema = z
     plan_revision: z.number().int().positive(),
     plan_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     permission_policy_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    routing_policy_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     base_commit: z.string().min(1),
     approved_by: z.string().min(1),
     approved_at: z.string().datetime({ offset: true }),
@@ -27,6 +28,7 @@ export function createApproval(input: {
   readonly plan: LoadedPlan;
   readonly baseCommit: string;
   readonly permissionPolicyDigest: Digest;
+  readonly routingPolicyDigest: Digest;
   readonly approvedBy: string;
   readonly approvedAt?: Date;
 }): Approval {
@@ -36,6 +38,7 @@ export function createApproval(input: {
     plan_revision: input.plan.revision,
     plan_digest: input.plan.digest,
     permission_policy_digest: input.permissionPolicyDigest,
+    routing_policy_digest: input.routingPolicyDigest,
     base_commit: input.baseCommit,
     approved_by: input.approvedBy,
     approved_at: (input.approvedAt ?? new Date()).toISOString(),
@@ -49,6 +52,7 @@ export function approvalFreshness(
     readonly planRevision: number;
     readonly planDigest: Digest;
     readonly permissionPolicyDigest: Digest;
+    readonly routingPolicyDigest: Digest;
     readonly baseCommit: string;
   },
 ): ApprovalFreshness {
@@ -60,6 +64,8 @@ export function approvalFreshness(
     reasons.push("Plan content changed");
   if (approval.permission_policy_digest !== current.permissionPolicyDigest)
     reasons.push("Role permission policy changed");
+  if (approval.routing_policy_digest !== current.routingPolicyDigest)
+    reasons.push("Model routing policy changed");
   if (approval.base_commit !== current.baseCommit)
     reasons.push("base commit changed");
   return { fresh: reasons.length === 0, reasons };

@@ -55,9 +55,10 @@ describe("Run metrics and reports", () => {
         identity: implementation.identity,
         profile: "write",
         model: {
-          alias: "code",
-          pi_model: "fixture-code",
-          locality: "local",
+          profile: implementation.route.profile,
+          route_digest: implementation.route.route_digest,
+          pi_model: implementation.route.pi_model,
+          locality: implementation.route.locality,
         },
         outcome: "success",
         startedAt: at(0),
@@ -67,9 +68,10 @@ describe("Run metrics and reports", () => {
         identity: implementation.identity,
         task: fixture.task.id,
         model: {
-          alias: "code",
-          pi_model: "fixture-code",
-          locality: "local",
+          profile: implementation.route.profile,
+          route_digest: implementation.route.route_digest,
+          pi_model: implementation.route.pi_model,
+          locality: implementation.route.locality,
           pricing: {
             currency: "USD",
             input_per_million: 1,
@@ -117,6 +119,9 @@ describe("Run metrics and reports", () => {
           agent: implementation.identity.agent,
           session: implementation.identity.session,
           generation: implementation.identity.generation,
+          permission_ceiling_digest: implementation.permission_ceiling_digest,
+          model_profile: implementation.route.profile,
+          route_digest: implementation.route.route_digest,
           task: fixture.task.id,
           content: "# Conclusion\n\nSynthetic durable consultation evidence.\n",
           created_at: at(11_000).toISOString(),
@@ -158,9 +163,7 @@ describe("Run metrics and reports", () => {
         },
       });
       expect(snapshot.models.by_locality.local.turns).toBe(1);
-      expect(snapshot.models.by_locality["prefer-local"].turns).toBe(
-        reviews.length,
-      );
+      expect(snapshot.models.by_locality.remote.turns).toBe(reviews.length);
       expect(snapshot.messages.delivery_latency.p95_ms).toBe(2_000);
       expect(snapshot.metrics_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
 

@@ -9,10 +9,12 @@ import {
 } from "../src/approval.js";
 import { catalogFromConfig, loadPlan } from "../src/plan.js";
 import { loadProject } from "../src/project.js";
+import { routingPolicyDigest } from "../src/model.js";
 import {
   createFixtureProject,
   createPlan,
   fixturePermissionPolicyDigest,
+  fixtureRoutingPolicyDigest,
   fixtureTask,
 } from "./fixture.js";
 
@@ -42,6 +44,7 @@ describe("Plan validation and approval", () => {
       plan: original,
       baseCommit: "base-commit",
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       approvedBy: "tester",
     });
 
@@ -60,6 +63,7 @@ describe("Plan validation and approval", () => {
       planRevision: changed.revision,
       planDigest: changed.digest,
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       baseCommit: "base-commit",
     });
 
@@ -77,6 +81,7 @@ describe("Plan validation and approval", () => {
       plan: original,
       baseCommit: "base-commit",
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       approvedBy: "tester",
     });
     const tasksPath = path.join(directory, "tasks.yaml");
@@ -96,9 +101,38 @@ describe("Plan validation and approval", () => {
         planRevision: changed.revision,
         planDigest: changed.digest,
         permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+        routingPolicyDigest: fixtureRoutingPolicyDigest(project),
         baseCommit: "base-commit",
       }).fresh,
     ).toBe(false);
+  });
+
+  it("invalidates approval when committed Model routing policy changes", async () => {
+    const { directory, project } = await fixture();
+    const plan = await loadPlan(directory, catalogFromConfig(project.config));
+    const approval = createApproval({
+      plan,
+      baseCommit: "base-commit",
+      permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
+      approvedBy: "tester",
+    });
+    const changed = structuredClone(project.config);
+    changed.routing.roles.implementer!.allowed.push("alternate-local-code");
+
+    expect(
+      approvalFreshness(approval, {
+        planId: plan.id,
+        planRevision: plan.revision,
+        planDigest: plan.digest,
+        permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+        routingPolicyDigest: routingPolicyDigest(changed),
+        baseCommit: "base-commit",
+      }),
+    ).toEqual({
+      fresh: false,
+      reasons: ["Model routing policy changed"],
+    });
   });
 
   it("rejects a Task dependency cycle", async () => {
@@ -176,6 +210,7 @@ describe("Plan validation and approval", () => {
       planRevision: plan.revision,
       planDigest: plan.digest,
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       baseCommit: "base-commit",
     } as const;
 
@@ -186,6 +221,7 @@ describe("Plan validation and approval", () => {
       plan,
       baseCommit: "other-commit",
       permissionPolicyDigest: fixturePermissionPolicyDigest(project),
+      routingPolicyDigest: fixtureRoutingPolicyDigest(project),
       approvedBy: "tester",
     });
     expect(() => requireFreshApproval(approval, current)).toThrowError(

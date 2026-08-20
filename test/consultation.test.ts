@@ -40,7 +40,7 @@ afterEach(async () => {
 
 function localConfig(): LocalConfig {
   return LocalConfigSchema.parse({
-    version: 1,
+    version: 2,
     openshell: {
       command: "openshell",
       required_version: requiredVersion,
@@ -48,7 +48,7 @@ function localConfig(): LocalConfig {
       gateways: { plan: "plan-gateway", quant: "quant-gateway" },
     },
     models: {
-      plan: {
+      "frontier-lead": {
         gateway: "plan",
         pi_model: "fixture-planner",
         api: "openai-responses",
@@ -57,11 +57,11 @@ function localConfig(): LocalConfig {
         max_tokens: 8_192,
         reasoning: true,
       },
-      quant: {
+      "local-quant": {
         gateway: "quant",
         pi_model: "fixture-quant",
         api: "openai-responses",
-        locality: "prefer-local",
+        locality: "local",
         context_window: 100_000,
         max_tokens: 8_192,
         reasoning: true,
@@ -245,7 +245,7 @@ function launcher(input: {
       },
       run: async (message) => ({
         message_ids: [message.id],
-        model_alias: model.alias,
+        model_profile: model.profile,
         requested_model: model.pi_model,
         response_model: model.pi_model,
         stop_reason: "stop",

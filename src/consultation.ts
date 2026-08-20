@@ -196,7 +196,7 @@ export type ConsultationRequest = z.infer<typeof ConsultationRequestSchema>;
 
 const ConsultationTurnSchema = ModelTurnResultSchema.pick({
   message_ids: true,
-  model_alias: true,
+  model_profile: true,
   requested_model: true,
   response_model: true,
   stop_reason: true,
@@ -364,6 +364,7 @@ export function compileConsultationBrief(input: {
   readonly project: Project;
   readonly role: LoadedRole;
   readonly permissionCeiling: PermissionCeiling;
+  readonly model: ResolvedModelRoute;
   readonly consultationRole: PlanningConsultationRole;
   readonly state: PlanningState;
   readonly questionnaire: PlanningQuestionnaire;
@@ -390,6 +391,10 @@ export function compileConsultationBrief(input: {
     section(
       "Permission Ceiling",
       `Digest: ${input.permissionCeiling.permission_ceiling_digest}\n\n${canonicalJson({ source: input.permissionCeiling.source, write_lease: input.permissionCeiling.write_lease, pi_tools: input.permissionCeiling.pi_tools, actions: input.permissionCeiling.actions, assignment: input.permissionCeiling.assignment })}`,
+    ),
+    section(
+      "Model Profile",
+      `Profile: ${input.model.profile}\nRoute digest: ${input.model.route_digest}\nConcrete model: ${input.model.pi_model}\nLocality: ${input.model.locality}`,
     ),
     section("Goal", input.state.goal),
     section("Repository Questionnaire", canonicalJson(input.questionnaire)),
@@ -657,6 +662,9 @@ class ConsultationStore {
       agent: record.identity.agent,
       session: record.identity.session,
       generation: record.identity.generation,
+      permission_ceiling_digest: record.permission_ceiling_digest,
+      model_profile: record.model.profile,
+      route_digest: record.model.route_digest,
       source_digest: record.source_digest,
       content: renderReport(parsedOutput),
       created_at: record.created_at,
@@ -738,7 +746,7 @@ function requirePreflight(
   if (preflight.status.gateway !== model.gateway) {
     throw new OrchestratorError(
       "model_gateway_mismatch",
-      `Consultation model '${model.alias}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
+      `Consultation model '${model.profile}' requires gateway '${model.gateway}', but the client reached '${preflight.status.gateway}'`,
     );
   }
 }
@@ -880,6 +888,9 @@ function createRecord(input: {
     agent: input.request.identity.agent,
     session: input.request.identity.session,
     generation: input.request.identity.generation,
+    permission_ceiling_digest: input.request.permission_ceiling_digest,
+    model_profile: input.request.model.profile,
+    route_digest: input.request.model.route_digest,
     source_digest: input.request.source_digest,
     content: renderReport(input.output),
     created_at: input.now.toISOString(),
@@ -911,7 +922,7 @@ function createRecord(input: {
     response_digest: sha256(input.turn.text),
     turn: {
       message_ids: input.turn.message_ids,
-      model_alias: input.turn.model_alias,
+      model_profile: input.turn.model_profile,
       requested_model: input.turn.requested_model,
       ...(input.turn.response_model
         ? { response_model: input.turn.response_model }
@@ -960,7 +971,7 @@ function requireRecord(
     record.policy_digest !== request.policy_digest ||
     record.brief_digest !== request.brief_digest ||
     !record.turn.message_ids.includes(request.message_id) ||
-    record.turn.model_alias !== request.model.alias ||
+    record.turn.model_profile !== request.model.profile ||
     record.turn.requested_model !== request.model.pi_model ||
     record.turn.truncated ||
     progress.attempts !== request.attempt ||
@@ -1003,7 +1014,6 @@ async function executeRole(input: {
     input.options.project.config,
     input.options.local,
     loadedRole.definition.name,
-    loadedRole.definition.inference,
   );
   const currentBrief = (
     request: ConsultationRequest,
@@ -1014,6 +1024,7 @@ async function executeRole(input: {
       project: input.options.project,
       role: loadedRole,
       permissionCeiling,
+      model,
       consultationRole: input.role,
       state,
       questionnaire: input.questionnaire.questionnaire,
@@ -1156,6 +1167,7 @@ async function executeRole(input: {
       project: input.options.project,
       role: loadedRole,
       permissionCeiling,
+      model,
       consultationRole: input.role,
       state,
       questionnaire: input.questionnaire.questionnaire,
@@ -1202,6 +1214,7 @@ async function executeRole(input: {
       project: input.options.project,
       role: loadedRole,
       permissionCeiling,
+      model,
       consultationRole: input.role,
       state,
       questionnaire: input.questionnaire.questionnaire,
@@ -1301,12 +1314,12 @@ async function executeRole(input: {
     const turn = ModelTurnResultSchema.parse(await session.run(message));
     if (
       !turn.message_ids.includes(message.id) ||
-      turn.model_alias !== model.alias ||
+      turn.model_profile !== model.profile ||
       turn.requested_model !== model.pi_model
     ) {
       throw new OrchestratorError(
         "consultation_turn_mismatch",
-        `Consultation result does not match Message '${message.id}' and route '${model.alias}/${model.pi_model}'`,
+        `Consultation result does not match Message '${message.id}' and route '${model.profile}/${model.pi_model}'`,
       );
     }
     if (turn.truncated) {

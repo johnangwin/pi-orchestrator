@@ -49,6 +49,8 @@ function binding(permissionCeilingDigest: `sha256:${string}`): BriefBinding {
     planDigest: digest,
     roleDigest: digest,
     permissionCeilingDigest,
+    modelProfile: "local-code",
+    routeDigest: digest,
     taskDigest: digest,
     decisionsDigest: digest,
     sourceDigests: { "src/fixture.ts": digest },
@@ -262,6 +264,7 @@ describe("effective Session permissions", () => {
     expect(clientActionAllowed(config, "coordinate")).toBe(false);
     expect(clientActionAllowed(config, "finish")).toBe(false);
     expect(clientActionAllowed(config, "approve")).toBe(false);
+    expect(clientActionAllowed(config, "change_profile")).toBe(false);
   });
 });
 
@@ -291,6 +294,7 @@ describe("permission evidence freshness", () => {
       plan_revision: 1,
       plan_digest: sha256("plan"),
       permission_policy_digest: before,
+      routing_policy_digest: sha256("routing"),
       base_commit: "base-commit",
       approved_by: "tester",
       approved_at: "2026-08-19T12:00:00.000Z",
@@ -303,6 +307,8 @@ describe("permission evidence freshness", () => {
         planRevision: approval.plan_revision,
         planDigest: approval.plan_digest as `sha256:${string}`,
         permissionPolicyDigest: after,
+        routingPolicyDigest:
+          approval.routing_policy_digest as `sha256:${string}`,
         baseCommit: approval.base_commit,
       }),
     ).toEqual({

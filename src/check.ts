@@ -54,6 +54,7 @@ import {
 import type { LoadedSandboxPolicy } from "./policy.js";
 import { loadSandboxPolicy } from "./policy.js";
 import { projectPermissionPolicyDigest } from "./permission.js";
+import { routingPolicyDigest } from "./model.js";
 import type { Project } from "./project.js";
 import { createSourceSnapshot } from "./snapshot.js";
 import {
@@ -1214,6 +1215,7 @@ function requireRunBinding(options: {
   const permissionPolicyDigest = projectPermissionPolicyDigest(
     options.project.roles,
   );
+  const modelRoutingPolicyDigest = routingPolicyDigest(options.project.config);
   if (
     options.run.project_id !== options.project.config.project.id ||
     path.resolve(options.projectRecord.root) !== options.project.root
@@ -1239,11 +1241,18 @@ function requireRunBinding(options: {
       `Run '${options.run.id}' was approved under another Role permission policy`,
     );
   }
+  if (options.run.routing_policy_digest !== modelRoutingPolicyDigest) {
+    throw new OrchestratorError(
+      "run_routing_policy_stale",
+      `Run '${options.run.id}' was approved under another Model routing policy`,
+    );
+  }
   requireFreshApproval(options.projectRecord.approvals[options.plan.id], {
     planId: options.run.plan_id,
     planRevision: options.run.plan_revision,
     planDigest: options.run.plan_digest,
     permissionPolicyDigest,
+    routingPolicyDigest: modelRoutingPolicyDigest,
     baseCommit: options.run.base_commit,
   });
 }
@@ -1873,11 +1882,15 @@ export async function runCheck(
     const permissionPolicyDigest = projectPermissionPolicyDigest(
       options.project.roles,
     );
+    const modelRoutingPolicyDigest = routingPolicyDigest(
+      options.project.config,
+    );
     requireFreshApproval(latestProject.approvals[options.plan.id], {
       planId: run.plan_id,
       planRevision: run.plan_revision,
       planDigest: DigestSchema.parse(run.plan_digest) as Digest,
       permissionPolicyDigest,
+      routingPolicyDigest: modelRoutingPolicyDigest,
       baseCommit: run.base_commit,
     });
     await requireCurrentCheckInputs({

@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { IdentifierSchema, ModelAliasSchema } from "./config.js";
+import { IdentifierSchema, ModelProfileSchema } from "./config.js";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import { ModelLocalitySchema, type ModelPricing } from "./local.js";
@@ -44,7 +44,8 @@ export type NormalizedUsage = z.infer<typeof NormalizedUsageSchema>;
 
 const MetricModelSchema = z
   .object({
-    alias: ModelAliasSchema,
+    profile: ModelProfileSchema,
+    route_digest: DigestSchema,
     pi_model: z.string().min(1).max(256),
     locality: ModelLocalitySchema,
   })
@@ -401,12 +402,14 @@ export function estimateModelCost(
 }
 
 function metricModel(input: {
-  readonly alias: string;
+  readonly profile: string;
+  readonly route_digest: string;
   readonly pi_model: string;
   readonly locality: string;
 }) {
   return MetricModelSchema.parse({
-    alias: input.alias,
+    profile: input.profile,
+    route_digest: input.route_digest,
     pi_model: input.pi_model,
     locality: input.locality,
   });
@@ -435,7 +438,8 @@ export interface SessionMetricRecorder {
     readonly identity: SessionIdentity;
     readonly task?: string;
     readonly model: {
-      readonly alias: string;
+      readonly profile: string;
+      readonly route_digest: string;
       readonly pi_model: string;
       readonly locality: string;
       readonly pricing?: ModelPricing | undefined;
@@ -451,7 +455,8 @@ export interface SessionMetricRecorder {
     readonly identity: SessionIdentity;
     readonly profile: "read" | "write";
     readonly model?: {
-      readonly alias: string;
+      readonly profile: string;
+      readonly route_digest: string;
       readonly pi_model: string;
       readonly locality: string;
     };

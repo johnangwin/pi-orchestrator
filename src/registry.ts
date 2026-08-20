@@ -1,10 +1,11 @@
 import { z } from "zod";
 import {
   IdentifierSchema,
-  ModelAliasSchema,
-  type ModelAlias,
+  ModelProfileSchema,
+  type ModelProfile,
 } from "./config.js";
 import { OrchestratorError } from "./error.js";
+import { ResolvedModelRouteSchema, type ResolvedModelRoute } from "./model.js";
 import {
   AgentRecordSchema,
   SessionIdentitySchema,
@@ -26,7 +27,7 @@ const RegisterAgentInputSchema = z
   .object({
     agent: IdentifierSchema,
     role: IdentifierSchema,
-    model: ModelAliasSchema,
+    profile: ModelProfileSchema,
   })
   .strict();
 
@@ -34,6 +35,7 @@ const StartSessionInputSchema = z
   .object({
     agent: IdentifierSchema,
     session: IdentifierSchema,
+    route: ResolvedModelRouteSchema,
     permission_ceiling_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
@@ -43,9 +45,24 @@ const ReplaceSessionInputSchema = z
     expected: SessionIdentitySchema,
     session: IdentifierSchema,
     reason: z.string().trim().min(1).max(2_000),
+    route: ResolvedModelRouteSchema,
     permission_ceiling_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   })
   .strict();
+
+const ReconfigureAgentInputSchema = z
+  .object({
+    expected: SessionIdentitySchema,
+    session: IdentifierSchema,
+    reason: z.string().trim().min(1).max(2_000),
+    profile: ModelProfileSchema,
+    route: ResolvedModelRouteSchema,
+  })
+  .strict()
+  .refine((input) => input.profile === input.route.profile, {
+    path: ["route", "profile"],
+    message: "must match the selected Agent Model Profile",
+  });
 
 const NonterminalTransitionSchema = z
   .object({
@@ -162,17 +179,20 @@ export class AgentRegistry {
   async register(input: {
     readonly agent: string;
     readonly role: string;
-    readonly model: ModelAlias;
+    readonly profile: ModelProfile;
   }): Promise<AgentRecord> {
     const parsed = RegisterAgentInputSchema.parse(input);
     let result: AgentRecord | undefined;
     await this.store.updateRun(this.runId, (state) => {
       const existing = state.agents[parsed.agent];
       if (existing) {
-        if (existing.role !== parsed.role || existing.model !== parsed.model) {
+        if (
+          existing.role !== parsed.role ||
+          existing.profile !== parsed.profile
+        ) {
           throw new OrchestratorError(
             "agent_conflict",
-            `Agent '${parsed.agent}' is already registered as Role '${existing.role}' on model '${existing.model}'`,
+            `Agent '${parsed.agent}' is already registered as Role '${existing.role}' with Model Profile '${existing.profile}'`,
           );
         }
         result = existing;
@@ -182,7 +202,7 @@ export class AgentRegistry {
       const timestamp = this.timestamp();
       result = AgentRecordSchema.parse({
         role: parsed.role,
-        model: parsed.model,
+        profile: parsed.profile,
         session: null,
         generation: 0,
         created_at: timestamp,
@@ -199,11 +219,13 @@ export class AgentRegistry {
   async start(input: {
     readonly agent: string;
     readonly session: string;
+    readonly route: ResolvedModelRoute;
     readonly permissionCeilingDigest: string;
   }): Promise<SessionRecord> {
     const parsed = StartSessionInputSchema.parse({
       agent: input.agent,
       session: input.session,
+      route: input.route,
       permission_ceiling_digest: input.permissionCeilingDigest,
     });
     let result: SessionRecord | undefined;
@@ -214,14 +236,15 @@ export class AgentRegistry {
           const existing = state.sessions[parsed.session];
           if (
             existing?.permission_ceiling_digest ===
-            parsed.permission_ceiling_digest
+              parsed.permission_ceiling_digest &&
+            existing.route.route_digest === parsed.route.route_digest
           ) {
             result = existing;
             return state;
           }
           throw new OrchestratorError(
-            "session_permission_conflict",
-            `Session '${parsed.session}' was started under another permission ceiling`,
+            "session_binding_conflict",
+            `Session '${parsed.session}' was started under another permission ceiling or resolved route`,
           );
         }
         throw new OrchestratorError(
@@ -235,6 +258,12 @@ export class AgentRegistry {
           `Session ID '${parsed.session}' already exists in Run '${state.id}'`,
         );
       }
+      if (parsed.route.profile !== agent.profile) {
+        throw new OrchestratorError(
+          "session_profile_mismatch",
+          `Agent '${parsed.agent}' selects Profile '${agent.profile}', not '${parsed.route.profile}'`,
+        );
+      }
 
       const timestamp = this.timestamp();
       const identity = SessionIdentitySchema.parse({
@@ -245,7 +274,7 @@ export class AgentRegistry {
       });
       result = SessionRecordSchema.parse({
         identity,
-        model: agent.model,
+        route: parsed.route,
         permission_ceiling_digest: parsed.permission_ceiling_digest,
         status: "starting",
         sandbox: null,
@@ -276,12 +305,14 @@ export class AgentRegistry {
     readonly expected: SessionIdentity;
     readonly session: string;
     readonly reason: string;
+    readonly route: ResolvedModelRoute;
     readonly permissionCeilingDigest: string;
   }): Promise<SessionRecord> {
     const parsed = ReplaceSessionInputSchema.parse({
       expected: input.expected,
       session: input.session,
       reason: input.reason,
+      route: input.route,
       permission_ceiling_digest: input.permissionCeilingDigest,
     });
     let result: SessionRecord | undefined;
@@ -301,7 +332,8 @@ export class AgentRegistry {
           existing.replaces?.session === parsed.expected.session &&
           existing.replaces.reason === parsed.reason &&
           existing.permission_ceiling_digest ===
-            parsed.permission_ceiling_digest
+            parsed.permission_ceiling_digest &&
+          existing.route.route_digest === parsed.route.route_digest
         ) {
           result = existing;
           return state;
@@ -313,6 +345,12 @@ export class AgentRegistry {
       }
 
       const previous = requireCurrentSession(state, parsed.expected);
+      if (parsed.route.profile !== agent.profile) {
+        throw new OrchestratorError(
+          "session_profile_mismatch",
+          `Agent '${parsed.expected.agent}' selects Profile '${agent.profile}', not '${parsed.route.profile}'`,
+        );
+      }
       if (state.sessions[parsed.session]) {
         throw new OrchestratorError(
           "session_conflict",
@@ -345,7 +383,7 @@ export class AgentRegistry {
       });
       result = SessionRecordSchema.parse({
         identity,
-        model: agent.model,
+        route: parsed.route,
         permission_ceiling_digest: parsed.permission_ceiling_digest,
         status: "starting",
         sandbox: null,
@@ -364,6 +402,123 @@ export class AgentRegistry {
           ...state.agents,
           [parsed.expected.agent]: {
             ...agent,
+            session: parsed.session,
+            generation,
+            updated_at: timestamp,
+          },
+        },
+        sessions: {
+          ...state.sessions,
+          [parsed.expected.session]: stoppedPrevious,
+          [parsed.session]: result,
+        },
+      };
+    });
+    return result!;
+  }
+
+  async reconfigureProfile(input: {
+    readonly expected: SessionIdentity;
+    readonly session: string;
+    readonly reason: string;
+    readonly profile: ModelProfile;
+    readonly route: ResolvedModelRoute;
+  }): Promise<SessionRecord> {
+    const parsed = ReconfigureAgentInputSchema.parse({
+      expected: input.expected,
+      session: input.session,
+      reason: input.reason,
+      profile: input.profile,
+      route: input.route,
+    });
+    let result: SessionRecord | undefined;
+    await this.store.updateRun(this.runId, (state) => {
+      if (parsed.expected.run !== state.id) {
+        throw new OrchestratorError(
+          "stale_session",
+          `Session '${parsed.expected.session}' belongs to Run '${parsed.expected.run}', not '${state.id}'`,
+        );
+      }
+      const agent = requireAgent(state, parsed.expected.agent);
+      if (agent.session === parsed.session) {
+        const existing = state.sessions[parsed.session];
+        if (
+          agent.profile === parsed.profile &&
+          existing?.identity.generation === parsed.expected.generation + 1 &&
+          existing.replaces?.session === parsed.expected.session &&
+          existing.replaces.reason === parsed.reason &&
+          existing.permission_ceiling_digest ===
+            state.sessions[parsed.expected.session]
+              ?.permission_ceiling_digest &&
+          existing.route.route_digest === parsed.route.route_digest
+        ) {
+          result = existing;
+          return state;
+        }
+        throw new OrchestratorError(
+          "session_conflict",
+          `Session ID '${parsed.session}' does not identify this Profile change`,
+        );
+      }
+      const previous = requireCurrentSession(state, parsed.expected);
+      if (agent.profile === parsed.profile) {
+        throw new OrchestratorError(
+          "model_profile_unchanged",
+          `Agent '${parsed.expected.agent}' already selects Model Profile '${parsed.profile}'`,
+        );
+      }
+      if (state.sessions[parsed.session]) {
+        throw new OrchestratorError(
+          "session_conflict",
+          `Session ID '${parsed.session}' already exists in Run '${state.id}'`,
+        );
+      }
+      if (agent.generation === Number.MAX_SAFE_INTEGER) {
+        throw new OrchestratorError(
+          "generation_exhausted",
+          `Agent '${parsed.expected.agent}' cannot allocate another Session generation`,
+        );
+      }
+
+      const timestamp = this.timestamp();
+      const generation = agent.generation + 1;
+      const stoppedPrevious = terminal(previous.status)
+        ? previous
+        : SessionRecordSchema.parse({
+            ...previous,
+            status: "stopped",
+            termination_reason: parsed.reason,
+            updated_at: timestamp,
+            ended_at: timestamp,
+          });
+      const identity = SessionIdentitySchema.parse({
+        run: state.id,
+        agent: parsed.expected.agent,
+        session: parsed.session,
+        generation,
+      });
+      result = SessionRecordSchema.parse({
+        identity,
+        route: parsed.route,
+        permission_ceiling_digest: previous.permission_ceiling_digest,
+        status: "starting",
+        sandbox: null,
+        replaces: {
+          session: parsed.expected.session,
+          reason: parsed.reason,
+        },
+        termination_reason: null,
+        created_at: timestamp,
+        updated_at: timestamp,
+        ended_at: null,
+      });
+      return {
+        ...state,
+        agents: {
+          ...state.agents,
+          [parsed.expected.agent]: {
+            ...agent,
+            profile: parsed.profile,
             session: parsed.session,
             generation,
             updated_at: timestamp,

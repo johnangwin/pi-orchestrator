@@ -9,6 +9,7 @@ import {
   DEFAULT_LOCAL_PERMISSION_POLICY,
   PermissionSetSchema,
 } from "./permission.js";
+import { PathPolicySchema } from "./scope.js";
 
 export const VersionSchema = z
   .string()
@@ -71,6 +72,24 @@ export const WorktreeSettingsSchema = z
   })
   .strict();
 export type WorktreeSettings = z.infer<typeof WorktreeSettingsSchema>;
+
+export const LocalWorkspaceSettingsSchema = z
+  .object({
+    volume_prefix: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(
+        /^[a-z0-9][a-z0-9.-]*$/,
+        "must be a lowercase Docker volume-name prefix",
+      )
+      .default("pi-orchestrator"),
+    restricted_paths: PathPolicySchema.default([]),
+  })
+  .strict();
+export type LocalWorkspaceSettings = z.infer<
+  typeof LocalWorkspaceSettingsSchema
+>;
 
 export const PiModelApiSchema = z.enum([
   "anthropic-messages",
@@ -138,6 +157,10 @@ export const LocalConfigSchema = z
     }),
     worktrees: WorktreeSettingsSchema.default({
       root: "~/.local/share/pi-orchestrator/worktrees",
+    }),
+    workspace: LocalWorkspaceSettingsSchema.default({
+      volume_prefix: "pi-orchestrator",
+      restricted_paths: [],
     }),
   })
   .passthrough();

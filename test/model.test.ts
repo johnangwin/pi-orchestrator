@@ -82,6 +82,7 @@ attempts: { implementation: 3, review: 2, consultation_hops: 2 }
 git: { branch_prefix: orchestrator/, commit: human, push: disabled, merge: disabled }
 network: { default: none }
 protected: []
+restricted_paths: []
 checks: {}
 `);
 }
@@ -200,12 +201,36 @@ attempts: { implementation: 3, review: 2, consultation_hops: 2 }
 git: { branch_prefix: orchestrator/, commit: human, push: disabled, merge: disabled }
 network: { default: none }
 protected: []
+restricted_paths: []
 checks:
   project-test:
     argv: [node, --test]
     cwd: ../outside
 `),
     ).toThrow("must remain inside the Project");
+  });
+
+  it("rejects duplicate committed path-policy entries", () => {
+    expect(() =>
+      parseProjectConfig(`version: 2
+project: { id: fixture }
+roles: [lead]
+routing:
+  roles:
+    lead: { default: local-code, allowed: [local-code], remote: denied }
+context:
+  initial_fraction: 0.25
+  warn_fraction: 0.6
+  handoff_fraction: 0.75
+  stop_fraction: 0.85
+attempts: { implementation: 3, review: 2, consultation_hops: 2 }
+git: { branch_prefix: orchestrator/, commit: human, push: disabled, merge: disabled }
+network: { default: none }
+protected: [AGENTS.md, AGENTS.md]
+restricted_paths: []
+checks: {}
+`),
+    ).toThrow("duplicate path pattern");
   });
 });
 

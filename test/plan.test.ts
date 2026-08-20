@@ -175,6 +175,21 @@ describe("Plan validation and approval", () => {
       fixtureTask({ scope: ["../src/**"] }),
       "invalid_plan",
     ],
+    [
+      "glob write path",
+      fixtureTask({ write_paths: ["src/**"] }),
+      "invalid_plan",
+    ],
+    [
+      "write path outside semantic scope",
+      fixtureTask({ write_paths: ["test"] }),
+      "invalid_plan",
+    ],
+    [
+      "protected write path",
+      fixtureTask({ write_paths: [".agents"], scope: [".agents/**"] }),
+      "write_path_protected",
+    ],
   ])("rejects an %s", async (_label, task, code) => {
     const root = await createFixtureProject();
     roots.push(root);
@@ -200,6 +215,30 @@ describe("Plan validation and approval", () => {
     await expect(loadProject(root)).rejects.toMatchObject({
       code: "unknown_skill",
     });
+  });
+
+  it("rejects a Task write root that overlaps committed restrictions", async () => {
+    const root = await createFixtureProject();
+    roots.push(root);
+    const configPath = path.join(root, ".agents", "orchestrator.yaml");
+    const config = parse(await readFile(configPath, "utf8")) as {
+      restricted_paths: string[];
+    };
+    config.restricted_paths = ["src/private/**"];
+    await writeFile(configPath, stringify(config), "utf8");
+    const directory = await createPlan(root, {
+      tasks: [
+        fixtureTask({
+          write_paths: ["src/private"],
+          scope: ["src/private/**"],
+        }),
+      ],
+    });
+    const project = await loadProject(root);
+
+    await expect(
+      loadPlan(directory, catalogFromConfig(project.config)),
+    ).rejects.toMatchObject({ code: "write_path_restricted" });
   });
 
   it("prevents writable work without a fresh approval", async () => {

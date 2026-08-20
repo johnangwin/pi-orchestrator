@@ -38,7 +38,7 @@ export function digestPlan(
   planMarkdown: Uint8Array,
   tasksYaml: Uint8Array,
 ): Digest {
-  return digestParts("pi-orchestrator/plan/v1", [
+  return digestParts("pi-orchestrator/plan/v2", [
     ["plan.md", planMarkdown],
     ["tasks.yaml", tasksYaml],
   ]);
@@ -51,6 +51,8 @@ export function canonicalJson(value: unknown): string {
 
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, item]) => item !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right));
+    .sort(([left], [right]) =>
+      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+    );
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
 }

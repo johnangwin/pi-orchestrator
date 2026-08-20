@@ -1,9 +1,11 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { IdentifierSchema } from "./config.js";
+import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
+import { RunWorkspacePathSchema } from "./workspace.js";
 
 export const GitCommitSchema = z
   .string()
@@ -73,6 +75,72 @@ export type GitCommandRunner = (
   cwd: string,
 ) => Promise<GitCommandResult>;
 
+export type GitStatusRunner = (
+  args: readonly string[],
+  cwd: string,
+) => Promise<Uint8Array>;
+
+const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const GitStatusCodeSchema = z.enum([" ", "M", "T", "A", "D", "U", "?"]);
+
+export const WorkspaceGitChangeSchema = z
+  .object({
+    path: RunWorkspacePathSchema,
+    index_status: GitStatusCodeSchema,
+    worktree_status: GitStatusCodeSchema,
+  })
+  .strict()
+  .superRefine((change, context) => {
+    const untracked =
+      change.index_status === "?" && change.worktree_status === "?";
+    if (
+      !untracked &&
+      (change.index_status === "?" || change.worktree_status === "?")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "question-mark status is valid only for an untracked path",
+      });
+    }
+    if (change.index_status === " " && change.worktree_status === " ") {
+      context.addIssue({
+        code: "custom",
+        message: "an unchanged path must not appear in Git status",
+      });
+    }
+  });
+export type WorkspaceGitChange = z.infer<typeof WorkspaceGitChangeSchema>;
+
+const WorkspaceDiffRecordSchema = z
+  .object({
+    version: z.literal(2),
+    input_commit: GitCommitSchema,
+    manifest_digest: DigestSchema,
+    changes: z.array(WorkspaceGitChangeSchema).max(1_000_000),
+  })
+  .strict()
+  .superRefine((record, context) => {
+    for (let index = 1; index < record.changes.length; index += 1) {
+      if (
+        Buffer.compare(
+          Buffer.from(record.changes[index - 1]!.path, "utf8"),
+          Buffer.from(record.changes[index]!.path, "utf8"),
+        ) >= 0
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["changes", index, "path"],
+          message: "changes must have unique paths sorted by raw UTF-8 bytes",
+        });
+      }
+    }
+  });
+
+export const WorkspaceDiffSchema = WorkspaceDiffRecordSchema.extend({
+  digest: DigestSchema,
+}).strict();
+export type WorkspaceDiff = z.infer<typeof WorkspaceDiffSchema>;
+
 interface GitFailure extends Error {
   readonly code?: number | string;
   readonly stdout?: string;
@@ -120,6 +188,247 @@ export const defaultGitCommandRunner: GitCommandRunner = (args, cwd) =>
       },
     );
   });
+
+const defaultGitStatusRunner: GitStatusRunner = (args, cwd) =>
+  new Promise((resolve, reject) => {
+    const child = spawn("git", [...args], {
+      cwd,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_OPTIONAL_LOCKS: "0",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let exceeded = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > 64 * 1024 * 1024) {
+        exceeded = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes <= 1024 * 1024) stderr.push(chunk);
+    });
+    child.once("error", (error) => {
+      reject(
+        new OrchestratorError(
+          "git_unavailable",
+          `Cannot execute scrubbed git ${args.join(" ")}`,
+          { cause: error },
+        ),
+      );
+    });
+    child.once("close", (code) => {
+      if (exceeded) {
+        reject(
+          new OrchestratorError(
+            "git_output_too_large",
+            "Scrubbed Git status output exceeded 64 MiB",
+          ),
+        );
+        return;
+      }
+      if (code !== 0) {
+        const diagnostic = Buffer.concat(stderr).toString("utf8").trim();
+        reject(
+          new OrchestratorError(
+            "git_failed",
+            `Scrubbed git ${args.join(" ")} failed with exit ${code ?? "unknown"}${diagnostic ? `: ${diagnostic.slice(0, 2_000)}` : ""}`,
+          ),
+        );
+        return;
+      }
+      resolve(Buffer.concat(stdout));
+    });
+  });
+
+function splitNul(source: Uint8Array): readonly Buffer[] {
+  const bytes = Buffer.from(source);
+  if (bytes.byteLength === 0) return [];
+  if (bytes.at(-1) !== 0) {
+    throw new OrchestratorError(
+      "invalid_git_output",
+      "Git status did not terminate its final record with NUL",
+    );
+  }
+  const records: Buffer[] = [];
+  let start = 0;
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    if (bytes[index] !== 0) continue;
+    if (index === start) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        "Git status contained an empty record",
+      );
+    }
+    records.push(bytes.subarray(start, index));
+    start = index + 1;
+  }
+  return records;
+}
+
+export function parseWorkspaceGitStatus(
+  source: Uint8Array,
+): readonly WorkspaceGitChange[] {
+  const changes = splitNul(source).map((record) => {
+    if (record.byteLength < 4 || record[2] !== 0x20) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        "Git status returned a malformed porcelain record",
+      );
+    }
+    const indexStatus = String.fromCharCode(record[0]!);
+    const worktreeStatus = String.fromCharCode(record[1]!);
+    if (
+      [indexStatus, worktreeStatus].some(
+        (status) => status === "R" || status === "C",
+      )
+    ) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        "Git status reported a rename despite --no-renames",
+      );
+    }
+    let entryPath: string;
+    try {
+      entryPath = new TextDecoder("utf-8", { fatal: true }).decode(
+        record.subarray(3),
+      );
+    } catch (error) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        "Git status paths must be valid UTF-8",
+        { cause: error },
+      );
+    }
+    const parsed = WorkspaceGitChangeSchema.safeParse({
+      path: entryPath,
+      index_status: indexStatus,
+      worktree_status: worktreeStatus,
+    });
+    if (!parsed.success) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        `Git status record does not match the Workspace contract: ${parsed.error.message}`,
+      );
+    }
+    return parsed.data;
+  });
+  changes.sort((left, right) =>
+    Buffer.compare(
+      Buffer.from(left.path, "utf8"),
+      Buffer.from(right.path, "utf8"),
+    ),
+  );
+  for (let index = 1; index < changes.length; index += 1) {
+    if (changes[index - 1]!.path === changes[index]!.path) {
+      throw new OrchestratorError(
+        "invalid_git_output",
+        `Git status repeated path '${changes[index]!.path}'`,
+      );
+    }
+  }
+  return Object.freeze(changes.map((change) => Object.freeze({ ...change })));
+}
+
+function workspaceDiffDigest(
+  record: z.infer<typeof WorkspaceDiffRecordSchema>,
+): Digest {
+  return digestParts("pi-orchestrator/workspace-diff/v2", [
+    ["input-commit", record.input_commit],
+    ["manifest-digest", record.manifest_digest],
+    ["changes", canonicalJson(record.changes)],
+  ]);
+}
+
+export function validateWorkspaceDiff(value: unknown): WorkspaceDiff {
+  const parsed = WorkspaceDiffSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new OrchestratorError(
+      "invalid_workspace_diff",
+      `Workspace Git diff does not match the version-two contract: ${parsed.error.message}`,
+    );
+  }
+  const { digest, ...record } = parsed.data;
+  if (workspaceDiffDigest(record) !== digest) {
+    throw new OrchestratorError(
+      "invalid_workspace_diff",
+      "Workspace Git diff digest does not match its record",
+    );
+  }
+  return Object.freeze({
+    ...parsed.data,
+    changes: Object.freeze(
+      parsed.data.changes.map((change) => Object.freeze({ ...change })),
+    ),
+  }) as WorkspaceDiff;
+}
+
+export async function collectWorkspaceGitDiff(options: {
+  readonly root: string;
+  readonly inputCommit: string;
+  readonly manifestDigest: Digest;
+  readonly runner?: GitStatusRunner;
+}): Promise<WorkspaceDiff> {
+  const root = path.resolve(options.root);
+  const inputCommit = GitCommitSchema.parse(options.inputCommit);
+  const manifestDigest = DigestSchema.parse(options.manifestDigest) as Digest;
+  const runner = options.runner ?? defaultGitStatusRunner;
+  const prefix = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+  ] as const;
+  const head = Buffer.from(
+    await runner([...prefix, "rev-parse", "--verify", "HEAD"], root),
+  )
+    .toString("ascii")
+    .trim();
+  if (head !== inputCommit) {
+    throw new OrchestratorError(
+      "workspace_head_mismatch",
+      `Workspace HEAD '${head}' does not match input commit '${inputCommit}'`,
+    );
+  }
+  const changes = parseWorkspaceGitStatus(
+    await runner(
+      [
+        ...prefix,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--ignore-submodules=none",
+      ],
+      root,
+    ),
+  );
+  const record = WorkspaceDiffRecordSchema.parse({
+    version: 2,
+    input_commit: inputCommit,
+    manifest_digest: manifestDigest,
+    changes,
+  });
+  return validateWorkspaceDiff({
+    ...record,
+    digest: workspaceDiffDigest(record),
+  });
+}
 
 interface PorcelainWorktree {
   readonly path: string;

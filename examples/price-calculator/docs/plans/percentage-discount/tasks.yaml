@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 plan:
   id: percentage-discount
@@ -12,6 +12,9 @@ tasks:
       Add an optional integer percentage discount to calculateTotal while
       preserving integer-cents arithmetic and existing behavior.
     depends: []
+    write_paths:
+      - src
+      - test
     scope:
       - src/**
       - test/**

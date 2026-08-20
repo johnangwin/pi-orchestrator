@@ -2065,6 +2065,7 @@ export async function inspectTaskCommit(
     patch: patch.value,
     task,
     protectedPatterns: current.project.config.protected,
+    restrictedPatterns: current.project.config.restricted_paths,
   });
   const policyDirectory = path.resolve(
     options.policyDirectory ?? bundledPiPolicyDirectory(),

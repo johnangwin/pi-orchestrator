@@ -339,6 +339,9 @@ protected:
   - "**/.env*"
   - "**/*secret*"
 
+# Paths hidden from every model Sandbox as well as rejected from changes.
+restricted_paths: []
+
 # Register deterministic argv arrays before adding a Plan.
 checks: {}
 `;
@@ -456,6 +459,11 @@ cmux:
 
 worktrees:
   root: ~/.local/share/pi-orchestrator/worktrees
+
+workspace:
+  volume_prefix: pi-orchestrator
+  # Machine-local restrictions are additive to committed restricted_paths.
+  restricted_paths: []
 `;
 
 async function create(

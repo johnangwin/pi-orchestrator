@@ -290,6 +290,7 @@ const planOutput = {
       role: "implementer",
       goal: "Introduce one local boundary while preserving fixture behavior.",
       depends: [],
+      write_paths: ["src"],
       scope: ["src/**"],
       non_goals: ["Add a generic factory."],
       acceptance: ["The existing fixture behavior remains unchanged."],

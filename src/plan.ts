@@ -9,7 +9,8 @@ import {
 } from "./config.js";
 import { digestPlan, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
-import { PathPatternSchema } from "./scope.js";
+import { PathPatternSchema, validateTaskWritePaths } from "./scope.js";
+import { WritePathSchema } from "./workspace.js";
 
 export const SourceAnchorSchema = z
   .object({
@@ -27,6 +28,7 @@ export const PlanTaskSchema = z
     role: IdentifierSchema,
     goal: z.string().min(1),
     depends: z.array(IdentifierSchema),
+    write_paths: z.array(WritePathSchema).min(1).max(1_024),
     scope: z.array(PathPatternSchema).min(1).max(1_024),
     non_goals: z.array(z.string().min(1)),
     acceptance: z.array(z.string().min(1)).min(1),
@@ -35,6 +37,13 @@ export const PlanTaskSchema = z
   })
   .strict()
   .superRefine((task, context) => {
+    if (new Set(task.write_paths).size !== task.write_paths.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["write_paths"],
+        message: "write paths must be unique",
+      });
+    }
     if (new Set(task.reviews).size !== task.reviews.length) {
       context.addIssue({
         code: "custom",
@@ -42,12 +51,25 @@ export const PlanTaskSchema = z
         message: "Review Lenses must be unique",
       });
     }
+    try {
+      validateTaskWritePaths({
+        task,
+        protectedPatterns: [],
+        restrictedPatterns: [],
+      });
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["write_paths"],
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 export type PlanTask = z.infer<typeof PlanTaskSchema>;
 
 export const TasksFileSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     plan: z
       .object({
         id: IdentifierSchema,
@@ -74,6 +96,8 @@ const requiredSections = [
 export interface PlanCatalog {
   readonly roles: ReadonlySet<string>;
   readonly checks: ReadonlySet<string>;
+  readonly protectedPatterns: readonly string[];
+  readonly restrictedPatterns: readonly string[];
 }
 
 export interface LoadedPlan {
@@ -186,6 +210,11 @@ function validateCatalog(
         );
       }
     }
+    validateTaskWritePaths({
+      task,
+      protectedPatterns: catalog.protectedPatterns,
+      restrictedPatterns: catalog.restrictedPatterns,
+    });
   }
 }
 
@@ -286,5 +315,7 @@ export function catalogFromConfig(config: ProjectConfig): PlanCatalog {
   return {
     roles: new Set(config.roles),
     checks: new Set(Object.keys(config.checks)),
+    protectedPatterns: config.protected,
+    restrictedPatterns: config.restricted_paths,
   };
 }

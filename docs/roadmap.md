@@ -10,7 +10,7 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 4 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime. Every Session carries both an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Filesystem behavior remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
+Phases 0 through 5 are complete. The original host-bind design failed under hard Landlock and was replaced by one plain Docker named volume per Run; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity now use Agent and Session generation throughout the runtime. Every Session carries both an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Version-two Tasks now declare literal write roots, and complete deterministic Workspace manifests bind all projected content independently from scrubbed Git status. Filesystem execution remains on the retained v0.2 path until later replacement phases connect the shared Workspace substrate to Sessions.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
@@ -19,8 +19,8 @@ Phases 0 through 4 are complete. The original host-bind design failed under hard
 |     2 | Rename Seats and epochs to Agents and generations | Complete |
 |     3 | Enforce explicit Role permissions                 | Complete |
 |     4 | Add policy-bound Model Profiles                   | Complete |
-|     5 | Add complete Workspace manifests                  | Next     |
-|     6 | Add Write Leases, Change Sets, and Candidates     | Pending  |
+|     5 | Add complete Workspace manifests                  | Complete |
+|     6 | Add Write Leases, Change Sets, and Candidates     | Next     |
 |     7 | Run read-only Agents from the shared Workspace    | Pending  |
 |     8 | Run Implementers under Write Leases               | Pending  |
 |     9 | Run authoritative Checks against Candidates       | Pending  |
@@ -87,6 +87,16 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - made Profile changes allocate a new Session generation while preserving the prior permission ceiling, and kept ordinary Handoffs on the existing Profile;
 - bound approvals, Runs, Briefs, Reports, Reviews, Handoffs, metrics, recovery, and Pi turn evidence to routing policy or exact route digests;
 - rejected disallowed Profiles, missing routes, gateway drift, remote routes for local-only Roles, silent fallback, and unapproved local-to-remote changes.
+
+## Phase 5 outcome
+
+- advanced Task files and Plan digests to version two and required literal `write_paths` independently from semantic `scope` globs;
+- added duplicate-safe committed restrictions and additive machine-local restrictions, with restricted changes rejected by the retained importer;
+- added component-wise canonical mount-root resolution that rejects missing, linked, multiply linked, special, overlapping, and escaping roots;
+- added bounded complete Workspace manifests covering directories, tracked, untracked, ignored, executable, binary, and symlink entries in raw UTF-8 order;
+- rejected Git metadata, invalid paths, unsafe symlink targets, special files, unexpected hard links, changing reads, and entry or byte-limit violations;
+- added separately scrubbed NUL-delimited Git status and the version-two `workspace-diff` digest domain;
+- decoupled source-scope validation from Patch Artifact types and covered additions, deletions, modes, symlinks, binaries, protected paths, and restricted paths.
 
 ## Later proof gates
 

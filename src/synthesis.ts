@@ -452,6 +452,7 @@ const SYNTHESIS_OUTPUT_CONTRACT = `Return exactly one JSON object, optionally in
     "role": "implementer",
     "goal": "bounded implementation goal",
     "depends": [],
+    "write_paths": ["src"],
     "scope": ["src/**"],
     "non_goals": ["explicit exclusion"],
     "acceptance": ["observable acceptance criterion"],
@@ -1588,7 +1589,7 @@ async function validateSynthesisPlan(input: {
     }
   }
   const tasksFile = TasksFileSchema.parse({
-    version: 1,
+    version: 2,
     plan: { id: input.output.plan_id, revision: input.output.revision },
     tasks: input.output.tasks,
   });

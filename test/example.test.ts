@@ -44,6 +44,7 @@ describe("first-run example", () => {
     expect(plan.tasks).toMatchObject([
       {
         id: "add-discount",
+        write_paths: ["src", "test"],
         reviews: ["spec", "architecture", "quality", "quant"],
       },
     ]);

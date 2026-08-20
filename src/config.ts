@@ -3,7 +3,7 @@ import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import { OrchestratorError } from "./error.js";
-import { PathPatternSchema } from "./scope.js";
+import { PathPolicySchema } from "./scope.js";
 
 export const IdentifierSchema = z
   .string()
@@ -163,7 +163,8 @@ export const ProjectConfigSchema = z
         default: z.literal("none"),
       })
       .strict(),
-    protected: z.array(PathPatternSchema).max(1_024),
+    protected: PathPolicySchema,
+    restricted_paths: PathPolicySchema,
     checks: z.record(IdentifierSchema, CheckDefinitionSchema),
   })
   .strict()

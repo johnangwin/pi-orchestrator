@@ -96,7 +96,7 @@ Then:
 1. Document repository constraints in `AGENTS.md`.
 2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
 3. Configure Role routing policy in `.agents/orchestrator.yaml` and matching machine-local Model Profiles in `.pi/orchestrator.local.yaml`.
-4. Add or generate a Plan under `docs/plans/<plan-id>/`.
+4. Add or generate a version-two Plan under `docs/plans/<plan-id>/`; every Task declares literal `write_paths` separately from semantic `scope` globs.
 5. Run the same validate, approve, start, implement, check, review, and commit sequence used by the example.
 
 For repository-aware Plan generation:
@@ -118,6 +118,7 @@ The generated draft remains outside the Project until a human reviews and places
 - Every Agent selects a policy-approved Model Profile, and every Session freezes the exact resolved route and locality under a digest.
 - No model-driven Pi process runs with host-user authority.
 - Sandboxes receive allowlisted source and environment data, never host state or ambient credentials.
+- Complete Workspace manifests cover tracked, untracked, and ignored entries; scrubbed Git status separately identifies committable changes.
 - Checks and Reviews are bound to exact Plan, source, and diff digests.
 - Human approval is required for Plans, protected scope changes, Gate waivers, and commits.
 

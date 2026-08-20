@@ -24,6 +24,7 @@ describe("consumer Project initialization", () => {
 
     const project = await loadProject(root);
     expect(project.config.project.id).toBe("sample-project");
+    expect(project.config.restricted_paths).toEqual([]);
     expect(project.roles.get("architect")?.definition.permissions.source).toBe(
       "read",
     );
@@ -52,6 +53,10 @@ describe("consumer Project initialization", () => {
       },
       worktrees: {
         root: "~/.local/share/pi-orchestrator/worktrees",
+      },
+      workspace: {
+        volume_prefix: "pi-orchestrator",
+        restricted_paths: [],
       },
     });
   });

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,7 +12,14 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { GitWorktreeManager, parseWorktreeList } from "../src/git.js";
+import { sha256 } from "../src/digest.js";
+import {
+  collectWorkspaceGitDiff,
+  GitWorktreeManager,
+  parseWorkspaceGitStatus,
+  parseWorktreeList,
+  validateWorkspaceDiff,
+} from "../src/git.js";
 import { commitFixture, createFixtureProject } from "./fixture.js";
 
 const execFileAsync = promisify(execFile);
@@ -270,5 +278,99 @@ describe("Git worktree lifecycle", () => {
     expect(() => parseWorktreeList(source.slice(0, -1))).toThrow(
       "empty record",
     );
+  });
+});
+
+describe("scrubbed Workspace Git evidence", () => {
+  it("parses and raw-byte sorts NUL-delimited paths without shell quoting", () => {
+    const source = Buffer.concat([
+      Buffer.from("?? zed file\0", "utf8"),
+      Buffer.from(" M line\nbreak\0", "utf8"),
+      Buffer.from("A  alpha\0", "utf8"),
+    ]);
+    expect(parseWorkspaceGitStatus(source)).toEqual([
+      { path: "alpha", index_status: "A", worktree_status: " " },
+      {
+        path: "line\nbreak",
+        index_status: " ",
+        worktree_status: "M",
+      },
+      { path: "zed file", index_status: "?", worktree_status: "?" },
+    ]);
+  });
+
+  it("rejects malformed, unsafe, renamed, and non-UTF-8 status records", () => {
+    expect(() => parseWorkspaceGitStatus(Buffer.from(" M source.ts"))).toThrow(
+      "final record with NUL",
+    );
+    expect(() =>
+      parseWorkspaceGitStatus(Buffer.from("R  renamed.ts\0")),
+    ).toThrow("despite --no-renames");
+    expect(() =>
+      parseWorkspaceGitStatus(Buffer.from("?? .git/config\0")),
+    ).toThrow("Workspace contract");
+    expect(() =>
+      parseWorkspaceGitStatus(Buffer.from([0x3f, 0x3f, 0x20, 0xff, 0x00])),
+    ).toThrow("valid UTF-8");
+  });
+
+  it("binds tracked, mode, binary, deletion, and untracked status to the complete manifest", async () => {
+    const project = await createFixtureProject();
+    roots.push(project);
+    await writeFile(path.join(project, ".gitignore"), "*.ignored\n");
+    await writeFile(path.join(project, "src", "delete.ts"), "delete\n");
+    await writeFile(path.join(project, "src", "mode.sh"), "#!/bin/sh\n");
+    const base = await commitFixture(project);
+
+    await writeFile(
+      path.join(project, "src", "fixture.ts"),
+      "export const fixture = false;\n",
+    );
+    await rm(path.join(project, "src", "delete.ts"));
+    await chmod(path.join(project, "src", "mode.sh"), 0o755);
+    await writeFile(
+      path.join(project, "src", "binary.bin"),
+      Buffer.from([0, 255, 1, 254]),
+    );
+    await writeFile(path.join(project, "local.ignored"), "not committable\n");
+
+    const first = await collectWorkspaceGitDiff({
+      root: project,
+      inputCommit: base,
+      manifestDigest: sha256("complete-workspace-one"),
+    });
+    expect(first.changes.map((change) => change.path)).toEqual([
+      "src/binary.bin",
+      "src/delete.ts",
+      "src/fixture.ts",
+      "src/mode.sh",
+    ]);
+    expect(first.changes.map((change) => change.worktree_status)).toEqual([
+      "?",
+      "D",
+      "M",
+      "M",
+    ]);
+    expect(first.changes.map((change) => change.path)).not.toContain(
+      "local.ignored",
+    );
+
+    const second = await collectWorkspaceGitDiff({
+      root: project,
+      inputCommit: base,
+      manifestDigest: sha256("complete-workspace-two"),
+    });
+    expect(second.changes).toEqual(first.changes);
+    expect(second.digest).not.toBe(first.digest);
+    expect(() =>
+      validateWorkspaceDiff({ ...first, digest: sha256("forged") }),
+    ).toThrow("digest does not match");
+    await expect(
+      collectWorkspaceGitDiff({
+        root: project,
+        inputCommit: "f".repeat(40),
+        manifestDigest: first.manifest_digest as `sha256:${string}`,
+      }),
+    ).rejects.toMatchObject({ code: "workspace_head_mismatch" });
   });
 });

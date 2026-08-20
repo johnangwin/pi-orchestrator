@@ -645,6 +645,7 @@ export async function applyTaskPatch(
     patch,
     task,
     protectedPatterns: options.project.config.protected,
+    restrictedPatterns: options.project.config.restricted_paths,
   });
   const timestamp = (options.now ?? new Date()).toISOString();
   const prepared = preparedApplication({ record, patch, timestamp });

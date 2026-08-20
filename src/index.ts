@@ -48,3 +48,4 @@ export * from "./synthesis.js";
 export * from "./task.js";
 export * from "./transport.js";
 export * from "./volume.js";
+export * from "./workspace.js";

@@ -143,6 +143,7 @@ export function fixtureTask(overrides: Partial<PlanTask> = {}): PlanTask {
     role: "implementer",
     goal: "Change the fixture without expanding scope.",
     depends: [],
+    write_paths: ["src"],
     scope: ["src/**"],
     non_goals: ["Change project policy."],
     acceptance: ["The registered Check passes."],
@@ -194,7 +195,7 @@ export async function createPlan(
   await writeFile(
     path.join(directory, "tasks.yaml"),
     stringify({
-      version: 1,
+      version: 2,
       plan: { id, revision: options.revision ?? 1 },
       tasks: options.tasks ?? [fixtureTask()],
     }),

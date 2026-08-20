@@ -193,7 +193,11 @@ cmux:
 
 workspace:
   volume_prefix: pi-orchestrator
+  restricted_paths:
+    - local-private/**
 ```
+
+Machine-local `workspace.restricted_paths` are added to committed Project restrictions. They cannot remove or weaken committed restrictions.
 
 Model Profile names are Project-defined identifiers, not a fixed enum. Every referenced profile resolves to one exact gateway, concrete model, API shape, locality, context window, and output limit. Optional reasoning and token-pricing metadata becomes part of the resolved route when present.
 

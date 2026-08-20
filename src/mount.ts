@@ -3,29 +3,12 @@ import { z } from "zod";
 import { canonicalJson, digestParts, type Digest } from "./digest.js";
 import { OrchestratorError } from "./error.js";
 import { DockerVolumeCapability } from "./volume.js";
+import { WritePathSchema } from "./workspace.js";
 
 const PROJECT_TARGET = "/workspace/project";
 const PROJECT_SUBPATH = "project";
 
-export const MountRelativePathSchema = z
-  .string()
-  .min(1)
-  .max(4_096)
-  .refine((value) => !value.includes("\0"), "must not contain NUL")
-  .refine((value) => !value.includes("\\"), "must use POSIX separators")
-  .refine((value) => !path.posix.isAbsolute(value), "must be relative")
-  .refine(
-    (value) =>
-      value !== "." &&
-      value !== ".." &&
-      path.posix.normalize(value) === value &&
-      value.split("/").every((segment) => segment !== "" && segment !== ".."),
-    "must be a normalized non-root relative path",
-  )
-  .refine(
-    (value) => value !== ".git" && !value.startsWith(".git/"),
-    "must not address Git metadata",
-  );
+export const MountRelativePathSchema = WritePathSchema;
 export type MountRelativePath = z.infer<typeof MountRelativePathSchema>;
 
 export type WorkspaceMountPurpose =

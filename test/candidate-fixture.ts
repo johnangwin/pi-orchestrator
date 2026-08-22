@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { approvalDigest } from "../src/approval.js";
 import {
+  runCheck,
+  type CheckOpenShell,
+  type CheckRecord,
+} from "../src/check.js";
+import {
   candidateReference,
   createCandidate,
   RunWorkspaceStateSchema,
@@ -13,9 +18,18 @@ import {
   type CandidatePath,
 } from "../src/candidate.js";
 import { sha256 } from "../src/digest.js";
+import { OrchestratorError } from "../src/error.js";
 import { LocalConfigSchema, type LocalConfig } from "../src/local.js";
 import { WorkspaceLifecycle } from "../src/lifecycle.js";
-import type { ProcessResult } from "../src/openshell.js";
+import type {
+  CreateSandboxOptions,
+  DeleteSandboxOptions,
+  OpenShellInferenceRoute,
+  OpenShellPreflight,
+  OpenShellSandbox,
+  ProcessResult,
+  SandboxExecOptions,
+} from "../src/openshell.js";
 import type { WorkspaceGitChange } from "../src/git.js";
 import {
   RunSourceWorkspace,
@@ -43,7 +57,11 @@ export const candidateLocal: LocalConfig = LocalConfigSchema.parse({
     command: "openshell",
     required_version: "0.0.106",
     workspace: "checks",
-    gateways: { check: "checks" },
+    gateways: {
+      check: "checks",
+      review: "review-gateway",
+      quant: "quant-gateway",
+    },
     images: {
       pi: piImage,
       check: fixtureCheckImage.source,
@@ -57,6 +75,26 @@ export const candidateLocal: LocalConfig = LocalConfigSchema.parse({
     },
   },
   workspace: { volume_prefix: "pio-test", restricted_paths: [] },
+  models: {
+    "independent-review": {
+      gateway: "review",
+      pi_model: "fixture-reviewer",
+      api: "openai-responses",
+      locality: "remote",
+      context_window: 131_072,
+      max_tokens: 16_384,
+      reasoning: true,
+    },
+    "local-quant": {
+      gateway: "quant",
+      pi_model: "fixture-quant",
+      api: "openai-responses",
+      locality: "local",
+      context_window: 131_072,
+      max_tokens: 16_384,
+      reasoning: true,
+    },
+  },
 });
 
 class CandidateDocker implements WorkspaceSourceDocker {
@@ -134,6 +172,126 @@ class CandidateDocker implements WorkspaceSourceDocker {
 
   removeVolume(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class PassingCandidateCheckOpenShell implements CheckOpenShell {
+  private active: OpenShellSandbox | undefined;
+  private marker: { readonly job: string; readonly token: string } | undefined;
+  private mountSet: CreateSandboxOptions["mountSet"];
+
+  preflight(): Promise<OpenShellPreflight> {
+    return Promise.resolve({
+      command: "openshell",
+      requiredVersion: "0.0.106",
+      installedVersion: "0.0.106",
+      versionMatches: true,
+      status: {
+        authentication: { provider: "fixture", status: "authenticated" },
+        gateway: "checks",
+        server: "https://openshell.example.test",
+        status: "connected",
+        version: "0.0.106",
+      },
+    });
+  }
+
+  getInferenceRoute(): Promise<OpenShellInferenceRoute> {
+    return Promise.reject(
+      new OrchestratorError(
+        "openshell_inference_unconfigured",
+        "No inference route is configured",
+      ),
+    );
+  }
+
+  listSandboxes(): Promise<OpenShellSandbox[]> {
+    return Promise.resolve(this.active ? [this.active] : []);
+  }
+
+  createSandbox(options: CreateSandboxOptions): Promise<OpenShellSandbox> {
+    const [, action, job, token] = options.command ?? [];
+    if (action === "init" && job && token) this.marker = { job, token };
+    this.mountSet = options.mountSet;
+    this.active = {
+      annotations: {},
+      created_at: "2026-08-20 16:00:00",
+      current_policy_version: 1,
+      id: "44f7fc5f-31f4-49e7-823d-1a1d81ad4463",
+      labels: { ...options.labels },
+      name: options.name,
+      phase: "Ready",
+      resource_version: 1,
+      workspace: "checks",
+    };
+    return Promise.resolve(this.active);
+  }
+
+  waitForSandbox(name: string): Promise<OpenShellSandbox> {
+    if (!this.active || this.active.name !== name) {
+      return Promise.reject(new Error(`Sandbox '${name}' is not active`));
+    }
+    return Promise.resolve(this.active);
+  }
+
+  deleteSandbox(name: string, _options?: DeleteSandboxOptions): Promise<void> {
+    if (this.active?.name === name) this.active = undefined;
+    return Promise.resolve();
+  }
+
+  upload(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  execSandbox(
+    _name: string,
+    command: readonly string[],
+    _options?: SandboxExecOptions,
+  ): Promise<ProcessResult> {
+    if (command[0] === "/usr/local/bin/orchestrator-prepare-check") {
+      const [, action, job, token] = command;
+      if (
+        !this.marker ||
+        this.marker.job !== job ||
+        this.marker.token !== token
+      ) {
+        return Promise.resolve({
+          stdout: "",
+          stderr: "identity mismatch\n",
+          exitCode: 1,
+        });
+      }
+      if (action === "verify") {
+        return Promise.resolve({ stdout: "", stderr: "", exitCode: 0 });
+      }
+    }
+    if (
+      command[0] === "/usr/bin/cat" &&
+      command[1] === "/proc/self/mountinfo"
+    ) {
+      if (!this.mountSet) {
+        return Promise.resolve({
+          stdout: "",
+          stderr: "mount set missing\n",
+          exitCode: 1,
+        });
+      }
+      return Promise.resolve({
+        stdout: `${this.mountSet.mounts
+          .map((mount, index) => {
+            const mode = mount.readOnly ? "ro" : "rw";
+            return `${index + 10} 1 0:1 /${mount.subpath} ${mount.target} ${mode},relatime - ext4 ${mount.source} ${mode}`;
+          })
+          .join("\n")}\n`,
+        stderr: "",
+        exitCode: 0,
+      });
+    }
+    return Promise.resolve({
+      stdout: "fixture Candidate Check passed\n",
+      stderr: "",
+      exitCode: 0,
+    });
   }
 }
 
@@ -317,4 +475,39 @@ export async function createCandidateFixture(
     await fixture.dispose();
     throw error;
   }
+}
+
+export async function passCandidateFixtureChecks(
+  fixture: Pick<
+    CandidateFixture,
+    | "store"
+    | "project"
+    | "plan"
+    | "runId"
+    | "task"
+    | "local"
+    | "workspaceFactory"
+  >,
+): Promise<CheckRecord[]> {
+  const client = new PassingCandidateCheckOpenShell();
+  const records: CheckRecord[] = [];
+  for (const [index, checkId] of fixture.task.checks.entries()) {
+    const result = await runCheck({
+      store: fixture.store,
+      project: fixture.project,
+      plan: fixture.plan,
+      runId: fixture.runId,
+      taskId: fixture.task.id,
+      checkId,
+      client,
+      workspaceClient: client,
+      local: fixture.local,
+      workspaceFactory: fixture.workspaceFactory,
+      image: fixtureCheckImage,
+      token: () => (index + 1).toString(16).repeat(64).slice(0, 64),
+      now: () => new Date("2026-08-20T16:00:00.000Z"),
+    });
+    records.push(result.record);
+  }
+  return records;
 }

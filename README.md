@@ -67,15 +67,16 @@ orchestrator approve percentage-discount
 orchestrator start percentage-discount
 ```
 
-The current v0.3 checkpoint can run its Implementer, freeze a Candidate, and execute its deterministic Checks:
+The current v0.3 checkpoint can run its Implementer, freeze a Candidate, execute deterministic Checks, and run fresh independent Reviews:
 
 ```sh
 orchestrator implement add-discount
 orchestrator check add-discount
+orchestrator review add-discount
 orchestrator status
 ```
 
-Phases 8 and 9 are complete: implementation mutates the persistent shared Workspace under a Task Write Lease, freezes a Candidate, and runs registered Checks over that Candidate read-only with private build scratch. Candidate-based Reviews and commits are the next migration phases, so `review` and `commit` are not yet compatible with this path. See the [Roadmap](docs/roadmap.md) for the exact boundary.
+Phases 8 through 10 are complete: implementation mutates the persistent shared Workspace under a Task Write Lease, freezes a Candidate, runs registered Checks over that Candidate read-only with private build scratch, and launches every Review Focus in a fresh read-only Session bound to the same Candidate. Candidate-based commit is the next migration phase, so `commit` is not yet compatible with this path. See the [Roadmap](docs/roadmap.md) for the exact boundary.
 
 `approve` requires explicit human confirmation. Runtime state and metrics remain inspectable with `orchestrator status`, `orchestrator metrics <run>`, and `orchestrator report <run>`.
 
@@ -98,7 +99,7 @@ Then:
 2. Register deterministic Check argv arrays in `.agents/orchestrator.yaml`.
 3. Configure Role routing policy in `.agents/orchestrator.yaml` and matching machine-local Model Profiles in `.pi/orchestrator.local.yaml`.
 4. Add or generate a version-two Plan under `docs/plans/<plan-id>/`; every Task declares literal `write_paths` separately from semantic `scope` globs.
-5. Run validate, approve, start, implement, and check; continue through Candidate-based Reviews and commit after their roadmap phases land.
+5. Run validate, approve, start, implement, check, and review; continue through Candidate-based commit after its roadmap phase lands.
 
 For repository-aware Plan generation:
 

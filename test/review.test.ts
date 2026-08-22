@@ -29,50 +29,20 @@ import {
 } from "../src/agent.js";
 import { fixtureTask } from "./fixture.js";
 import {
-  createAppliedFixture,
-  passFixtureChecks,
-  type AppliedFixture,
-} from "./applied-fixture.js";
+  candidateLocal,
+  createCandidateFixture,
+  passCandidateFixtureChecks,
+  type CandidateFixture,
+} from "./candidate-fixture.js";
 
-const fixtures: AppliedFixture[] = [];
+const fixtures: CandidateFixture[] = [];
 
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.dispose()));
 });
 
 function localConfig(): LocalConfig {
-  return LocalConfigSchema.parse({
-    version: 2,
-    openshell: {
-      command: "openshell",
-      required_version: "0.0.106",
-      workspace: "default",
-      gateways: {
-        review: "review-gateway",
-        quant: "quant-gateway",
-      },
-    },
-    models: {
-      "independent-review": {
-        gateway: "review",
-        pi_model: "fixture-reviewer",
-        api: "openai-responses",
-        locality: "remote",
-        context_window: 131_072,
-        max_tokens: 16_384,
-        reasoning: true,
-      },
-      "local-quant": {
-        gateway: "quant",
-        pi_model: "fixture-quant",
-        api: "openai-responses",
-        locality: "local",
-        context_window: 131_072,
-        max_tokens: 16_384,
-        reasoning: true,
-      },
-    },
-  });
+  return LocalConfigSchema.parse(candidateLocal);
 }
 
 function preflight(gateway = "review-gateway"): OpenShellPreflight {
@@ -94,7 +64,9 @@ function preflight(gateway = "review-gateway"): OpenShellPreflight {
 function reviewClient(
   gateway = "review-gateway",
   onDelete?: (sandbox: string) => void,
-): ReadSessionOpenShell {
+): ReadSessionOpenShell & {
+  listSandboxes(): Promise<OpenShellSandbox[]>;
+} {
   const unused = (): never => {
     throw new Error("The fake Review launcher owns this operation");
   };
@@ -110,6 +82,7 @@ function reviewClient(
     waitForSandbox: async () => unused(),
     execSandbox: async (): Promise<ProcessResult> => unused(),
     startServiceForward: async (): Promise<OpenShellForward> => unused(),
+    listSandboxes: () => Promise.resolve([]),
     deleteSandbox: async (sandbox) => {
       if (!onDelete) return unused();
       onDelete(sandbox);
@@ -136,7 +109,7 @@ function failingAssessment(
       {
         location: "src/fixture.ts:1",
         failure_scenario: "The exported contract has the wrong value.",
-        evidence: "The exact Patch changes the value without coverage.",
+        evidence: "The exact Candidate changes the value without coverage.",
         required_correction: "Restore the required value and add coverage.",
       },
     ],
@@ -159,19 +132,19 @@ class FakeReviewRuntime {
   readonly launch: ReviewSessionLauncher = async (options) => {
     const index = this.launches.length + 1;
     this.launches.push(options);
-    if (!options.workspaceSource || !options.model || !options.brief) {
+    if (!options.workspace || !options.model || !options.brief) {
       throw new Error(
         "Review Session is missing frozen source, model, or Brief",
       );
     }
-    await readFile(options.workspaceSource.archivePath);
+    await options.workspace.verify();
     this.briefs.push(options.brief.content);
-    this.sourceDigests.push(options.workspaceSource.sourceDigest);
+    this.sourceDigests.push(options.workspace.manifest.source_digest);
     const id = `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`;
     this.sandboxIds.push(id);
     const sandbox: OpenShellSandbox = {
       annotations: {},
-      created_at: "2026-08-18 17:00:00",
+      created_at: "2026-08-21 17:00:00",
       current_policy_version: 1,
       id,
       labels: {},
@@ -193,11 +166,22 @@ class FakeReviewRuntime {
           : input.content.byteLength,
       digest: input.digest,
     }));
+    const workspaceProjection = {
+      source_digest: options.workspace.manifest.source_digest,
+      workspace_generation: options.workspace.manifest.workspace_generation,
+      manifest_digest: options.workspace.manifest.manifest_digest,
+      volume_name: options.workspace.volume.name,
+      volume_digest: options.workspace.volume.digest,
+      mount_set_digest: options.workspace.mountSet.digest,
+      mount_table_digest: sha256(`fixture mount table ${index}`),
+      image_digest: options.workspace.imageDigest,
+      projection_digest: options.workspace.projectionDigest,
+    };
     const info = {
-      sandbox,
+      sandbox: { ...sandbox, projection: workspaceProjection },
       permissionCeiling: options.permissionCeiling,
       identity: options.identity,
-      sourceDigest: options.workspaceSource.sourceDigest,
+      sourceDigest: options.workspace.manifest.source_digest,
       profile: "read" as const,
       policyDigest: policy.digest,
       readPolicyDigest: policy.digest,
@@ -208,6 +192,7 @@ class FakeReviewRuntime {
       inference: { provider: "fixture", model: model.pi_model },
       briefDigest: options.brief.digest,
       inputs,
+      workspaceProjection,
     };
     const session: ReviewSession = {
       info,
@@ -235,23 +220,24 @@ class FakeReviewRuntime {
   };
 }
 
-async function checked(task = fixtureTask()): Promise<AppliedFixture> {
-  const fixture = await createAppliedFixture({ task });
+async function checked(task = fixtureTask()): Promise<CandidateFixture> {
+  const fixture = await createCandidateFixture({ task });
   fixtures.push(fixture);
-  await passFixtureChecks(fixture);
+  await passCandidateFixtureChecks(fixture);
   return fixture;
 }
 
 function execute(
-  fixture: AppliedFixture,
+  fixture: CandidateFixture,
   runtime: FakeReviewRuntime,
   options: {
     readonly lens?: "spec" | "architecture" | "quality" | "quant";
     readonly gateway?: string;
     readonly nonce?: () => string;
-    readonly client?: ReadSessionOpenShell;
+    readonly client?: ReturnType<typeof reviewClient>;
   } = {},
 ) {
+  const client = options.client ?? reviewClient(options.gateway);
   return runReview({
     store: fixture.store,
     project: fixture.project,
@@ -260,15 +246,17 @@ function execute(
     taskId: fixture.task.id,
     lens: options.lens ?? "spec",
     local: localConfig(),
-    client: options.client ?? reviewClient(options.gateway),
+    client,
+    workspaceClient: client,
+    workspaceFactory: fixture.workspaceFactory,
     launchSession: runtime.launch,
     nonce: options.nonce ?? (() => "12345678"),
-    now: () => new Date("2026-08-18T17:00:00.000Z"),
+    now: () => new Date("2026-08-21T17:00:00.000Z"),
   });
 }
 
 function executeRequired(
-  fixture: AppliedFixture,
+  fixture: CandidateFixture,
   runtime: FakeReviewRuntime,
   options: {
     readonly clients?: Partial<
@@ -295,9 +283,11 @@ function executeRequired(
       quality: reviewClient(),
       quant: reviewClient("quant-gateway"),
     },
+    workspaceClient: reviewClient(),
+    workspaceFactory: fixture.workspaceFactory,
     launchSession: runtime.launch,
     nonce: options.nonce ?? (() => "12345678"),
-    now: () => new Date("2026-08-18T17:00:00.000Z"),
+    now: () => new Date("2026-08-21T17:00:00.000Z"),
   });
 }
 
@@ -310,9 +300,21 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(first).toMatchObject({
       reused: false,
       record: {
+        version: 2,
         lens: "spec",
         verdict: "pass",
         plan_digest: fixture.plan.digest,
+        candidate: {
+          id: fixture.candidate.id,
+          digest: fixture.candidate.digest,
+        },
+        workspace: {
+          workspace_generation: fixture.candidate.workspace_generation,
+          manifest_digest: fixture.candidate.manifest_digest,
+          git_diff_digest: fixture.candidate.git_diff_digest,
+          volume_name: fixture.workspace.volume.name,
+          volume_digest: fixture.workspace.volume.digest,
+        },
         model: {
           profile: "independent-review",
           gateway: "review-gateway",
@@ -329,23 +331,39 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(first.task.gates["review-spec"]).toEqual({
       status: "pass",
       digest: first.record.record_digest,
-      updated_at: "2026-08-18T17:00:00.000Z",
+      updated_at: "2026-08-21T17:00:00.000Z",
     });
     expect(runtime.launches).toHaveLength(1);
     expect(runtime.launches[0]).toMatchObject({
       identity: first.record.identity,
-      workspaceSource: {
-        sourceDigest: first.record.source_digest,
+      workspace: {
+        manifest: {
+          source_digest: first.record.source_digest,
+        },
       },
     });
     expect(runtime.briefs[0]).toContain("Lens: spec");
     expect(runtime.briefs[0]).toContain("Current diff:");
+    expect(runtime.briefs[0]).toContain(fixture.candidate.digest);
     expect(runtime.launches[0]?.inputs).toMatchObject([
       {
-        name: "review.patch",
-        digest: sha256(fixture.patch.value.patch),
+        name: "candidate.json",
       },
     ]);
+    const candidateInput = JSON.parse(
+      runtime.launches[0]!.inputs![0]!.content as string,
+    ) as {
+      candidate: { id: string; digest: string; changed_paths: unknown[] };
+      git_diff: { digest: string };
+    };
+    expect(candidateInput).toMatchObject({
+      candidate: {
+        id: fixture.candidate.id,
+        digest: fixture.candidate.digest,
+        changed_paths: fixture.candidate.changed_paths,
+      },
+      git_diff: { digest: fixture.candidate.git_diff_digest },
+    });
     expect(runtime.briefs[0]).toContain('"check":"project-test"');
     expect(runtime.briefs[0]).toContain("## Dependency Reports\n\nNone.");
     expect(runtime.messages[0]?.to).toEqual({
@@ -354,6 +372,21 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       generation: 1,
     });
     expect(runtime.stopCalls).toBe(1);
+    expect(
+      runtime.launches[0]?.workspace?.mountSet.mounts.every(
+        (mount) => mount.readOnly,
+      ),
+    ).toBe(true);
+    expect(runtime.launches[0]?.permissionCeiling).toMatchObject({
+      source: "read",
+      write_lease: "never",
+      assignment: { kind: "review", task: fixture.task.id, lens: "spec" },
+    });
+    expect(await runtime.launches[0]!.currentActionState!()).toMatchObject({
+      session_current: true,
+      review_frozen: false,
+      write_lease_active: false,
+    });
 
     const mailbox = await import("../src/message.js").then(({ Mailbox }) =>
       new Mailbox(fixture.store.runDirectory(fixture.runId)).find(
@@ -367,7 +400,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(session).toMatchObject({
       status: "stopped",
       sandbox: first.record.sandbox,
-      termination_reason: "Independent Review completed",
+      termination_reason: "Independent Candidate Review completed",
     });
 
     const reportPath = path.join(
@@ -380,6 +413,9 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
       "report.md",
     );
     expect(await readFile(reportPath, "utf8")).toContain("# Conclusion");
+    expect(await readFile(reportPath, "utf8")).toContain(
+      `candidate_digest: ${fixture.candidate.digest}`,
+    );
 
     const reused = await execute(fixture, runtime);
     expect(reused.reused).toBe(true);
@@ -435,7 +471,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
             "review-spec": {
               status: "pending",
               digest: first.intent.binding_digest,
-              updated_at: "2026-08-18T17:00:00.000Z",
+              updated_at: "2026-08-21T17:00:00.000Z",
             },
           },
         },
@@ -477,7 +513,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
             "review-spec": {
               status: "pending",
               digest: first.intent.binding_digest,
-              updated_at: "2026-08-18T17:00:00.000Z",
+              updated_at: "2026-08-21T17:00:00.000Z",
             },
           },
         },
@@ -503,7 +539,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     });
   });
 
-  it("maps rework and blocked verdicts to authoritative Task states", async () => {
+  it("does not rerun the same Candidate after rework and maps blocked verdicts", async () => {
     const reworkFixture = await checked();
     const reworkRuntime = new FakeReviewRuntime();
     reworkRuntime.responses = [JSON.stringify(failingAssessment("rework"))];
@@ -511,6 +547,10 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(rework.record.verdict).toBe("rework");
     expect(rework.task.status).toBe("rework");
     expect(rework.task.gates["review-spec"]?.status).toBe("fail");
+    const sameCandidate = await execute(reworkFixture, reworkRuntime);
+    expect(sameCandidate.reused).toBe(true);
+    expect(sameCandidate.record).toEqual(rework.record);
+    expect(reworkRuntime.launches).toHaveLength(1);
 
     const blockedFixture = await checked();
     const blockedRuntime = new FakeReviewRuntime();
@@ -566,7 +606,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
               "check-project-test": {
                 status: "pass",
                 digest: sha256("different Check evidence"),
-                updated_at: "2026-08-18T17:00:00.000Z",
+                updated_at: "2026-08-21T17:00:00.000Z",
               },
             },
           },
@@ -583,6 +623,36 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
         "review-spec-12345678"
       ]?.status,
     ).toBe("failed");
+  });
+
+  it("stales every Gate when the Candidate changes during a Review", async () => {
+    const fixture = await checked(
+      fixtureTask({ reviews: ["spec", "quality"] }),
+    );
+    const runtime = new FakeReviewRuntime();
+    runtime.onRun = () =>
+      writeFile(
+        path.join(
+          fixture.volumeRoot,
+          "project",
+          "src",
+          "unexpected-review-change.ts",
+        ),
+        "unexpected\n",
+      );
+
+    await expect(execute(fixture, runtime)).rejects.toMatchObject({
+      code: "workspace_changed_without_lease",
+    });
+    expect(runtime.stopCalls).toBe(1);
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.status).toBe("blocked");
+    expect(run.workspace?.candidate?.status).toBe("stale");
+    expect(
+      Object.values(run.tasks[fixture.task.id]!.gates).every(
+        (gate) => gate.status === "stale",
+      ),
+    ).toBe(true);
   });
 
   it("rejects a registered Check definition changed during inference", async () => {
@@ -623,20 +693,26 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
     expect(runtime.stopCalls).toBe(1);
   });
 
-  it("rejects previously passing evidence after host worktree drift", async () => {
+  it("stales previously passing evidence after Candidate Workspace drift", async () => {
     const fixture = await checked();
     const runtime = new FakeReviewRuntime();
-    await execute(fixture, runtime);
+    const first = await execute(fixture, runtime);
     await writeFile(
-      path.join(fixture.worktree, "src", "fixture.ts"),
+      path.join(fixture.volumeRoot, "project", "src", "fixture.ts"),
       "export const fixture = 'drifted';\n",
       "utf8",
     );
 
     await expect(execute(fixture, runtime)).rejects.toMatchObject({
-      code: "review_stale",
+      code: "workspace_changed_without_lease",
     });
     expect(runtime.launches).toHaveLength(1);
+    const run = await fixture.store.readRun(fixture.runId);
+    expect(run.workspace?.candidate?.status).toBe("stale");
+    expect(run.tasks[fixture.task.id]!.gates["review-spec"]).toMatchObject({
+      status: "stale",
+      digest: first.record.record_digest,
+    });
   });
 
   it("routes the Quant Lens through the configured Quant gateway", async () => {
@@ -657,7 +733,7 @@ describe("authoritative Reviews", { timeout: 15_000 }, () => {
   });
 
   it("fails before Session launch when Checks are incomplete or the Lens is absent", async () => {
-    const unchecked = await createAppliedFixture();
+    const unchecked = await createCandidateFixture();
     fixtures.push(unchecked);
     const runtime = new FakeReviewRuntime();
     await expect(execute(unchecked, runtime)).rejects.toMatchObject({

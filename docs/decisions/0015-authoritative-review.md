@@ -2,7 +2,7 @@
 
 ## Status
 
-Superseded by [ADR 0028](0028-candidate-gates.md)
+Superseded by [ADR 0028](0028-candidate-gates.md) and [ADR 0034](0034-candidate-reviews.md)
 
 ## Context
 

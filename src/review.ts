@@ -12,7 +12,7 @@ import {
 import path from "node:path";
 import { z } from "zod";
 import { GitPatchWorktree, loadPreparedPatch } from "./apply.js";
-import { requireFreshApproval } from "./approval.js";
+import { approvalDigest, requireFreshApproval } from "./approval.js";
 import { ArtifactStore } from "./artifact.js";
 import {
   DecisionSchema,
@@ -27,6 +27,7 @@ import {
   type CheckRecord,
   type CheckSource,
 } from "./check.js";
+import type { Candidate } from "./candidate.js";
 import {
   IdentifierSchema,
   ReviewLensSchema,
@@ -34,7 +35,8 @@ import {
 } from "./config.js";
 import { canonicalJson, digestParts, sha256, type Digest } from "./digest.js";
 import { formatUnknownError, OrchestratorError } from "./error.js";
-import { GitCommitSchema } from "./git.js";
+import { GitCommitSchema, type WorkspaceDiff } from "./git.js";
+import { WorkspaceLifecycle } from "./lifecycle.js";
 import type { LocalConfig } from "./local.js";
 import { Mailbox, MessageSchema, type MessageLifecycle } from "./message.js";
 import { MetricStore } from "./metric.js";
@@ -44,7 +46,7 @@ import {
   routingPolicyDigest,
   type ResolvedModelRoute,
 } from "./model.js";
-import type { OpenShellPreflight } from "./openshell.js";
+import type { OpenShellClient, OpenShellPreflight } from "./openshell.js";
 import {
   catalogFromConfig,
   loadPlan,
@@ -80,6 +82,14 @@ import {
   type SessionIdentity,
 } from "./session.js";
 import {
+  WorkspaceSessionProjectionSchema,
+  createRunSourceWorkspace,
+  type CreateRunSourceWorkspaceOptions,
+  type ReadOnlySourceWorkspace,
+  type RunSourceWorkspace,
+  type WorkspaceSourceManifest,
+} from "./source.js";
+import {
   syncDirectory,
   writeJsonAtomic,
   type ProjectRecord,
@@ -87,6 +97,11 @@ import {
   type RunState,
   type TaskRecord,
 } from "./state.js";
+import {
+  createWorkspaceManifestFromEntries,
+  effectiveRestrictedPaths,
+  type WorkspaceManifest,
+} from "./workspace.js";
 
 const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const TimestampSchema = z.string().datetime({ offset: true });
@@ -94,6 +109,7 @@ const ReviewJobIdSchema = z.string().regex(/^review-[a-f0-9]{16}$/);
 const ReviewTextSchema = z.string().trim().min(1).max(16_000);
 const ReviewListSchema = z.array(z.string().trim().min(1).max(4_000)).max(64);
 const REVIEW_PATCH_PATH = "/workspace/input/review.patch" as const;
+const REVIEW_CANDIDATE_PATH = "/workspace/input/candidate.json" as const;
 
 const REVIEW_LENS_QUESTIONS: Readonly<Record<ReviewLens, string>> = {
   spec: "Does the implementation satisfy the approved Task, its acceptance criteria, and its non-goals?",
@@ -157,9 +173,20 @@ const ReviewCheckBindingSchema = z
   .strict();
 export type ReviewCheckBinding = z.infer<typeof ReviewCheckBindingSchema>;
 
+const ReviewCandidateBindingSchema = z
+  .object({
+    id: IdentifierSchema,
+    digest: DigestSchema,
+  })
+  .strict();
+
+const ReviewWorkspaceBindingSchema = WorkspaceSessionProjectionSchema.extend({
+  git_diff_digest: DigestSchema,
+}).strict();
+
 const ReviewIntentWithoutMetadataSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     run: IdentifierSchema,
     task: IdentifierSchema,
     lens: ReviewLensSchema,
@@ -179,6 +206,9 @@ const ReviewIntentWithoutMetadataSchema = z
     pi_version: z.string().min(1),
     client_version: z.string().min(1),
     message: IdentifierSchema,
+    candidate: ReviewCandidateBindingSchema.optional(),
+    workspace: ReviewWorkspaceBindingSchema.optional(),
+    permission_ceiling_digest: DigestSchema.optional(),
   })
   .strict()
   .superRefine((intent, context) => {
@@ -190,6 +220,38 @@ const ReviewIntentWithoutMetadataSchema = z
         code: "custom",
         path: ["checks"],
         message: "must contain unique Check identifiers",
+      });
+    }
+    const candidateBound = [
+      intent.candidate,
+      intent.workspace,
+      intent.permission_ceiling_digest,
+    ].every((value) => value !== undefined);
+    const legacyBound = [
+      intent.candidate,
+      intent.workspace,
+      intent.permission_ceiling_digest,
+    ].every((value) => value === undefined);
+    if (
+      (intent.version === 2 && !candidateBound) ||
+      (intent.version === 1 && !legacyBound)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "version two requires Candidate, Workspace, and permission-ceiling bindings exclusively",
+      });
+    }
+    if (
+      intent.version === 2 &&
+      (intent.task_source_digest !== intent.workspace?.manifest_digest ||
+        intent.source_digest !== intent.workspace?.source_digest ||
+        intent.diff_digest !== intent.workspace?.git_diff_digest)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Candidate Review source digests must match its Workspace binding",
       });
     }
   });
@@ -234,7 +296,7 @@ const ReviewOpenShellSchema = z
 
 const ReviewRecordWithoutDigestSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     id: ReviewJobIdSchema,
     run: IdentifierSchema,
     task: IdentifierSchema,
@@ -262,6 +324,9 @@ const ReviewRecordWithoutDigestSchema = z
     ended_at: TimestampSchema,
     report: ReviewReportSchema,
     intent_digest: DigestSchema,
+    candidate: ReviewCandidateBindingSchema.optional(),
+    workspace: ReviewWorkspaceBindingSchema.optional(),
+    permission_ceiling_digest: DigestSchema.optional(),
   })
   .strict()
   .superRefine((record, context) => {
@@ -287,6 +352,38 @@ const ReviewRecordWithoutDigestSchema = z
         code: "custom",
         path: ["turn"],
         message: "must match the routed Review model",
+      });
+    }
+    const candidateBound = [
+      record.candidate,
+      record.workspace,
+      record.permission_ceiling_digest,
+    ].every((value) => value !== undefined);
+    const legacyBound = [
+      record.candidate,
+      record.workspace,
+      record.permission_ceiling_digest,
+    ].every((value) => value === undefined);
+    if (
+      (record.version === 2 && !candidateBound) ||
+      (record.version === 1 && !legacyBound)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "version two requires Candidate, Workspace, and permission-ceiling bindings exclusively",
+      });
+    }
+    if (
+      record.version === 2 &&
+      (record.task_source_digest !== record.workspace?.manifest_digest ||
+        record.source_digest !== record.workspace?.source_digest ||
+        record.diff_digest !== record.workspace?.git_diff_digest)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Candidate Review source digests must match its Workspace binding",
       });
     }
   });
@@ -332,7 +429,7 @@ export function parseReviewAssessment(text: string): ReviewAssessment {
 function intentDigest(
   intent: z.infer<typeof ReviewIntentWithoutMetadataSchema>,
 ): Digest {
-  return digestParts("pi-orchestrator/review-intent/v1", [
+  return digestParts(`pi-orchestrator/review-intent/v${intent.version}`, [
     ["intent", canonicalJson(intent)],
   ]);
 }
@@ -373,7 +470,7 @@ function validateIntent(value: unknown): ReviewIntent {
 function recordDigest(
   record: z.infer<typeof ReviewRecordWithoutDigestSchema>,
 ): Digest {
-  return digestParts("pi-orchestrator/review-record/v1", [
+  return digestParts(`pi-orchestrator/review-record/v${record.version}`, [
     ["record", canonicalJson(record)],
   ]);
 }
@@ -422,6 +519,9 @@ function intentRecordBinding(intent: ReviewIntent): unknown {
     pi_version: intent.pi_version,
     client_version: intent.client_version,
     message: intent.message,
+    candidate: intent.candidate,
+    workspace: intent.workspace,
+    permission_ceiling_digest: intent.permission_ceiling_digest,
     intent_digest: intent.binding_digest,
   };
 }
@@ -448,6 +548,9 @@ function recordIntentBinding(record: ReviewRecord): unknown {
     pi_version: record.pi_version,
     client_version: record.client_version,
     message: record.turn.message_id,
+    candidate: record.candidate,
+    workspace: record.workspace,
+    permission_ceiling_digest: record.permission_ceiling_digest,
     intent_digest: record.intent_digest,
   };
 }
@@ -898,6 +1001,10 @@ export interface RunReviewOptions {
   readonly lens: ReviewLens;
   readonly local: LocalConfig;
   readonly client: ReadSessionOpenShell;
+  readonly workspaceClient?: Pick<OpenShellClient, "listSandboxes">;
+  readonly workspaceFactory?: (
+    options: CreateRunSourceWorkspaceOptions,
+  ) => Promise<RunSourceWorkspace>;
   readonly decisions?: readonly Decision[];
   readonly imageContext?: string;
   readonly policyDirectory?: string;
@@ -1139,20 +1246,65 @@ function briefChecks(records: readonly CheckRecord[]): BriefReviewCheck[] {
   }));
 }
 
-function compileReviewBrief(options: {
-  readonly identity: SessionIdentity;
-  readonly project: Project;
-  readonly role: LoadedRole;
-  readonly permissionCeiling: PermissionCeiling;
-  readonly task: PlanTask;
-  readonly lens: ReviewLens;
-  readonly plan: LoadedPlan;
-  readonly decisions: readonly Decision[];
-  readonly patch: VerifiedPatch;
-  readonly checks: readonly CheckRecord[];
-  readonly source: CheckSource;
-  readonly model: ResolvedModelRoute;
-}): CompiledBrief {
+interface CandidateReviewEvidence {
+  readonly name: "candidate.json";
+  readonly content: string;
+  readonly digest: Digest;
+}
+
+function createCandidateReviewEvidence(options: {
+  readonly candidate: Candidate;
+  readonly gitDiff: WorkspaceDiff;
+}): CandidateReviewEvidence {
+  const content = `${canonicalJson({
+    version: 2,
+    candidate: {
+      id: options.candidate.id,
+      digest: options.candidate.digest,
+      input_commit: options.candidate.input_commit,
+      workspace_generation: options.candidate.workspace_generation,
+      manifest_digest: options.candidate.manifest_digest,
+      git_diff_digest: options.candidate.git_diff_digest,
+      change_sets: options.candidate.change_sets,
+      changed_paths: options.candidate.changed_paths,
+    },
+    git_diff: options.gitDiff,
+  })}\n`;
+  return {
+    name: "candidate.json",
+    content,
+    digest: sha256(content),
+  };
+}
+
+type ReviewBriefSource =
+  | {
+      readonly patch: VerifiedPatch;
+      readonly source: CheckSource;
+      readonly candidate?: never;
+      readonly candidateEvidence?: never;
+    }
+  | {
+      readonly patch?: never;
+      readonly source: WorkspaceSourceManifest;
+      readonly candidate: Candidate;
+      readonly candidateEvidence: CandidateReviewEvidence;
+    };
+
+function compileReviewBrief(
+  options: {
+    readonly identity: SessionIdentity;
+    readonly project: Project;
+    readonly role: LoadedRole;
+    readonly permissionCeiling: PermissionCeiling;
+    readonly task: PlanTask;
+    readonly lens: ReviewLens;
+    readonly plan: LoadedPlan;
+    readonly decisions: readonly Decision[];
+    readonly checks: readonly CheckRecord[];
+    readonly model: ResolvedModelRoute;
+  } & ReviewBriefSource,
+): CompiledBrief {
   const skillNames = [
     ...options.role.definition.skills,
     ...(options.lens === "quant" &&
@@ -1170,6 +1322,14 @@ function compileReviewBrief(options: {
     }
     return skill;
   });
+  const candidateBound = options.candidate !== undefined;
+  const changedPaths = candidateBound
+    ? options.candidate.changed_paths.map((change) => change.path)
+    : options.patch.bundle.changes.map((change) => change.path);
+  const diffPath = candidateBound ? REVIEW_CANDIDATE_PATH : REVIEW_PATCH_PATH;
+  const diffDigest = candidateBound
+    ? options.candidateEvidence.digest
+    : sha256(options.patch.patch);
   return compileBrief({
     identity: options.identity,
     agents: options.project.agents,
@@ -1182,16 +1342,26 @@ function compileReviewBrief(options: {
     dependencyReports: [],
     skills,
     outputContract: `Lens question: ${REVIEW_LENS_QUESTIONS[options.lens]}\n\n${REVIEW_OUTPUT_CONTRACT}`,
-    sourceAnchors: options.patch.bundle.changes.map((change) => ({
-      path: change.path,
-      reason: "Changed by the exact Patch under Review.",
+    sourceAnchors: changedPaths.map((changedPath) => ({
+      path: changedPath,
+      reason: candidateBound
+        ? "Changed in the exact frozen Candidate under Review."
+        : "Changed by the exact Patch under Review.",
     })),
     sourceDigests: {
       plan: options.plan.digest,
-      source: options.source.manifest.source_digest as Digest,
-      task: options.source.manifest.task_source_digest as Digest,
-      diff: options.source.manifest.diff_digest as Digest,
-      patch: sha256(options.patch.patch),
+      source: candidateBound
+        ? options.source.source_digest
+        : (options.source.manifest.source_digest as Digest),
+      task: candidateBound
+        ? options.candidate.manifest_digest
+        : (options.source.manifest.task_source_digest as Digest),
+      diff: candidateBound
+        ? options.candidate.git_diff_digest
+        : (options.source.manifest.diff_digest as Digest),
+      ...(candidateBound
+        ? { candidate: options.candidate.digest }
+        : { patch: sha256(options.patch.patch) }),
       ...Object.fromEntries(
         options.checks.map((check) => [
           `check-${check.check}`,
@@ -1202,8 +1372,8 @@ function compileReviewBrief(options: {
     review: {
       lens: options.lens,
       diff: {
-        path: REVIEW_PATCH_PATH,
-        digest: sha256(options.patch.patch),
+        path: diffPath,
+        digest: diffDigest,
       },
       checks: briefChecks(options.checks),
     },
@@ -1467,6 +1637,9 @@ export function renderReviewReport(options: {
   readonly intent: ReviewIntent;
   readonly assessment: ReviewAssessment;
 }): string {
+  const candidate = options.intent.candidate
+    ? `candidate: ${options.intent.candidate.id}\ncandidate_digest: ${options.intent.candidate.digest}\n`
+    : "";
   const findings =
     options.assessment.blocking_findings.length === 0
       ? "None."
@@ -1483,7 +1656,7 @@ lens: ${options.intent.lens}
 verdict: ${options.assessment.verdict}
 plan_digest: ${options.intent.plan_digest}
 diff_digest: ${options.intent.diff_digest}
----
+${candidate}---
 
 # Conclusion
 
@@ -1661,7 +1834,7 @@ async function settleRecoveredSession(options: {
   }
 }
 
-export async function runReview(
+export async function runLegacyReviewForMigration(
   options: RunReviewOptions,
 ): Promise<RunReviewResult> {
   const now = options.now ?? (() => new Date());
@@ -2251,6 +2424,1146 @@ export async function runReview(
     }
   } finally {
     await source.dispose();
+  }
+}
+
+interface FrozenReviewCandidateContext {
+  readonly run: RunState;
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+  readonly source: WorkspaceSourceManifest;
+  readonly gitDiff: WorkspaceDiff;
+  readonly reader: ReadOnlySourceWorkspace;
+}
+
+function assertCurrentReviewCandidate(
+  run: RunState,
+  task: PlanTask,
+  candidate: Candidate,
+): TaskRecord {
+  const workspace = run.workspace;
+  const taskState = run.tasks[task.id];
+  if (
+    !taskState?.input_commit ||
+    !workspace ||
+    workspace.phase !== "frozen" ||
+    workspace.active_lease !== null ||
+    workspace.drift !== null ||
+    workspace.candidate?.status !== "frozen" ||
+    workspace.candidate.id !== candidate.id ||
+    workspace.candidate.digest !== candidate.digest ||
+    workspace.generation !== candidate.workspace_generation ||
+    workspace.manifest_digest !== candidate.manifest_digest ||
+    workspace.git_diff_digest !== candidate.git_diff_digest
+  ) {
+    throw new OrchestratorError(
+      "review_candidate_stale",
+      `Task '${task.id}' does not have the expected frozen Candidate`,
+    );
+  }
+  return taskState;
+}
+
+async function requireFrozenReviewCandidate(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly run: RunState;
+  readonly task: PlanTask;
+  readonly approvalDigest: Digest;
+}): Promise<{
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+}> {
+  const reference = options.run.workspace?.candidate;
+  if (!reference || reference.status !== "frozen") {
+    throw new OrchestratorError(
+      "review_candidate_missing",
+      `Task '${options.task.id}' has no frozen Candidate ready for Review`,
+    );
+  }
+  const candidate = await options.lifecycle.candidates.get(reference);
+  const taskState = assertCurrentReviewCandidate(
+    options.run,
+    options.task,
+    candidate,
+  );
+  if (
+    candidate.run !== options.run.id ||
+    candidate.plan !== options.run.plan_id ||
+    candidate.plan_revision !== options.run.plan_revision ||
+    candidate.plan_digest !== options.run.plan_digest ||
+    candidate.approval_digest !== options.approvalDigest ||
+    candidate.task !== options.task.id ||
+    candidate.input_commit !== taskState.input_commit ||
+    candidate.permission_policy_digest !==
+      options.run.permission_policy_digest ||
+    candidate.routing_policy_digest !== options.run.routing_policy_digest
+  ) {
+    throw new OrchestratorError(
+      "review_candidate_stale",
+      `Candidate '${candidate.id}' does not match the approved Run and Task`,
+    );
+  }
+  return {
+    taskState,
+    candidate,
+    manifest: await options.lifecycle.manifests.get(candidate.manifest_digest),
+  };
+}
+
+async function requireNoReviewCandidateWriters(options: {
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly client: Pick<OpenShellClient, "listSandboxes">;
+  readonly runId: string;
+}): Promise<void> {
+  const writers = (await options.client.listSandboxes()).filter(
+    (sandbox) =>
+      sandbox.labels["pio.run"] === options.runId &&
+      sandbox.labels["pio.access"] === "write",
+  );
+  if (writers.length > 0) {
+    await options.lifecycle.blockUnleasedWriters(
+      writers.map((sandbox) => sandbox.id),
+    );
+  }
+}
+
+async function verifyFrozenReviewWorkspace(options: {
+  readonly store: ReviewProjectStore;
+  readonly lifecycle: WorkspaceLifecycle;
+  readonly workspace: RunSourceWorkspace;
+  readonly writerClient: Pick<OpenShellClient, "listSandboxes">;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly manifest: WorkspaceManifest;
+  readonly restrictedPatterns: readonly string[];
+}): Promise<FrozenReviewCandidateContext> {
+  const run = await options.store.readRun(options.lifecycle.runId);
+  const taskState = assertCurrentReviewCandidate(
+    run,
+    options.task,
+    options.candidate,
+  );
+  await requireNoReviewCandidateWriters({
+    lifecycle: options.lifecycle,
+    client: options.writerClient,
+    runId: run.id,
+  });
+  const source = await options.workspace.inspect(
+    options.candidate.workspace_generation,
+  );
+  const observedManifest = createWorkspaceManifestFromEntries(source.entries);
+  const gitDiff = await options.workspace.gitDiff(source);
+  await options.lifecycle.observe({
+    manifest: observedManifest,
+    gitDiff,
+    writableSandboxIds: [],
+  });
+  if (
+    options.workspace.inputCommit !== options.candidate.input_commit ||
+    source.commit !== options.candidate.input_commit ||
+    source.manifest_digest !== options.candidate.manifest_digest ||
+    observedManifest.digest !== options.manifest.digest ||
+    canonicalJson(observedManifest.entries) !==
+      canonicalJson(options.manifest.entries) ||
+    gitDiff.digest !== options.candidate.git_diff_digest
+  ) {
+    throw new OrchestratorError(
+      "review_candidate_stale",
+      `Candidate '${options.candidate.id}' does not match the complete Run Workspace`,
+    );
+  }
+  return {
+    run: await options.store.readRun(run.id),
+    taskState,
+    candidate: options.candidate,
+    manifest: options.manifest,
+    source,
+    gitDiff,
+    reader: options.workspace.bindReader({
+      source,
+      restrictedPatterns: options.restrictedPatterns,
+    }),
+  };
+}
+
+async function collectCandidateChecks(options: {
+  readonly store: ReviewProjectStore;
+  readonly project: Project;
+  readonly run: RunState;
+  readonly task: PlanTask;
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly source: WorkspaceSourceManifest;
+  readonly reader: ReadOnlySourceWorkspace;
+}): Promise<CheckRecord[]> {
+  const checks = new CheckStore(options.store.runDirectory(options.run.id));
+  const records: CheckRecord[] = [];
+  for (const check of options.task.checks) {
+    const definition = options.project.config.checks[check];
+    if (!definition) {
+      throw new OrchestratorError(
+        "review_check_stale",
+        `Registered Check '${check}' no longer exists`,
+      );
+    }
+    const gate = options.taskState.gates[checkGateKey(check)];
+    if (gate?.status !== "pass" || !gate.digest) {
+      throw new OrchestratorError(
+        "review_checks_incomplete",
+        `Task '${options.task.id}' has no passing evidence for Check '${check}'`,
+      );
+    }
+    const record = await checks.findResultByDigest(
+      options.task.id,
+      check,
+      gate.digest,
+    );
+    if (
+      !record ||
+      record.version !== 2 ||
+      record.verdict !== "pass" ||
+      record.run !== options.run.id ||
+      record.task !== options.task.id ||
+      record.check !== check ||
+      record.plan_digest !== options.run.plan_digest ||
+      record.input_commit !== options.candidate.input_commit ||
+      record.task_source_digest !== options.candidate.manifest_digest ||
+      record.source_digest !== options.source.source_digest ||
+      record.diff_digest !== options.candidate.git_diff_digest ||
+      record.candidate?.id !== options.candidate.id ||
+      record.candidate.digest !== options.candidate.digest ||
+      record.workspace?.generation !== options.candidate.workspace_generation ||
+      record.workspace.manifest_digest !== options.candidate.manifest_digest ||
+      record.workspace.git_diff_digest !== options.candidate.git_diff_digest ||
+      record.workspace.source_digest !== options.source.source_digest ||
+      record.workspace.volume_name !== options.reader.volume.name ||
+      record.workspace.volume_digest !== options.reader.volume.digest ||
+      record.workspace.mount_set_digest !== options.reader.mountSet.digest ||
+      canonicalJson({ argv: record.argv, cwd: record.cwd }) !==
+        canonicalJson({ argv: definition.argv, cwd: definition.cwd ?? "." })
+    ) {
+      throw new OrchestratorError(
+        "review_check_stale",
+        `Check '${check}' evidence does not match the frozen Candidate`,
+      );
+    }
+    records.push(record);
+  }
+  return records;
+}
+
+async function ensureCandidateReviewRound(options: {
+  readonly store: ReviewProjectStore;
+  readonly runId: string;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly limit: number;
+}): Promise<TaskRecord> {
+  const updated = await options.store.updateRun(options.runId, (run) => {
+    const current = assertCurrentReviewCandidate(
+      run,
+      options.task,
+      options.candidate,
+    );
+    if (current.status !== "reviewing") {
+      throw new OrchestratorError(
+        "task_not_reviewing",
+        `Task '${options.task.id}' must be reviewing before a Review starts`,
+      );
+    }
+    const hasCurrentReview = options.task.reviews.some((lens) => {
+      const gate = current.gates[gateKey(lens)];
+      return gate !== undefined && gate.status !== "stale";
+    });
+    if (hasCurrentReview) return run;
+    if (current.review_rounds >= options.limit) {
+      throw new OrchestratorError(
+        "review_round_limit",
+        `Task '${options.task.id}' exhausted its Review rounds`,
+      );
+    }
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.task.id]: {
+          ...current,
+          review_rounds: current.review_rounds + 1,
+        },
+      },
+    };
+  });
+  return updated.tasks[options.task.id]!;
+}
+
+async function recordCandidatePendingGate(options: {
+  readonly store: ReviewProjectStore;
+  readonly runId: string;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly intent: ReviewIntent;
+  readonly timestamp: string;
+}): Promise<void> {
+  await options.store.updateRun(options.runId, (run) => {
+    const current = assertCurrentReviewCandidate(
+      run,
+      options.task,
+      options.candidate,
+    );
+    if (current.review_rounds !== options.intent.round) {
+      throw new OrchestratorError(
+        "review_stale",
+        `Review '${options.intent.id}' belongs to another Review round`,
+      );
+    }
+    if (current.status !== "reviewing") {
+      throw new OrchestratorError(
+        "task_not_reviewing",
+        `Task '${options.task.id}' left Review before evidence was requested`,
+      );
+    }
+    const key = gateKey(options.intent.lens);
+    const existing = current.gates[key];
+    if (existing?.status === "pass" || existing?.status === "fail") {
+      throw new OrchestratorError(
+        "review_gate_conflict",
+        `Review Gate '${key}' already contains completed evidence`,
+      );
+    }
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.task.id]: {
+          ...current,
+          gates: {
+            ...current.gates,
+            [key]: {
+              status: "pending",
+              digest: options.intent.binding_digest,
+              updated_at: options.timestamp,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
+async function finalizeCandidateReviewGate(options: {
+  readonly store: ReviewProjectStore;
+  readonly runId: string;
+  readonly task: PlanTask;
+  readonly candidate: Candidate;
+  readonly intent: ReviewIntent;
+  readonly record: ReviewRecord;
+  readonly timestamp: string;
+}): Promise<TaskRecord> {
+  const updated = await options.store.updateRun(options.runId, (run) => {
+    const current = assertCurrentReviewCandidate(
+      run,
+      options.task,
+      options.candidate,
+    );
+    if (current.review_rounds !== options.intent.round) {
+      throw new OrchestratorError(
+        "review_stale",
+        `Review '${options.intent.id}' belongs to another Review round`,
+      );
+    }
+    for (const check of options.task.checks) {
+      const binding = options.intent.checks.find(
+        (candidate) => candidate.check === check,
+      );
+      const gate = current.gates[checkGateKey(check)];
+      if (
+        !binding ||
+        gate?.status !== "pass" ||
+        gate.digest !== binding.record_digest
+      ) {
+        throw new OrchestratorError(
+          "review_check_stale",
+          `Check '${check}' changed while Review '${options.intent.id}' was running`,
+        );
+      }
+    }
+    const key = gateKey(options.record.lens);
+    const existing = current.gates[key];
+    const gateStatus = options.record.verdict === "pass" ? "pass" : "fail";
+    if (
+      existing?.status === gateStatus &&
+      existing.digest === options.record.record_digest
+    ) {
+      return run;
+    }
+    if (
+      existing?.status !== "pending" ||
+      existing.digest !== options.intent.binding_digest
+    ) {
+      throw new OrchestratorError(
+        "review_gate_conflict",
+        `Review Gate '${key}' no longer matches '${options.intent.id}'`,
+      );
+    }
+    const status =
+      options.record.verdict === "pass"
+        ? "reviewing"
+        : options.record.verdict === "rework"
+          ? "rework"
+          : "blocked";
+    return {
+      ...run,
+      tasks: {
+        ...run.tasks,
+        [options.task.id]: {
+          ...current,
+          status,
+          gates: {
+            ...current.gates,
+            [key]: {
+              status: gateStatus,
+              digest: options.record.record_digest,
+              updated_at: options.timestamp,
+            },
+          },
+        },
+      },
+    };
+  });
+  return updated.tasks[options.task.id]!;
+}
+
+function reviewWorkspaceBinding(options: {
+  readonly projection: z.infer<typeof WorkspaceSessionProjectionSchema>;
+  readonly gitDiffDigest: Digest;
+}) {
+  return ReviewWorkspaceBindingSchema.parse({
+    ...options.projection,
+    git_diff_digest: options.gitDiffDigest,
+  });
+}
+
+function requireCandidateReviewRecord(options: {
+  readonly record: ReviewRecord;
+  readonly run: RunState;
+  readonly task: PlanTask;
+  readonly taskState: TaskRecord;
+  readonly candidate: Candidate;
+  readonly source: WorkspaceSourceManifest;
+  readonly reader: ReadOnlySourceWorkspace;
+  readonly checks: readonly CheckRecord[];
+  readonly roleDigest: Digest;
+  readonly briefDigest: Digest;
+  readonly permissionCeilingDigest: Digest;
+  readonly model: ResolvedModelRoute;
+  readonly policyDigest: Digest;
+}): void {
+  const record = options.record;
+  const expectedChecks = checkBindings(options.checks);
+  const workspace = record.workspace;
+  if (
+    record.version !== 2 ||
+    record.run !== options.run.id ||
+    record.task !== options.task.id ||
+    record.plan_digest !== options.run.plan_digest ||
+    record.input_commit !== options.candidate.input_commit ||
+    record.task_source_digest !== options.candidate.manifest_digest ||
+    record.source_digest !== options.source.source_digest ||
+    record.diff_digest !== options.candidate.git_diff_digest ||
+    record.round !== options.taskState.review_rounds ||
+    canonicalJson(record.checks) !== canonicalJson(expectedChecks) ||
+    record.role_digest !== options.roleDigest ||
+    record.brief_digest !== options.briefDigest ||
+    record.permission_ceiling_digest !== options.permissionCeilingDigest ||
+    canonicalJson(record.model) !== canonicalJson(options.model) ||
+    record.policy_digest !== options.policyDigest ||
+    record.pi_version !== PI_RUNTIME_VERSION ||
+    record.client_version !== PI_CLIENT_VERSION ||
+    record.candidate?.id !== options.candidate.id ||
+    record.candidate.digest !== options.candidate.digest ||
+    !workspace ||
+    workspace.source_digest !== options.source.source_digest ||
+    workspace.workspace_generation !== options.candidate.workspace_generation ||
+    workspace.manifest_digest !== options.candidate.manifest_digest ||
+    workspace.git_diff_digest !== options.candidate.git_diff_digest ||
+    workspace.volume_name !== options.reader.volume.name ||
+    workspace.volume_digest !== options.reader.volume.digest ||
+    workspace.mount_set_digest !== options.reader.mountSet.digest ||
+    workspace.image_digest !== options.reader.imageDigest ||
+    workspace.projection_digest !== options.reader.projectionDigest
+  ) {
+    throw new OrchestratorError(
+      "review_stale",
+      `Review '${record.id}' does not match the current Candidate, Checks, Role, model, or policy`,
+    );
+  }
+}
+
+export async function runReview(
+  options: RunReviewOptions,
+): Promise<RunReviewResult> {
+  if (!options.local.openshell.shared_workspace?.enabled) {
+    throw new OrchestratorError(
+      "review_workspace_config_missing",
+      "Candidate Reviews require an enabled shared Workspace configuration",
+    );
+  }
+  if (!options.workspaceClient) {
+    throw new OrchestratorError(
+      "review_workspace_client_missing",
+      "Candidate Reviews require the configured writer-gateway client",
+    );
+  }
+  const now = options.now ?? (() => new Date());
+  const lens = ReviewLensSchema.parse(options.lens);
+  const [projectRecord, initialRun, current] = await Promise.all([
+    options.store.read(),
+    options.store.readRun(options.runId),
+    currentProjectAndPlan({ project: options.project, plan: options.plan }),
+  ]);
+  requireRunBinding({
+    run: initialRun,
+    project: current.project,
+    plan: current.plan,
+    projectRecord,
+  });
+  const task = findTask(current.plan, options.taskId);
+  if (!task.reviews.includes(lens)) {
+    throw new OrchestratorError(
+      "review_not_required",
+      `Task '${task.id}' does not require the '${lens}' Review Focus`,
+    );
+  }
+
+  const approval = projectRecord.approvals[current.plan.id]!;
+  const lifecycle = new WorkspaceLifecycle(options.store, initialRun.id, now);
+  const frozen = await requireFrozenReviewCandidate({
+    lifecycle,
+    run: initialRun,
+    task,
+    approvalDigest: approvalDigest(approval),
+  });
+  const runWorkspace = await (
+    options.workspaceFactory ?? createRunSourceWorkspace
+  )({
+    projectRoot: current.project.root,
+    projectId: current.project.config.project.id,
+    runId: initialRun.id,
+    commit: initialRun.base_commit,
+    local: options.local,
+    binding: {
+      volumeName: initialRun.workspace!.volume_name,
+      volumeDigest: initialRun.workspace!.volume_digest,
+    },
+  });
+  const restrictedPatterns = effectiveRestrictedPaths(
+    current.project.config.restricted_paths,
+    options.local.workspace.restricted_paths,
+  );
+  const before = await verifyFrozenReviewWorkspace({
+    store: options.store,
+    lifecycle,
+    workspace: runWorkspace,
+    writerClient: options.workspaceClient,
+    task,
+    candidate: frozen.candidate,
+    manifest: frozen.manifest,
+    restrictedPatterns,
+  });
+  const role = requireReviewRole(current.project);
+  const permissionCeiling = resolveRolePermissionCeiling({
+    role,
+    assignment: { kind: "review", task: task.id, lens },
+    localPolicy: options.local.permissions,
+  });
+  const decisions = z.array(DecisionSchema).parse(options.decisions ?? []);
+  const model = resolveReviewModelRoute(
+    current.project.config,
+    options.local,
+    lens,
+  );
+  const policyDirectory = path.resolve(
+    options.policyDirectory ?? bundledPiPolicyDirectory(),
+  );
+  const policy = await loadSandboxPolicy(
+    "read",
+    path.join(policyDirectory, "read.yaml"),
+  );
+  const preflight = await options.client.preflight();
+  requirePinnedPreflight(preflight, model);
+  const checks = await collectCandidateChecks({
+    store: options.store,
+    project: current.project,
+    run: before.run,
+    task,
+    taskState: before.taskState,
+    candidate: before.candidate,
+    source: before.source,
+    reader: before.reader,
+  });
+  const candidateEvidence = createCandidateReviewEvidence({
+    candidate: before.candidate,
+    gitDiff: before.gitDiff,
+  });
+  const reviews = new ReviewStore(options.store.runDirectory(initialRun.id));
+  const mailbox = new Mailbox(options.store.runDirectory(initialRun.id));
+  const metrics = new MetricStore(
+    options.store.runDirectory(initialRun.id),
+    initialRun.id,
+  );
+  const registry = new AgentRegistry(options.store, initialRun.id, now);
+  const existingGate = before.taskState.gates[gateKey(lens)];
+
+  if (
+    (existingGate?.status === "pass" || existingGate?.status === "fail") &&
+    existingGate.digest
+  ) {
+    const existing = await reviews.findResultByDigest(
+      task.id,
+      lens,
+      existingGate.digest,
+    );
+    if (!existing) {
+      throw new OrchestratorError(
+        "review_store_corrupt",
+        `Review Gate '${gateKey(lens)}' references missing evidence`,
+      );
+    }
+    const expectedBrief = compileReviewBrief({
+      identity: existing.identity,
+      project: current.project,
+      role,
+      permissionCeiling,
+      task,
+      lens,
+      plan: current.plan,
+      decisions,
+      candidate: before.candidate,
+      candidateEvidence,
+      checks,
+      source: before.source,
+      model,
+    });
+    requireCandidateReviewRecord({
+      record: existing,
+      run: before.run,
+      task,
+      taskState: before.taskState,
+      candidate: before.candidate,
+      source: before.source,
+      reader: before.reader,
+      checks,
+      roleDigest: role.digest,
+      briefDigest: expectedBrief.digest,
+      permissionCeilingDigest: permissionCeiling.permission_ceiling_digest,
+      model,
+      policyDigest: policy.digest,
+    });
+    const intent = await reviews.getIntent(task.id, lens, existing.id);
+    if (!intent) {
+      throw new OrchestratorError(
+        "review_store_corrupt",
+        `Review '${existing.id}' has no durable intent`,
+      );
+    }
+    requireRecordIntent(existing, intent);
+    await settleRecoveredSession({ client: options.client, registry, intent });
+    await moveMessageIfPresent(mailbox, intent.message, "answered");
+    return {
+      intent,
+      record: existing,
+      reused: true,
+      task: before.taskState,
+    };
+  }
+
+  if (existingGate?.status === "pending" && existingGate.digest) {
+    const pendingIntent = await reviews.findIntentByDigest(
+      task.id,
+      lens,
+      existingGate.digest,
+    );
+    if (!pendingIntent) {
+      throw new OrchestratorError(
+        "review_store_corrupt",
+        `Pending Review Gate '${gateKey(lens)}' references missing intent`,
+      );
+    }
+    const pendingResult = await reviews.getResult(
+      task.id,
+      lens,
+      pendingIntent.id,
+    );
+    if (pendingResult) {
+      const expectedBrief = compileReviewBrief({
+        identity: pendingResult.identity,
+        project: current.project,
+        role,
+        permissionCeiling,
+        task,
+        lens,
+        plan: current.plan,
+        decisions,
+        candidate: before.candidate,
+        candidateEvidence,
+        checks,
+        source: before.source,
+        model,
+      });
+      requireCandidateReviewRecord({
+        record: pendingResult,
+        run: before.run,
+        task,
+        taskState: before.taskState,
+        candidate: before.candidate,
+        source: before.source,
+        reader: before.reader,
+        checks,
+        roleDigest: role.digest,
+        briefDigest: expectedBrief.digest,
+        permissionCeilingDigest: permissionCeiling.permission_ceiling_digest,
+        model,
+        policyDigest: policy.digest,
+      });
+      requireRecordIntent(pendingResult, pendingIntent);
+      await settleRecoveredSession({
+        client: options.client,
+        registry,
+        intent: pendingIntent,
+      });
+      const finalized = await finalizeCandidateReviewGate({
+        store: options.store,
+        runId: initialRun.id,
+        task,
+        candidate: before.candidate,
+        intent: pendingIntent,
+        record: pendingResult,
+        timestamp: now().toISOString(),
+      });
+      await moveMessageIfPresent(mailbox, pendingIntent.message, "answered");
+      return {
+        intent: pendingIntent,
+        record: pendingResult,
+        reused: true,
+        task: finalized,
+      };
+    }
+  }
+
+  const roundTask = await ensureCandidateReviewRound({
+    store: options.store,
+    runId: initialRun.id,
+    task,
+    candidate: before.candidate,
+    limit: current.project.config.attempts.review,
+  });
+  const rawNonce = (options.nonce ?? (() => randomBytes(4).toString("hex")))();
+  const nonce = z
+    .string()
+    .regex(/^[a-f0-9]{8}$/)
+    .parse(rawNonce);
+  const sessionRecord = await allocateReviewSession({
+    registry,
+    lens,
+    model,
+    permissionCeiling,
+    nonce,
+  });
+  const identity = sessionRecord.identity;
+  const brief = compileReviewBrief({
+    identity,
+    project: current.project,
+    role,
+    permissionCeiling,
+    task,
+    lens,
+    plan: current.plan,
+    decisions,
+    candidate: before.candidate,
+    candidateEvidence,
+    checks,
+    source: before.source,
+    model,
+  });
+  const message = MessageSchema.parse({
+    version: 2,
+    id: `review-request-${lens}-${nonce}`,
+    run: initialRun.id,
+    from: { host: true },
+    to: {
+      agent: identity.agent,
+      session: identity.session,
+      generation: identity.generation,
+    },
+    type: "review-request",
+    priority: "normal",
+    reply_to: null,
+    body: {
+      action: "review",
+      task: task.id,
+      lens,
+      brief_digest: brief.digest,
+      instruction:
+        "Perform the independent Review using only the frozen Candidate Brief and read-only Workspace, then return the required structured object.",
+    },
+    references: before.candidate.changed_paths.map((change) => change.path),
+    created_at: now().toISOString(),
+  });
+  const candidateInput = {
+    name: candidateEvidence.name,
+    content: candidateEvidence.content,
+    digest: candidateEvidence.digest,
+  } as const;
+  const candidateInputConfig = {
+    path: REVIEW_CANDIDATE_PATH,
+    byte_count: Buffer.byteLength(candidateEvidence.content, "utf8"),
+    digest: candidateEvidence.digest,
+  } as const;
+  let session: ReviewSession | undefined;
+  let intent: ReviewIntent | undefined;
+  try {
+    session = await (options.launchSession ?? startReadSession)({
+      client: options.client,
+      identity,
+      workspace: before.reader,
+      permissionCeiling,
+      model,
+      brief,
+      context: current.project.config.context,
+      inputs: [candidateInput],
+      metrics,
+      task: task.id,
+      currentActionState: async () =>
+        permissionRuntimeState({
+          ceiling: permissionCeiling,
+          identity,
+          run: await options.store.readRun(initialRun.id),
+        }),
+      now,
+      policyDirectory,
+      ...(options.startupTimeoutMs
+        ? { startupTimeoutMs: options.startupTimeoutMs }
+        : {}),
+      ...(options.turnTimeoutMs
+        ? { turnTimeoutMs: options.turnTimeoutMs }
+        : {}),
+    });
+    const projection = WorkspaceSessionProjectionSchema.safeParse(
+      session.info.workspaceProjection,
+    );
+    if (
+      session.info.profile !== "read" ||
+      session.info.permissionCeiling.permission_ceiling_digest !==
+        permissionCeiling.permission_ceiling_digest ||
+      canonicalJson(session.info.identity) !== canonicalJson(identity) ||
+      session.info.sourceDigest !== before.source.source_digest ||
+      session.info.policyDigest !== policy.digest ||
+      session.info.briefDigest !== brief.digest ||
+      canonicalJson(session.info.inputs) !==
+        canonicalJson([candidateInputConfig]) ||
+      canonicalJson(session.info.model) !== canonicalJson(model) ||
+      session.info.inference?.model !== model.pi_model ||
+      !projection.success ||
+      projection.data.source_digest !== before.source.source_digest ||
+      projection.data.workspace_generation !==
+        before.candidate.workspace_generation ||
+      projection.data.manifest_digest !== before.candidate.manifest_digest ||
+      projection.data.volume_name !== before.reader.volume.name ||
+      projection.data.volume_digest !== before.reader.volume.digest ||
+      projection.data.mount_set_digest !== before.reader.mountSet.digest ||
+      projection.data.image_digest !== before.reader.imageDigest ||
+      projection.data.projection_digest !== before.reader.projectionDigest
+    ) {
+      throw new OrchestratorError(
+        "review_session_mismatch",
+        "Fresh Review Session does not match its Candidate, mount projection, Brief, model, or policy",
+      );
+    }
+    requirePinnedPreflight(session.info.openshell, model);
+    const sessionSandbox = SessionSandboxSchema.parse({
+      id: session.info.sandbox.id,
+      name: session.info.sandbox.name,
+      workspace: session.info.sandbox.workspace,
+    });
+    await registry.bindSandbox(identity, sessionSandbox);
+    await registry.transition(identity, { status: "active" });
+    intent = await reviews.prepare(
+      createIntent(
+        {
+          version: 2,
+          run: initialRun.id,
+          task: task.id,
+          lens,
+          round: roundTask.review_rounds,
+          plan_digest: initialRun.plan_digest,
+          input_commit: before.candidate.input_commit,
+          task_source_digest: before.candidate.manifest_digest,
+          source_digest: before.source.source_digest,
+          diff_digest: before.candidate.git_diff_digest,
+          checks: checkBindings(checks),
+          role_digest: role.digest,
+          brief_digest: brief.digest,
+          model,
+          identity,
+          sandbox: sessionSandbox,
+          policy_digest: policy.digest,
+          pi_version: session.info.piVersion,
+          client_version: session.info.clientVersion,
+          message: message.id,
+          candidate: {
+            id: before.candidate.id,
+            digest: before.candidate.digest,
+          },
+          workspace: reviewWorkspaceBinding({
+            projection: projection.data,
+            gitDiffDigest: before.candidate.git_diff_digest,
+          }),
+          permission_ceiling_digest:
+            permissionCeiling.permission_ceiling_digest,
+        },
+        now(),
+      ),
+    );
+    await recordCandidatePendingGate({
+      store: options.store,
+      runId: initialRun.id,
+      task,
+      candidate: before.candidate,
+      intent,
+      timestamp: now().toISOString(),
+    });
+    await mailbox.put(message);
+    const startedAt = now().toISOString();
+    const turn = ModelTurnResultSchema.parse(
+      await session.run(message, options.turnTimeoutMs),
+    );
+    await moveMessageIfPresent(mailbox, message.id, "queued");
+    if (
+      !turn.message_ids.includes(message.id) ||
+      turn.model_profile !== model.profile ||
+      turn.requested_model !== model.pi_model
+    ) {
+      throw new OrchestratorError(
+        "review_turn_mismatch",
+        `Reviewer result does not match Message '${message.id}' and route '${model.profile}/${model.pi_model}'`,
+      );
+    }
+    if (turn.truncated) {
+      throw new OrchestratorError(
+        "review_output_truncated",
+        `Reviewer output exceeded the Link result limit for '${intent.id}'`,
+      );
+    }
+    const assessment = parseReviewAssessment(turn.text);
+
+    const [latestProjectRecord, latest] = await Promise.all([
+      options.store.read(),
+      currentProjectAndPlan({ project: current.project, plan: current.plan }),
+    ]);
+    const latestRun = await options.store.readRun(initialRun.id);
+    requireRunBinding({
+      run: latestRun,
+      project: latest.project,
+      plan: latest.plan,
+      projectRecord: latestProjectRecord,
+    });
+    const latestRestrictedPatterns = effectiveRestrictedPaths(
+      latest.project.config.restricted_paths,
+      options.local.workspace.restricted_paths,
+    );
+    const after = await verifyFrozenReviewWorkspace({
+      store: options.store,
+      lifecycle,
+      workspace: runWorkspace,
+      writerClient: options.workspaceClient,
+      task,
+      candidate: before.candidate,
+      manifest: before.manifest,
+      restrictedPatterns: latestRestrictedPatterns,
+    });
+    if (
+      after.source.source_digest !== before.source.source_digest ||
+      after.reader.mountSet.digest !== before.reader.mountSet.digest ||
+      after.reader.projectionDigest !== before.reader.projectionDigest
+    ) {
+      throw new OrchestratorError(
+        "review_candidate_stale",
+        `Candidate '${before.candidate.id}' changed while Review '${intent.id}' ran`,
+      );
+    }
+    const latestChecks = await collectCandidateChecks({
+      store: options.store,
+      project: latest.project,
+      run: after.run,
+      task,
+      taskState: after.taskState,
+      candidate: after.candidate,
+      source: after.source,
+      reader: after.reader,
+    });
+    if (
+      canonicalJson(checkBindings(latestChecks)) !==
+      canonicalJson(intent.checks)
+    ) {
+      throw new OrchestratorError(
+        "review_check_stale",
+        "Check evidence changed while the Review was running",
+      );
+    }
+    const latestRole = requireReviewRole(latest.project);
+    const latestModel = resolveReviewModelRoute(
+      latest.project.config,
+      options.local,
+      lens,
+    );
+    const latestPermissionCeiling = resolveRolePermissionCeiling({
+      role: latestRole,
+      assignment: { kind: "review", task: task.id, lens },
+      localPolicy: options.local.permissions,
+    });
+    const latestEvidence = createCandidateReviewEvidence({
+      candidate: after.candidate,
+      gitDiff: after.gitDiff,
+    });
+    const latestBrief = compileReviewBrief({
+      identity,
+      project: latest.project,
+      role: latestRole,
+      permissionCeiling: latestPermissionCeiling,
+      task,
+      lens,
+      plan: latest.plan,
+      decisions,
+      candidate: after.candidate,
+      candidateEvidence: latestEvidence,
+      checks: latestChecks,
+      source: after.source,
+      model: latestModel,
+    });
+    const latestPolicy = await loadSandboxPolicy(
+      "read",
+      path.join(policyDirectory, "read.yaml"),
+    );
+    if (
+      latestRole.digest !== intent.role_digest ||
+      latestPermissionCeiling.permission_ceiling_digest !==
+        intent.permission_ceiling_digest ||
+      latestBrief.digest !== intent.brief_digest ||
+      latestEvidence.digest !== candidateEvidence.digest ||
+      canonicalJson(latestModel) !== canonicalJson(intent.model) ||
+      latestPolicy.digest !== intent.policy_digest
+    ) {
+      throw new OrchestratorError(
+        "review_stale",
+        "Reviewer Candidate, Brief, permission ceiling, model route, or read policy changed while the Review was running",
+      );
+    }
+    const durableSession = await registry.requireCurrent(identity);
+    if (
+      durableSession.status !== "active" ||
+      canonicalJson(durableSession.sandbox) !== canonicalJson(intent.sandbox)
+    ) {
+      throw new OrchestratorError(
+        "stale_session",
+        `Review Session '${identity.session}' is no longer current and active`,
+      );
+    }
+
+    const report = renderReviewReport({ intent, assessment });
+    const reportBytes = Buffer.from(report, "utf8");
+    const endedAt = now().toISOString();
+    const record = createRecord({
+      version: 2,
+      id: intent.id,
+      run: intent.run,
+      task: intent.task,
+      lens: intent.lens,
+      round: intent.round,
+      verdict: assessment.verdict,
+      assessment,
+      plan_digest: intent.plan_digest,
+      input_commit: intent.input_commit,
+      task_source_digest: intent.task_source_digest,
+      source_digest: intent.source_digest,
+      diff_digest: intent.diff_digest,
+      checks: intent.checks,
+      role_digest: intent.role_digest,
+      brief_digest: intent.brief_digest,
+      model: intent.model,
+      identity: intent.identity,
+      sandbox: intent.sandbox,
+      policy_digest: intent.policy_digest,
+      pi_version: intent.pi_version,
+      client_version: intent.client_version,
+      openshell: {
+        cli_version: session.info.openshell.installedVersion,
+        gateway: session.info.openshell.status.gateway,
+        gateway_version: session.info.openshell.status.version,
+      },
+      turn: {
+        message_id: message.id,
+        model_profile: turn.model_profile,
+        requested_model: turn.requested_model,
+        ...(turn.response_model ? { response_model: turn.response_model } : {}),
+        stop_reason: turn.stop_reason,
+        usage: turn.usage,
+      },
+      started_at: startedAt,
+      ended_at: endedAt,
+      report: {
+        path: "report.md",
+        byte_count: reportBytes.byteLength,
+        content_digest: sha256(reportBytes),
+      },
+      intent_digest: intent.binding_digest,
+      candidate: intent.candidate,
+      workspace: intent.workspace,
+      permission_ceiling_digest: intent.permission_ceiling_digest,
+    });
+    const stored = await reviews.putResult({ intent, record, report });
+    const finalized = await finalizeCandidateReviewGate({
+      store: options.store,
+      runId: initialRun.id,
+      task,
+      candidate: before.candidate,
+      intent,
+      record: stored,
+      timestamp: now().toISOString(),
+    });
+    await moveMessageIfPresent(mailbox, message.id, "answered");
+    await session.stop();
+    await registry.transition(identity, {
+      status: "stopped",
+      reason: "Independent Candidate Review completed",
+    });
+    return { intent, record: stored, reused: false, task: finalized };
+  } catch (error) {
+    const cleanup: string[] = [];
+    await moveMessageIfPresent(mailbox, message.id, "expired").catch(
+      (cleanupError: unknown) => {
+        cleanup.push(`Message: ${formatUnknownError(cleanupError)}`);
+      },
+    );
+    await session?.stop().catch((cleanupError: unknown) => {
+      cleanup.push(`Sandbox: ${formatUnknownError(cleanupError)}`);
+    });
+    await failSession(
+      registry,
+      identity,
+      `Candidate Review failed: ${formatUnknownError(error)}`,
+    ).catch((cleanupError: unknown) => {
+      cleanup.push(`Session: ${formatUnknownError(cleanupError)}`);
+    });
+    if (cleanup.length > 0) {
+      throw new OrchestratorError(
+        "review_cleanup_failed",
+        `Candidate Review failed (${formatUnknownError(error)}); cleanup also failed: ${cleanup.join("; ")}`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 }
 

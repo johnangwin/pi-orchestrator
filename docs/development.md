@@ -38,7 +38,7 @@ PI_ORCHESTRATOR_LIVE_IMPLEMENTATION=1 npm test -- test/implementation.live.test.
 # Frozen Candidate in a fresh no-inference Check Sandbox
 PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
 
-# Fresh Review Session over checked source
+# Fresh Review Session over a frozen Candidate
 PI_ORCHESTRATOR_LIVE_REVIEW=1 npm test -- test/review.live.test.ts
 
 # cmux capability probe; run inside a cmux terminal

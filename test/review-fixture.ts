@@ -8,7 +8,7 @@ import type {
   ProcessResult,
 } from "../src/openshell.js";
 import {
-  runReview,
+  runLegacyReviewForMigration,
   type ReviewRecord,
   type ReviewSession,
   type ReviewSessionLauncher,
@@ -179,7 +179,7 @@ export async function passFixtureReviews(
     const lens = fixture.task.reviews[index]!;
     const model = resolveReviewModelRoute(fixture.project.config, local, lens);
     const sequence = index + 1;
-    const result = await runReview({
+    const result = await runLegacyReviewForMigration({
       store: fixture.store,
       project: fixture.project,
       plan: fixture.plan,

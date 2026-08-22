@@ -168,9 +168,19 @@ PI_ORCHESTRATOR_LIVE_CHECK=1 npm test -- test/check.live.test.ts
 
 The test prepares a real Docker-backed frozen Candidate, mounts it through OpenShell, runs its registered Node Check, records the exact evidence, and verifies Sandbox and volume cleanup. A consumer Project with another toolchain should supply its own pinned Check image without adding Pi, inference, credentials, or network access.
 
+## Authoritative Reviews
+
+The Review runner reopens that same Candidate volume through the static Pi image and final `read` policy. It excludes live writers, verifies the complete manifest and Git diff before and after the turn, and validates the requested and observed read-only mounts. Each Focus receives a fresh Agent generation, Session, Sandbox, permission ceiling, and exact Model Profile route. The only additional source evidence is immutable `candidate.json`; implementation transcripts, Patch Artifacts, and prior Review findings are absent.
+
+The opt-in live test creates a real Docker-backed Candidate, publishes matching Check evidence, runs every configured Focus through a disposable local fake-model route, and verifies Sandbox and volume cleanup:
+
+```sh
+PI_ORCHESTRATOR_LIVE_REVIEW=1 npm test -- test/review.live.test.ts
+```
+
 The profiles intentionally rely on the image's `USER 10001:10001`. OpenShell 0.0.106 retained supplementary group 0 when the equivalent identity was set through policy fields during the integration probe, so the loader rejects those overrides and the canary checks the complete group list.
 
-Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions, Implementers, and Checks start directly under their final policies from pinned static images and mount verified named-volume projections. The old source-transfer path remains only for Reviews awaiting migration.
+Do not populate source under a writable policy and attempt to switch to `read`. OpenShell 0.0.106 rejects removal of live `read_write` paths. Read-only planning Sessions, Implementers, Checks, and Reviews start directly under their final policies from pinned static images and mount verified named-volume projections. The old source-transfer path remains only as temporary test support for commit migration.
 
 The canary validates 23 lifecycle and isolation assertions per profile, including cleanup. Its JSON result binds each run to the CLI/gateway version and exact policy digest.
 

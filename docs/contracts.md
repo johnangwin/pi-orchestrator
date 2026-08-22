@@ -642,9 +642,9 @@ Plans reference trusted Check IDs, never arbitrary shell strings. Each authorita
 
 A Check record binds Check ID, argv, working directory, timeout, timestamps, exit code, stdout and stderr Artifacts, Plan, Task, Candidate, Workspace and diff digests, image, policy, OpenShell identity, mount table, and cleanup result. Zero exit is `pass`; another observed command exit is `fail`. Infrastructure or cleanup failure produces no verdict.
 
-Each Review uses a fresh Agent or Review assignment, Session, and read-only Sandbox. The Reviewer receives the exact Candidate and passing Check evidence but no Implementer transcript or prior Review finding. Allowed Review Focuses are `spec`, `architecture`, `quality`, and `quant`.
+Each Review uses a fresh Agent with a Review assignment, Session, and read-only Sandbox over the frozen Run volume. The Reviewer receives changed-path anchors, exact Git diff and Candidate metadata through `candidate.json`, and passing Check evidence, but no Patch Artifact, Implementer transcript, or prior Review finding. Allowed Review Focuses are `spec`, `architecture`, `quality`, and `quant`.
 
-A Review record binds Focus, round, verdict, blocking findings, Report, Plan, Task, Candidate, required Check records, Agent and Session identity, permission ceiling, Model Profile and route, Brief, image, policy, OpenShell identity, mount table, and timestamps. Verdicts are `pass`, `rework`, and `blocked`. Every blocking finding includes location, failure scenario, evidence, and required correction.
+A Review record binds Focus, round, verdict, blocking findings, Report, Plan, Task, Candidate, Workspace generation and volume, manifest, source, Git diff, mount set, required Check records, Agent and Session identity, permission ceiling, Model Profile and route, Brief, image, policy, OpenShell identity, observed mount table, and timestamps. Verdicts are `pass`, `rework`, and `blocked`. Every blocking finding includes location, failure scenario, evidence, and required correction.
 
 The host freezes each independent Review before exposing it to later synthesis. A diff or Candidate change makes all Check and Review evidence stale. Attempt and Review-round limits prevent unbounded repair loops.
 

@@ -1219,7 +1219,7 @@ program
           );
         }
         if (result.verdict === "pass") {
-          console.log("Next: Phase 10 Candidate Reviews");
+          console.log("Next: run Candidate Reviews with 'orchestrator review'");
         }
       }
       if (result.verdict === "fail") process.exitCode = 1;
@@ -1287,6 +1287,21 @@ program
           ];
         }),
       ) as Partial<Record<ReviewLens, OpenShellClient>>;
+      const workspaceGateway = local.openshell.shared_workspace?.gateway;
+      if (!local.openshell.shared_workspace?.enabled || !workspaceGateway) {
+        throw new OrchestratorError(
+          "review_workspace_config_missing",
+          "Candidate Reviews require an enabled shared Workspace gateway",
+        );
+      }
+      const workspaceClient = new OpenShellClient({
+        command: local.openshell.command,
+        gateway: workspaceGateway,
+        workspace: local.openshell.workspace,
+        ...(local.openshell.required_version
+          ? { requiredVersion: local.openshell.required_version }
+          : {}),
+      });
       const result = await runRequiredReviews({
         store,
         project,
@@ -1295,6 +1310,7 @@ program
         taskId,
         local,
         clients,
+        workspaceClient,
       });
       const output = {
         run: run.id,
@@ -1325,6 +1341,8 @@ program
           console.log(
             `  remaining: ${result.required.slice(result.reviews.length).join(", ")}`,
           );
+        } else if (result.verdict === "pass") {
+          console.log("Next: Phase 11 Candidate commit migration");
         }
       }
     } finally {

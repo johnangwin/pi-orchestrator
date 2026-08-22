@@ -62,7 +62,8 @@ export interface BriefReviewCheck {
 export interface BriefReviewContext {
   readonly lens: ReviewLens;
   readonly diff: {
-    readonly path: "/workspace/input/review.patch";
+    readonly path:
+      "/workspace/input/review.patch" | "/workspace/input/candidate.json";
     readonly digest: Digest;
   };
   readonly checks: readonly BriefReviewCheck[];

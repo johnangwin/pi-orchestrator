@@ -24,6 +24,6 @@ Stable Candidate-bound intent IDs preserve exact result adoption after interrupt
 
 Authoritative Checks no longer copy, archive, reconstruct, or write Project source. Build systems must honor the supplied scratch environment or be reconfigured through their registered command without changing source permissions.
 
-The old Check source-package implementation remains temporarily as test support for unmigrated Review and commit fixtures. It is not reachable through the public Check command and will be removed with the remaining v0.2 source-transfer pipeline.
+The old Check source-package implementation remains temporarily as test support for commit and summary fixtures that still exercise unmigrated evidence. It is not reachable through the public Check command and will be removed with the remaining v0.2 source-transfer pipeline.
 
 This decision supersedes ADR 0014 for active Check execution and the Check-specific migration note in ADR 0032.

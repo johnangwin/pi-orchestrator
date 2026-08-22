@@ -10,7 +10,7 @@
 
 Version 0.2 is a tested end-to-end host-command implementation. Version 0.3 replaces its control surface and source-transfer architecture rather than adding a second permanent mode.
 
-Phases 0 through 9 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Read-only Agents, leased Implementers, and authoritative Checks now use digest-pinned static images against the persistent Run Workspace without source archives, derived source images, Patch export, or replay. Complete manifests, requested and observed mount evidence, Write Leases, Change Sets, frozen Candidates, and Candidate-bound Check records bind the execution path. Review execution remains on the retained v0.2 source-transfer path until Phase 10 replaces it.
+Phases 0 through 10 are complete. The original host-bind design failed under hard Landlock and was replaced by plain Docker named volumes; the revised live proof passes on OpenShell 0.0.106 and Docker 29.5.2. Durable and live identity use Agent and Session generation throughout the runtime. Every Session carries an immutable least-authority permission ceiling and an exact policy-approved Model Profile route. Read-only Agents, leased Implementers, authoritative Checks, and independent Reviews now use digest-pinned static images against the persistent Run Workspace without source archives, derived source images, Patch export, or replay. Complete manifests, requested and observed mount evidence, Write Leases, Change Sets, frozen Candidates, and Candidate-bound Check and Review records bind the execution path. Human commit remains on the retained v0.2 Patch path until Phase 11 replaces it.
 
 | Phase | Work                                              | Status   |
 | ----: | ------------------------------------------------- | -------- |
@@ -24,8 +24,8 @@ Phases 0 through 9 are complete. The original host-bind design failed under hard
 |     7 | Run read-only Agents from the shared Workspace    | Complete |
 |     8 | Run Implementers under Write Leases               | Complete |
 |     9 | Run authoritative Checks against Candidates       | Complete |
-|    10 | Run fresh Reviews against Candidates              | Next     |
-|    11 | Commit exact Candidates                           | Pending  |
+|    10 | Run fresh Reviews against Candidates              | Complete |
+|    11 | Commit exact Candidates                           | Next     |
 |    12 | Add the trusted background Supervisor             | Pending  |
 |    13 | Publish Plans into Run Workspaces                 | Pending  |
 |    14 | Add the Pi-first cmux control surface             | Pending  |
@@ -132,11 +132,20 @@ If the OpenShell adapter cannot enforce and inspect that mount shape, implementa
 - deleted each Check Sandbox before revalidating the Candidate and publishing immutable evidence;
 - retained deterministic intent/result adoption after interruption while making Workspace drift stale the Candidate and prior Gate evidence.
 
+## Phase 10 outcome
+
+- replaced active Review source reconstruction, derived images, and `review.patch` input with the frozen Run volume and digest-bound `candidate.json` evidence;
+- required an exact current Candidate, passing version-two Check records, no live writer, and complete manifest and Git-diff equality before and after every model turn;
+- launched every Review Focus through a fresh read-only Agent generation, Session, and Sandbox with restricted masks and verified requested and observed mounts;
+- preserved independent Focuses, bounded rounds, structured findings, immutable Reports, exact recovery, and the exclusion of Implementer transcripts and prior Review findings;
+- bound version-two Review intents and results to Candidate, Workspace, Checks, Role permission ceiling, Brief, policy, image, selected Model Profile route, Agent and Session generation, and OpenShell evidence;
+- made Workspace mutation stale every Gate and made rework require a newly frozen Candidate and fresh replacement Checks and Reviews.
+
 ## Later proof gates
 
-### Writer gate
+### Writer gate (passed)
 
-Before adapting Checks or Reviews, inspect one real generic-project Write Lease, actual mount table, complete before-and-after manifests, Change Set, and Candidate. Recovery from a terminated writer must attribute changes without a transcript and without cleaning the Workspace.
+The live implementation proof inspects a real generic-project Write Lease, actual mount table, complete before-and-after manifests, Change Set, and Candidate. Recovery from a terminated writer attributes changes without a transcript and without cleaning the Workspace.
 
 ### Authority gate
 
@@ -160,7 +169,7 @@ The following behavior is implemented and tested today and is retained until its
 - logical Mailboxes, authenticated Connections, deduplication, and stale-identity rejection;
 - durable Session history, Handoffs, recovery, and cmux UUID projection;
 - isolated Run branches and worktrees;
-- deterministic Checks, independent Reviews, and human compare-and-swap commits;
+- human compare-and-swap commits;
 - repository-aware planning, consultations, criticism, synthesis, metrics, and reporting;
 - the standalone price-calculator example.
 
